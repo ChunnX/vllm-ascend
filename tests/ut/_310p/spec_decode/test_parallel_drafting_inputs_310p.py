@@ -13,6 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from types import SimpleNamespace
+from unittest.mock import patch as mock_patch
+
+import numpy as np
 import torch
 
 from tests.ut.base import TestBase
@@ -21,6 +25,12 @@ from vllm_ascend._310p.spec_decode.parallel_drafting_inputs import expand_parall
 MASK_ID = 151666
 BLOCK_SIZE = 128
 GUARD = -99  # sentinel written past the used region to catch overruns
+
+# `_expand_drafting_inputs` is defined in dflash_proposer, so every name it looks
+# up -- is_310p, the Triton launcher -- resolves from that module even when the
+# caller is a DSpark proposer. Patching dspark_proposer.* would silently miss.
+DFLASH_MOD = "vllm_ascend.spec_decode.dflash_proposer"
+HELPER_MOD = "vllm_ascend._310p.spec_decode.parallel_drafting_inputs"
 
 
 def reference_expand(
@@ -250,3 +260,199 @@ class TestExpandParallelDraftingInputs(TestBase):
                     f"{shape}: request {req} slots equal raw cache positions, "
                     f"so the block table is not exercised",
                 )
+
+
+class _ExplodingLauncher:
+    """Stand-in for the Triton kernel: subscripting it (kernel[grid]) raises.
+
+    Used in both directions -- the 310P path must never reach it, and the Triton
+    path must always reach it.
+    """
+
+    def __getitem__(self, _grid):
+        raise AssertionError("Triton kernel was launched")
+
+
+def make_dflash_proposer(*, num_spec=8, selected_block_size=BLOCK_SIZE, kernel_block_size=BLOCK_SIZE, candidates=None):
+    """Build an AscendDflashProposer without running __init__.
+
+    Only the attributes set_inputs_first_pass actually touches are stubbed.
+    """
+    from vllm_ascend.spec_decode.dflash_proposer import AscendDflashProposer
+
+    p = AscendDflashProposer.__new__(AscendDflashProposer)
+    p.num_speculative_tokens = num_spec
+    p.device = torch.device("cpu")
+    p.parallel_drafting_token_id = MASK_ID
+    p.kernel_block_size = kernel_block_size
+    p.kv_cache_gid = 0
+    p.input_ids = torch.zeros(64, dtype=torch.int32)
+    p.positions = torch.zeros(64, dtype=torch.int32)
+    p._context_positions_buffer = torch.zeros(64, dtype=torch.int32)
+    p._context_slot_mapping_buffers = torch.zeros(64, dtype=torch.int32)
+    p._slot_mapping_buffer = torch.zeros(64, dtype=torch.int32)
+    p._dflash_hidden_states = torch.zeros(64, 8)
+    p.arange_dflash = torch.arange(65, dtype=torch.int32)
+    p.token_arange_np = np.arange(65, dtype=np.int32)
+    p.runner = SimpleNamespace(
+        input_batch=SimpleNamespace(block_table={0: SimpleNamespace(block_size=selected_block_size)}),
+        kernel_block_sizes={0: list(candidates if candidates is not None else [128, 64])},
+    )
+    return p
+
+
+def make_dflash_cad(ctx_lens, seq_lens):
+    batch_size = len(ctx_lens)
+    total = sum(ctx_lens)
+    qsl = torch.zeros(batch_size + 1, dtype=torch.int32)
+    qsl[1:] = torch.tensor(ctx_lens, dtype=torch.int32).cumsum(0)
+    return SimpleNamespace(
+        num_reqs=batch_size,
+        slot_mapping=torch.arange(total, dtype=torch.int32) * 3 + 7,
+        block_table_tensor=torch.arange(batch_size * 6, dtype=torch.int32).flip(0).reshape(batch_size, 6) + 6,
+        query_start_loc=qsl,
+        query_start_loc_cpu=qsl.clone(),
+        seq_lens=torch.tensor(seq_lens, dtype=torch.int32),
+        max_seq_len=max(seq_lens),
+        num_actual_tokens=total,
+        max_query_len=0,
+        causal=True,
+        attn_mask=object(),
+        attn_state=None,
+        actual_seq_lengths_q=[],
+        decode_token_per_req=0,
+    )
+
+
+class TestDflashDispatch(TestBase):
+    CTX_LENS = [2, 4]
+    SEQ_LENS = [257, 134]
+
+    def _call(self, proposer, cad):
+        total = sum(self.CTX_LENS)
+        return proposer.set_inputs_first_pass(
+            target_token_ids=torch.zeros(total, dtype=torch.int32),
+            next_token_ids=torch.tensor([11, 22], dtype=torch.int32),
+            target_positions=torch.cat(
+                [
+                    torch.arange(n_seq - n_ctx, n_seq, dtype=torch.int32)
+                    for n_ctx, n_seq in zip(self.CTX_LENS, self.SEQ_LENS)
+                ]
+            ),
+            target_hidden_states=torch.zeros(total, 8),
+            token_indices_to_sample=None,
+            cad=cad,
+            num_rejected_tokens_gpu=None,
+        )
+
+    def test_310p_uses_helper_and_never_launches_triton(self):
+        seen = {}
+
+        def spy(**kwargs):
+            seen.update(kwargs)
+
+        proposer = make_dflash_proposer()
+        cad = make_dflash_cad(self.CTX_LENS, self.SEQ_LENS)
+        with (
+            mock_patch(f"{DFLASH_MOD}.is_310p", return_value=True),
+            mock_patch(f"{HELPER_MOD}.expand_parallel_drafting_inputs", spy),
+            mock_patch(f"{DFLASH_MOD}.copy_and_expand_dflash_and_dspark_inputs_kernel_single_grid",
+                       _ExplodingLauncher()),
+        ):
+            self._call(proposer, cad)
+
+        self.assertEqual(seen["num_query_per_req"], 9)
+        self.assertEqual(seen["num_speculative_tokens"], 8)
+        self.assertIs(seen["sample_from_anchor"], False)
+        self.assertEqual(seen["block_size"], BLOCK_SIZE)
+        self.assertEqual(seen["batch_size"], 2)
+        self.assertEqual(seen["total_input_tokens"], sum(self.CTX_LENS))
+        self.assertIsNone(seen["num_rejected_tokens"])
+        # Buffer identity: catches wiring the helper to the wrong destination,
+        # which a value comparison would not.
+        self.assertIs(seen["out_input_ids"], proposer.input_ids)
+        self.assertIs(seen["out_query_positions"], proposer.positions)
+        self.assertIs(seen["out_context_positions"], proposer._context_positions_buffer)
+        self.assertIs(seen["out_context_slot_mapping"], proposer._context_slot_mapping_buffers)
+        self.assertIs(seen["out_query_slot_mapping"], proposer._slot_mapping_buffer)
+        self.assertIs(seen["block_table"], cad.block_table_tensor)
+
+    def test_non_310p_still_launches_triton(self):
+        proposer = make_dflash_proposer()
+        cad = make_dflash_cad(self.CTX_LENS, self.SEQ_LENS)
+
+        def must_not_run(_proposer):
+            raise AssertionError("resolve_310p_block_size ran on the non-310P path")
+
+        with (
+            mock_patch(f"{DFLASH_MOD}.is_310p", return_value=False),
+            mock_patch(f"{HELPER_MOD}.resolve_310p_block_size", must_not_run),
+            mock_patch(f"{DFLASH_MOD}.copy_and_expand_dflash_and_dspark_inputs_kernel_single_grid",
+                       _ExplodingLauncher()),
+        ):
+            with self.assertRaisesRegex(AssertionError, "Triton kernel was launched"):
+                self._call(proposer, cad)
+
+    def test_310p_slot_mapping_matches_the_verified_helper(self):
+        """End-to-end through the real helper, not a spy: proves the wiring works."""
+        proposer = make_dflash_proposer()
+        cad = make_dflash_cad(self.CTX_LENS, self.SEQ_LENS)
+        with (
+            mock_patch(f"{DFLASH_MOD}.is_310p", return_value=True),
+            mock_patch(f"{DFLASH_MOD}.copy_and_expand_dflash_and_dspark_inputs_kernel_single_grid",
+                       _ExplodingLauncher()),
+        ):
+            num_query_total, _, _, _ = self._call(proposer, cad)
+
+        want = torch.zeros(64, dtype=torch.int32)
+        for req, seq_len in enumerate(self.SEQ_LENS):
+            for q_idx in range(9):
+                cache_pos = seq_len + q_idx
+                physical = int(cad.block_table_tensor[req, cache_pos // BLOCK_SIZE])
+                want[req * 9 + q_idx] = physical * BLOCK_SIZE + cache_pos % BLOCK_SIZE
+        torch.testing.assert_close(proposer._slot_mapping_buffer[:num_query_total], want[:num_query_total])
+
+    def test_310p_metadata_is_switched_to_non_causal_parallel_draft(self):
+        proposer = make_dflash_proposer()
+        cad = make_dflash_cad(self.CTX_LENS, self.SEQ_LENS)
+        with (
+            mock_patch(f"{DFLASH_MOD}.is_310p", return_value=True),
+            mock_patch(f"{DFLASH_MOD}.copy_and_expand_dflash_and_dspark_inputs_kernel_single_grid",
+                       _ExplodingLauncher()),
+        ):
+            num_query_total, token_indices, out_cad, _ = self._call(proposer, cad)
+
+        from vllm_ascend.attention.attention_v1 import AscendAttentionState
+
+        self.assertEqual(num_query_total, 2 * 9)
+        self.assertEqual(token_indices.shape[0], 2 * 8)
+        self.assertEqual(out_cad.num_actual_tokens, 2 * 9)
+        self.assertEqual(out_cad.max_query_len, 9)
+        self.assertIs(out_cad.causal, False)
+        self.assertIsNone(out_cad.attn_mask)
+        self.assertEqual(out_cad.attn_state, AscendAttentionState.ChunkedPrefill)
+        self.assertEqual(out_cad.actual_seq_lengths_q, [9, 9])
+        # seq_lens must become effective history + this round's query block.
+        torch.testing.assert_close(out_cad.seq_lens, torch.tensor([257 + 9, 134 + 9], dtype=torch.int32))
+
+
+class TestResolve310pBlockSize(TestBase):
+    def _resolve(self, **kwargs):
+        from vllm_ascend._310p.spec_decode.parallel_drafting_inputs import resolve_310p_block_size
+
+        return resolve_310p_block_size(make_dflash_proposer(**kwargs))
+
+    def test_accepts_the_supported_configuration(self):
+        self.assertEqual(self._resolve(), BLOCK_SIZE)
+
+    def test_rejects_a_selected_size_outside_scope(self):
+        with self.assertRaisesRegex(RuntimeError, "only covers kernel block size 128"):
+            self._resolve(selected_block_size=64)
+
+    def test_rejects_drafter_disagreeing_with_the_block_table(self):
+        with self.assertRaisesRegex(RuntimeError, "kernel_block_size is 64"):
+            self._resolve(kernel_block_size=64)
+
+    def test_rejects_a_candidate_list_without_the_supported_size(self):
+        with self.assertRaisesRegex(RuntimeError, "not in the runner's candidate list"):
+            self._resolve(candidates=[64])

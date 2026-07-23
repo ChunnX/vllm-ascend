@@ -16,6 +16,46 @@
 
 import torch
 
+# The only kernel/allocation block size this scope supports. Everything that
+# claims to be "the block size" is checked against this constant rather than
+# against each other: cross-checking three sources only proves they agree, not
+# that they equal the value ADN was validated at.
+ADN_BLOCK_SIZE = 128
+
+
+def resolve_310p_block_size(proposer) -> int:
+    """Read the selected kernel block size and pin it to ADN_BLOCK_SIZE.
+
+    310P only. Never call this on the Triton path: that path must keep using its
+    own source (proposer.kernel_block_size for DFlash, the group's
+    kv_cache_spec.block_size for DSpark) so A2/A3 behaviour is unchanged.
+
+    Runs once per draft step rather than per layer, so the handful of attribute
+    reads here are not worth caching.
+    """
+    gid = proposer.kv_cache_gid
+    selected = proposer.runner.input_batch.block_table[gid].block_size
+    if selected != ADN_BLOCK_SIZE:
+        raise RuntimeError(
+            f"this scope only covers kernel block size {ADN_BLOCK_SIZE}, but KV cache "
+            f"group {gid} selected {selected}; re-scope before changing anything"
+        )
+    if proposer.kernel_block_size != ADN_BLOCK_SIZE:
+        raise RuntimeError(
+            f"proposer.kernel_block_size is {proposer.kernel_block_size}, expected "
+            f"{ADN_BLOCK_SIZE}; the drafter and the block table disagree about the "
+            f"kernel block size, which would corrupt slot mapping"
+        )
+    # runner.kernel_block_sizes[gid] is a *candidate list* (typically [128, 64]),
+    # never a scalar, so check membership rather than equality.
+    candidates = proposer.runner.kernel_block_sizes[gid]
+    if ADN_BLOCK_SIZE not in candidates:
+        raise RuntimeError(
+            f"{ADN_BLOCK_SIZE} is not in the runner's candidate list {candidates} for "
+            f"KV cache group {gid}"
+        )
+    return ADN_BLOCK_SIZE
+
 
 def expand_parallel_drafting_inputs(
     *,
