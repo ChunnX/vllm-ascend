@@ -108,9 +108,25 @@ def make_case(*, ctx_lens, seq_lens, rejected, num_query_per_req, num_spec):
     ctx_slots = torch.arange(total, dtype=torch.int32) * 3 + 7
 
     max_blocks = (max(seq_lens) + num_query_per_req) // BLOCK_SIZE + 2
-    # Non-contiguous, descending physical page ids so a bug that ignores the block
-    # table cannot accidentally produce the right slot.
-    block_table = torch.arange(batch_size * max_blocks, dtype=torch.int32).flip(0).reshape(batch_size, max_blocks)
+    # Descending, non-contiguous physical page ids, shifted past the logical index
+    # range so no entry can equal its own column.
+    #
+    # That invariant is what makes these fixtures discriminating: a query slot is
+    # physical * block_size + offset while the raw cache position is
+    # logical * block_size + offset, with the same offset. So physical != logical
+    # is exactly the condition under which a slot differs from the position, and a
+    # helper that ignored the block table entirely would be caught.
+    #
+    # The plain reversal used before had a fixed point at the middle column for odd
+    # max_blocks (arange(3).flip(0) == [2, 1, 0], so column 1 maps to page 1). With
+    # seq_lens=[129] the whole query block landed on that column and every slot
+    # equalled its cache position.
+    block_table = (
+        torch.arange(batch_size * max_blocks, dtype=torch.int32).flip(0).reshape(batch_size, max_blocks) + max_blocks
+    )
+    assert bool(
+        (block_table != torch.arange(max_blocks, dtype=torch.int32)).all()
+    ), "block table maps some logical page to the same physical page; slots would be degenerate"
 
     return dict(
         next_token_ids=torch.arange(batch_size, dtype=torch.int32) + 1000,
@@ -206,19 +222,31 @@ class TestExpandParallelDraftingInputs(TestBase):
         self.assertTrue(bool((got["out_context_positions"][total:] == GUARD).all()))
         self.assertTrue(bool((got["out_context_slot_mapping"][total:] == GUARD).all()))
 
-    def test_fixtures_are_not_degenerate(self):
-        """Guard against a vacuous suite.
+    def test_query_slots_never_equal_raw_cache_positions(self):
+        """The block table must be load-bearing for every shape the suite uses.
 
-        With descending, non-contiguous page ids the query slot must differ from the
-        raw cache position. If they happened to match, every assertion above would
-        still pass for a helper that ignored the block table entirely.
+        This is implied by the no-fixed-point invariant asserted in make_case, but
+        checking the end result across all shapes keeps the two from drifting apart
+        if the fixture construction is ever changed.
         """
-        case = make_case(ctx_lens=[2], seq_lens=[129], rejected=None, num_query_per_req=9, num_spec=8)
-        _, want, _ = run_both(case, sample_from_anchor=False)
-        q = case["num_query_per_req"]
-        slots = want["out_query_slot_mapping"][:q]
-        raw_cache_positions = torch.arange(129, 129 + q, dtype=torch.int32)
-        self.assertFalse(
-            bool(torch.equal(slots, raw_cache_positions)),
-            "query slots equal raw cache positions, so the block table is not exercised",
-        )
+        shapes = [
+            dict(ctx_lens=[2], seq_lens=[127], rejected=None, num_query_per_req=9, num_spec=8),
+            dict(ctx_lens=[2], seq_lens=[128], rejected=None, num_query_per_req=9, num_spec=8),
+            dict(ctx_lens=[2], seq_lens=[129], rejected=None, num_query_per_req=9, num_spec=8),
+            dict(ctx_lens=[4], seq_lens=[257], rejected=None, num_query_per_req=7, num_spec=7),
+            dict(ctx_lens=[1, 4, 2], seq_lens=[257, 134, 66], rejected=[0, 3, 1], num_query_per_req=9, num_spec=8),
+        ]
+        for shape in shapes:
+            case = make_case(**shape)
+            _, want, _ = run_both(case, sample_from_anchor=False)
+            b, q = case["batch_size"], case["num_query_per_req"]
+            rejected = shape["rejected"] or [0] * b
+            for req in range(b):
+                effective_seq_len = shape["seq_lens"][req] - rejected[req]
+                slots = want["out_query_slot_mapping"][req * q : (req + 1) * q]
+                raw = torch.arange(effective_seq_len, effective_seq_len + q, dtype=torch.int32)
+                self.assertFalse(
+                    bool(torch.equal(slots, raw)),
+                    f"{shape}: request {req} slots equal raw cache positions, "
+                    f"so the block table is not exercised",
+                )
