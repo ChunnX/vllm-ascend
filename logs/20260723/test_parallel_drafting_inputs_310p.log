@@ -1,0 +1,55 @@
+INFO 07-23 07:50:05 [__init__.py:44] Available plugins for group vllm.platform_plugins:
+INFO 07-23 07:50:05 [__init__.py:46] - ascend -> vllm_ascend:register
+INFO 07-23 07:50:05 [__init__.py:49] All plugins in this group will be loaded. Set `VLLM_PLUGINS` to control which plugins to load.
+INFO 07-23 07:50:05 [__init__.py:237] Platform plugin ascend is activated
+INFO 07-23 07:50:10 [platform.py:61] Breakable cudagraph is force disabled on Ascend because DeepSeek V4 PIECEWISE cudagraph is not supported yet.
+INFO 07-23 07:50:10 [importing.py:88] Triton not installed or not compatible; certain GPU-related functions will not be available.
+============================= test session starts ==============================
+platform linux -- Python 3.12.13, pytest-8.3.2, pluggy-1.6.0 -- /usr/local/python3.12.13/bin/python3
+cachedir: .pytest_cache
+rootdir: /vllm-workspace/vllm-ascend
+configfile: pyproject.toml
+plugins: xdist-3.6.1, anyio-4.14.2
+collecting ... collected 7 items
+
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestExpandParallelDraftingInputs::test_context_buffer_untouched_beyond_scheduled_segment PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestExpandParallelDraftingInputs::test_dflash_single_request PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestExpandParallelDraftingInputs::test_dspark_single_request PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestExpandParallelDraftingInputs::test_fixtures_are_not_degenerate FAILED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestExpandParallelDraftingInputs::test_query_slots_cross_page_boundary PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestExpandParallelDraftingInputs::test_ragged_segment_with_distinct_seq_lens PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestExpandParallelDraftingInputs::test_rejected_tail_excluded_from_query_but_kept_in_context PASSED
+
+=================================== FAILURES ===================================
+______ TestExpandParallelDraftingInputs.test_fixtures_are_not_degenerate _______
+
+self = <test_parallel_drafting_inputs_310p.TestExpandParallelDraftingInputs testMethod=test_fixtures_are_not_degenerate>
+
+    def test_fixtures_are_not_degenerate(self):
+        """Guard against a vacuous suite.
+    
+        With descending, non-contiguous page ids the query slot must differ from the
+        raw cache position. If they happened to match, every assertion above would
+        still pass for a helper that ignored the block table entirely.
+        """
+        case = make_case(ctx_lens=[2], seq_lens=[129], rejected=None, num_query_per_req=9, num_spec=8)
+        _, want, _ = run_both(case, sample_from_anchor=False)
+        q = case["num_query_per_req"]
+        slots = want["out_query_slot_mapping"][:q]
+        raw_cache_positions = torch.arange(129, 129 + q, dtype=torch.int32)
+>       self.assertFalse(
+            bool(torch.equal(slots, raw_cache_positions)),
+            "query slots equal raw cache positions, so the block table is not exercised",
+        )
+E       AssertionError: True is not false : query slots equal raw cache positions, so the block table is not exercised
+
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py:221: AssertionError
+=============================== warnings summary ===============================
+../../usr/local/python3.12.13/lib/python3.12/site-packages/torch/jit/_script.py:362: 14 warnings
+  /usr/local/python3.12.13/lib/python3.12/site-packages/torch/jit/_script.py:362: DeprecationWarning: `torch.jit.script_method` is deprecated. Please switch to `torch.compile` or `torch.export`.
+    warnings.warn(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestExpandParallelDraftingInputs::test_fixtures_are_not_degenerate
+=================== 1 failed, 6 passed, 14 warnings in 0.24s ===================
