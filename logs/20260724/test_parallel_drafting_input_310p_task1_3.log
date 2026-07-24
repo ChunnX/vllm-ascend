@@ -1,0 +1,334 @@
+INFO 07-24 01:30:25 [__init__.py:44] Available plugins for group vllm.platform_plugins:
+INFO 07-24 01:30:25 [__init__.py:46] - ascend -> vllm_ascend:register
+INFO 07-24 01:30:25 [__init__.py:49] All plugins in this group will be loaded. Set `VLLM_PLUGINS` to control which plugins to load.
+INFO 07-24 01:30:25 [__init__.py:237] Platform plugin ascend is activated
+INFO 07-24 01:30:30 [platform.py:61] Breakable cudagraph is force disabled on Ascend because DeepSeek V4 PIECEWISE cudagraph is not supported yet.
+INFO 07-24 01:30:30 [importing.py:88] Triton not installed or not compatible; certain GPU-related functions will not be available.
+============================= test session starts ==============================
+platform linux -- Python 3.12.13, pytest-8.3.2, pluggy-1.6.0 -- /usr/local/python3.12.13/bin/python3
+cachedir: .pytest_cache
+rootdir: /vllm-workspace/vllm-ascend
+configfile: pyproject.toml
+plugins: xdist-3.6.1, anyio-4.14.2
+collecting ... collected 20 items
+
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestExpandParallelDraftingInputs::test_context_buffer_untouched_beyond_scheduled_segment PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestExpandParallelDraftingInputs::test_dflash_single_request PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestExpandParallelDraftingInputs::test_dspark_single_request PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestExpandParallelDraftingInputs::test_query_slots_cross_page_boundary PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestExpandParallelDraftingInputs::test_query_slots_never_equal_raw_cache_positions PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestExpandParallelDraftingInputs::test_ragged_segment_with_distinct_seq_lens PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestExpandParallelDraftingInputs::test_rejected_tail_excluded_from_query_but_kept_in_context PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestDflashDispatch::test_310p_metadata_is_switched_to_non_causal_parallel_draft PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestDflashDispatch::test_310p_slot_mapping_matches_the_verified_helper PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestDflashDispatch::test_310p_uses_helper_and_never_launches_triton PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestDflashDispatch::test_non_310p_still_launches_triton PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestResolve310pBlockSize::test_accepts_the_supported_configuration PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestResolve310pBlockSize::test_rejects_a_candidate_list_without_the_supported_size PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestResolve310pBlockSize::test_rejects_a_selected_size_outside_scope PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestResolve310pBlockSize::test_rejects_drafter_disagreeing_with_the_block_table PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestDSparkDispatch::test_metadata_matches_dspark_layout FAILED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestDSparkDispatch::test_multi_group_is_refused_on_310p FAILED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestDSparkDispatch::test_non_310p_still_launches_triton FAILED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestDSparkDispatch::test_single_group_calls_helper_once_with_dspark_semantics FAILED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestDSparkDispatch::test_slot_mapping_matches_the_verified_helper FAILED
+
+=================================== FAILURES ===================================
+____________ TestDSparkDispatch.test_metadata_matches_dspark_layout ____________
+
+self = <test_parallel_drafting_inputs_310p.TestDSparkDispatch testMethod=test_metadata_matches_dspark_layout>
+
+    def test_metadata_matches_dspark_layout(self):
+        proposer = make_dspark_proposer()
+>       (result, _) = self._run_310p(proposer)
+
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py:581: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py:546: in _run_310p
+    return self._call(proposer, cad), cad
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py:510: in _call
+    return proposer.set_inputs_first_pass(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <vllm_ascend.spec_decode.dspark_proposer.AscendDSparkProposer object at 0xfffc16b3af00>
+target_token_ids = tensor([0, 0, 0, 0, 0, 0], dtype=torch.int32)
+next_token_ids = tensor([11, 22], dtype=torch.int32)
+target_positions = tensor([255, 256, 130, 131, 132, 133], dtype=torch.int32)
+target_hidden_states = tensor([[0., 0., 0., 0., 0., 0., 0., 0.],
+        [0., 0., 0., 0., 0., 0., 0., 0.],
+        [0., 0., 0., 0., 0., 0., 0... [0., 0., 0., 0., 0., 0., 0., 0.],
+        [0., 0., 0., 0., 0., 0., 0., 0.],
+        [0., 0., 0., 0., 0., 0., 0., 0.]])
+token_indices_to_sample = None
+cad = namespace(num_reqs=2, slot_mapping=tensor([ 7, 10, 13, 16, 19, 22], dtype=torch.int32), block_table_tensor=tensor([[17...al=True, attn_mask=<object object at 0xfffc1735c8f0>, attn_state=None, actual_seq_lengths_q=[], decode_token_per_req=0)
+num_rejected_tokens_gpu = None, req_scheduled_tokens = None
+long_seq_metadata = None, num_prefill_reqs = 0, num_decode_reqs = 0
+
+    def set_inputs_first_pass(
+        self,
+        target_token_ids: torch.Tensor,
+        next_token_ids: torch.Tensor,
+        target_positions: torch.Tensor,
+        target_hidden_states: torch.Tensor,
+        token_indices_to_sample: torch.Tensor | None,
+        cad: CommonAttentionMetadata,
+        num_rejected_tokens_gpu: torch.Tensor | None,
+        req_scheduled_tokens=None,
+        long_seq_metadata=None,
+        num_prefill_reqs=0,
+        num_decode_reqs=0,
+    ) -> tuple[int, torch.Tensor, CommonAttentionMetadata, tuple[Any, Any] | None]:
+        # The initial input token of markovHead is the next token
+        n = next_token_ids.shape[0]
+        self._dspark_seed_buffer[:n].copy_(next_token_ids)
+        self._dspark_seed_buffer[n:].fill_(0)
+        batch_size = cad.num_reqs
+        block_size = self.num_speculative_tokens
+        num_query_total = batch_size * block_size
+        has_num_rejected = num_rejected_tokens_gpu is not None
+        primary_gid = getattr(self, "kv_cache_gid", 0)
+        self._per_group_block_table_buffers = {
+>           attn_group.kv_cache_group_id: self._per_group_block_tables[attn_group.kv_cache_group_id]
+            for attn_group in self.draft_attn_groups
+        }
+E       AttributeError: 'AscendDSparkProposer' object has no attribute '_per_group_block_tables'. Did you mean: '_per_group_block_table_buffers'?
+
+vllm_ascend/spec_decode/dspark_proposer.py:213: AttributeError
+____________ TestDSparkDispatch.test_multi_group_is_refused_on_310p ____________
+
+self = <test_parallel_drafting_inputs_310p.TestDSparkDispatch testMethod=test_multi_group_is_refused_on_310p>
+
+    def test_multi_group_is_refused_on_310p(self):
+        proposer = make_dspark_proposer(num_groups=2)
+        with self.assertRaisesRegex(RuntimeError, "single draft KV cache group"):
+>           self._run_310p(proposer, spy=lambda **kw: None)
+
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py:577: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py:546: in _run_310p
+    return self._call(proposer, cad), cad
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py:510: in _call
+    return proposer.set_inputs_first_pass(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    def set_inputs_first_pass(
+        self,
+        target_token_ids: torch.Tensor,
+        next_token_ids: torch.Tensor,
+        target_positions: torch.Tensor,
+        target_hidden_states: torch.Tensor,
+        token_indices_to_sample: torch.Tensor | None,
+        cad: CommonAttentionMetadata,
+        num_rejected_tokens_gpu: torch.Tensor | None,
+        req_scheduled_tokens=None,
+        long_seq_metadata=None,
+        num_prefill_reqs=0,
+        num_decode_reqs=0,
+    ) -> tuple[int, torch.Tensor, CommonAttentionMetadata, tuple[Any, Any] | None]:
+        # The initial input token of markovHead is the next token
+        n = next_token_ids.shape[0]
+        self._dspark_seed_buffer[:n].copy_(next_token_ids)
+        self._dspark_seed_buffer[n:].fill_(0)
+        batch_size = cad.num_reqs
+        block_size = self.num_speculative_tokens
+        num_query_total = batch_size * block_size
+        has_num_rejected = num_rejected_tokens_gpu is not None
+        primary_gid = getattr(self, "kv_cache_gid", 0)
+        self._per_group_block_table_buffers = {
+>           attn_group.kv_cache_group_id: self._per_group_block_tables[attn_group.kv_cache_group_id]
+            for attn_group in self.draft_attn_groups
+        }
+E       AttributeError: 'AscendDSparkProposer' object has no attribute '_per_group_block_tables'. Did you mean: '_per_group_block_table_buffers'?
+
+vllm_ascend/spec_decode/dspark_proposer.py:213: AttributeError
+____________ TestDSparkDispatch.test_non_310p_still_launches_triton ____________
+
+self = <test_parallel_drafting_inputs_310p.TestDSparkDispatch testMethod=test_non_310p_still_launches_triton>
+
+    def test_non_310p_still_launches_triton(self):
+        proposer = make_dspark_proposer()
+        cad = make_dflash_cad(self.CTX_LENS, self.SEQ_LENS)
+        with (
+            mock_patch(f"{DFLASH_MOD}.is_310p", return_value=False),
+            mock_patch("vllm_ascend.spec_decode.dspark_proposer.is_310p", return_value=False),
+            mock_patch(f"{DFLASH_MOD}.copy_and_expand_dflash_and_dspark_inputs_kernel_single_grid",
+                       _ExplodingLauncher()),
+        ):
+            with self.assertRaisesRegex(AssertionError, "Triton kernel was launched"):
+>               self._call(proposer, cad)
+
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py:632: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py:510: in _call
+    return proposer.set_inputs_first_pass(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    def set_inputs_first_pass(
+        self,
+        target_token_ids: torch.Tensor,
+        next_token_ids: torch.Tensor,
+        target_positions: torch.Tensor,
+        target_hidden_states: torch.Tensor,
+        token_indices_to_sample: torch.Tensor | None,
+        cad: CommonAttentionMetadata,
+        num_rejected_tokens_gpu: torch.Tensor | None,
+        req_scheduled_tokens=None,
+        long_seq_metadata=None,
+        num_prefill_reqs=0,
+        num_decode_reqs=0,
+    ) -> tuple[int, torch.Tensor, CommonAttentionMetadata, tuple[Any, Any] | None]:
+        # The initial input token of markovHead is the next token
+        n = next_token_ids.shape[0]
+        self._dspark_seed_buffer[:n].copy_(next_token_ids)
+        self._dspark_seed_buffer[n:].fill_(0)
+        batch_size = cad.num_reqs
+        block_size = self.num_speculative_tokens
+        num_query_total = batch_size * block_size
+        has_num_rejected = num_rejected_tokens_gpu is not None
+        primary_gid = getattr(self, "kv_cache_gid", 0)
+        self._per_group_block_table_buffers = {
+>           attn_group.kv_cache_group_id: self._per_group_block_tables[attn_group.kv_cache_group_id]
+            for attn_group in self.draft_attn_groups
+        }
+E       AttributeError: 'AscendDSparkProposer' object has no attribute '_per_group_block_tables'. Did you mean: '_per_group_block_table_buffers'?
+
+vllm_ascend/spec_decode/dspark_proposer.py:213: AttributeError
+_ TestDSparkDispatch.test_single_group_calls_helper_once_with_dspark_semantics _
+
+self = <test_parallel_drafting_inputs_310p.TestDSparkDispatch testMethod=test_single_group_calls_helper_once_with_dspark_semantics>
+
+    def test_single_group_calls_helper_once_with_dspark_semantics(self):
+        calls = []
+    
+        def spy(**kwargs):
+            calls.append(kwargs)
+    
+        proposer = make_dspark_proposer()
+>       self._run_310p(proposer, spy=spy)
+
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py:555: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py:546: in _run_310p
+    return self._call(proposer, cad), cad
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py:510: in _call
+    return proposer.set_inputs_first_pass(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <vllm_ascend.spec_decode.dspark_proposer.AscendDSparkProposer object at 0xfffc16bd1a00>
+target_token_ids = tensor([0, 0, 0, 0, 0, 0], dtype=torch.int32)
+next_token_ids = tensor([11, 22], dtype=torch.int32)
+target_positions = tensor([255, 256, 130, 131, 132, 133], dtype=torch.int32)
+target_hidden_states = tensor([[0., 0., 0., 0., 0., 0., 0., 0.],
+        [0., 0., 0., 0., 0., 0., 0., 0.],
+        [0., 0., 0., 0., 0., 0., 0... [0., 0., 0., 0., 0., 0., 0., 0.],
+        [0., 0., 0., 0., 0., 0., 0., 0.],
+        [0., 0., 0., 0., 0., 0., 0., 0.]])
+token_indices_to_sample = None
+cad = namespace(num_reqs=2, slot_mapping=tensor([ 7, 10, 13, 16, 19, 22], dtype=torch.int32), block_table_tensor=tensor([[17...al=True, attn_mask=<object object at 0xfffc1735f080>, attn_state=None, actual_seq_lengths_q=[], decode_token_per_req=0)
+num_rejected_tokens_gpu = None, req_scheduled_tokens = None
+long_seq_metadata = None, num_prefill_reqs = 0, num_decode_reqs = 0
+
+    def set_inputs_first_pass(
+        self,
+        target_token_ids: torch.Tensor,
+        next_token_ids: torch.Tensor,
+        target_positions: torch.Tensor,
+        target_hidden_states: torch.Tensor,
+        token_indices_to_sample: torch.Tensor | None,
+        cad: CommonAttentionMetadata,
+        num_rejected_tokens_gpu: torch.Tensor | None,
+        req_scheduled_tokens=None,
+        long_seq_metadata=None,
+        num_prefill_reqs=0,
+        num_decode_reqs=0,
+    ) -> tuple[int, torch.Tensor, CommonAttentionMetadata, tuple[Any, Any] | None]:
+        # The initial input token of markovHead is the next token
+        n = next_token_ids.shape[0]
+        self._dspark_seed_buffer[:n].copy_(next_token_ids)
+        self._dspark_seed_buffer[n:].fill_(0)
+        batch_size = cad.num_reqs
+        block_size = self.num_speculative_tokens
+        num_query_total = batch_size * block_size
+        has_num_rejected = num_rejected_tokens_gpu is not None
+        primary_gid = getattr(self, "kv_cache_gid", 0)
+        self._per_group_block_table_buffers = {
+>           attn_group.kv_cache_group_id: self._per_group_block_tables[attn_group.kv_cache_group_id]
+            for attn_group in self.draft_attn_groups
+        }
+E       AttributeError: 'AscendDSparkProposer' object has no attribute '_per_group_block_tables'. Did you mean: '_per_group_block_table_buffers'?
+
+vllm_ascend/spec_decode/dspark_proposer.py:213: AttributeError
+_______ TestDSparkDispatch.test_slot_mapping_matches_the_verified_helper _______
+
+self = <test_parallel_drafting_inputs_310p.TestDSparkDispatch testMethod=test_slot_mapping_matches_the_verified_helper>
+
+    def test_slot_mapping_matches_the_verified_helper(self):
+        """Runs the real helper end to end, so the per-group wiring is checked."""
+        proposer = make_dspark_proposer()
+>       (result, _) = self._run_310p(proposer)
+
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py:607: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py:546: in _run_310p
+    return self._call(proposer, cad), cad
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py:510: in _call
+    return proposer.set_inputs_first_pass(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <vllm_ascend.spec_decode.dspark_proposer.AscendDSparkProposer object at 0xfffc16bd33b0>
+target_token_ids = tensor([0, 0, 0, 0, 0, 0], dtype=torch.int32)
+next_token_ids = tensor([11, 22], dtype=torch.int32)
+target_positions = tensor([255, 256, 130, 131, 132, 133], dtype=torch.int32)
+target_hidden_states = tensor([[0., 0., 0., 0., 0., 0., 0., 0.],
+        [0., 0., 0., 0., 0., 0., 0., 0.],
+        [0., 0., 0., 0., 0., 0., 0... [0., 0., 0., 0., 0., 0., 0., 0.],
+        [0., 0., 0., 0., 0., 0., 0., 0.],
+        [0., 0., 0., 0., 0., 0., 0., 0.]])
+token_indices_to_sample = None
+cad = namespace(num_reqs=2, slot_mapping=tensor([ 7, 10, 13, 16, 19, 22], dtype=torch.int32), block_table_tensor=tensor([[17...al=True, attn_mask=<object object at 0xfffc1735ca40>, attn_state=None, actual_seq_lengths_q=[], decode_token_per_req=0)
+num_rejected_tokens_gpu = None, req_scheduled_tokens = None
+long_seq_metadata = None, num_prefill_reqs = 0, num_decode_reqs = 0
+
+    def set_inputs_first_pass(
+        self,
+        target_token_ids: torch.Tensor,
+        next_token_ids: torch.Tensor,
+        target_positions: torch.Tensor,
+        target_hidden_states: torch.Tensor,
+        token_indices_to_sample: torch.Tensor | None,
+        cad: CommonAttentionMetadata,
+        num_rejected_tokens_gpu: torch.Tensor | None,
+        req_scheduled_tokens=None,
+        long_seq_metadata=None,
+        num_prefill_reqs=0,
+        num_decode_reqs=0,
+    ) -> tuple[int, torch.Tensor, CommonAttentionMetadata, tuple[Any, Any] | None]:
+        # The initial input token of markovHead is the next token
+        n = next_token_ids.shape[0]
+        self._dspark_seed_buffer[:n].copy_(next_token_ids)
+        self._dspark_seed_buffer[n:].fill_(0)
+        batch_size = cad.num_reqs
+        block_size = self.num_speculative_tokens
+        num_query_total = batch_size * block_size
+        has_num_rejected = num_rejected_tokens_gpu is not None
+        primary_gid = getattr(self, "kv_cache_gid", 0)
+        self._per_group_block_table_buffers = {
+>           attn_group.kv_cache_group_id: self._per_group_block_tables[attn_group.kv_cache_group_id]
+            for attn_group in self.draft_attn_groups
+        }
+E       AttributeError: 'AscendDSparkProposer' object has no attribute '_per_group_block_tables'. Did you mean: '_per_group_block_table_buffers'?
+
+vllm_ascend/spec_decode/dspark_proposer.py:213: AttributeError
+=============================== warnings summary ===============================
+../../usr/local/python3.12.13/lib/python3.12/site-packages/torch/jit/_script.py:362: 14 warnings
+  /usr/local/python3.12.13/lib/python3.12/site-packages/torch/jit/_script.py:362: DeprecationWarning: `torch.jit.script_method` is deprecated. Please switch to `torch.compile` or `torch.export`.
+    warnings.warn(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestDSparkDispatch::test_metadata_matches_dspark_layout
+FAILED tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestDSparkDispatch::test_multi_group_is_refused_on_310p
+FAILED tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestDSparkDispatch::test_non_310p_still_launches_triton
+FAILED tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestDSparkDispatch::test_single_group_calls_helper_once_with_dspark_semantics
+FAILED tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestDSparkDispatch::test_slot_mapping_matches_the_verified_helper
+================== 5 failed, 15 passed, 14 warnings in 0.61s ===================
