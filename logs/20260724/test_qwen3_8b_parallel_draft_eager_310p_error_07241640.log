@@ -1,0 +1,133 @@
+(Worker_TP0 pid=222086) INFO 07-24 08:32:32 [weight_utils.py:849] Filesystem type for checkpoints: EXT4. Checkpoint size: 4.42 GiB. Available RAM: 856.49 GiB.
+Loading safetensors checkpoint shards:   0% Completed | 0/1 [00:00<?, ?it/s]
+Loading safetensors checkpoint shards: 100% Completed | 1/1 [00:00<00:00, 206.65it/s]
+(Worker_TP0 pid=222086) 
+(Worker_TP3 pid=222089) INFO 07-24 08:32:33 [llm_base_proposer.py:452] [spec_decode/base] Detected DSpark model with distinct embed_tokens weights. Keeping separate embedding weights from the target model.
+(Worker_TP3 pid=222089) INFO 07-24 08:32:33 [llm_base_proposer.py:498] [spec_decode/base] Detected DSpark model with distinct lm_head weights. Keeping separate lm_head weights from the target model.
+(Worker_TP3 pid=222089) INFO 07-24 08:32:34 [model_runner_v1.py:3838] Loading model weights took 6.2804 GB
+(Worker_TP3 pid=222089) INFO 07-24 08:32:34 [model_runner_v1.py:3864] Model runner load_model total time: 11.59 seconds
+(Worker_TP0 pid=222086) INFO 07-24 08:32:34 [default_loader.py:430] Loading weights took 2.36 seconds
+(Worker_TP0 pid=222086) INFO 07-24 08:32:34 [llm_base_proposer.py:452] [spec_decode/base] Detected DSpark model with distinct embed_tokens weights. Keeping separate embedding weights from the target model.
+(Worker_TP0 pid=222086) INFO 07-24 08:32:34 [llm_base_proposer.py:498] [spec_decode/base] Detected DSpark model with distinct lm_head weights. Keeping separate lm_head weights from the target model.
+(Worker_TP2 pid=222088) INFO 07-24 08:32:35 [llm_base_proposer.py:452] [spec_decode/base] Detected DSpark model with distinct embed_tokens weights. Keeping separate embedding weights from the target model.
+(Worker_TP2 pid=222088) INFO 07-24 08:32:35 [llm_base_proposer.py:498] [spec_decode/base] Detected DSpark model with distinct lm_head weights. Keeping separate lm_head weights from the target model.
+(Worker_TP0 pid=222086) INFO 07-24 08:32:35 [model_runner_v1.py:3838] Loading model weights took 6.2804 GB
+(Worker_TP0 pid=222086) INFO 07-24 08:32:35 [model_runner_v1.py:3864] Model runner load_model total time: 12.82 seconds
+(Worker_TP1 pid=222087) INFO 07-24 08:32:35 [llm_base_proposer.py:452] [spec_decode/base] Detected DSpark model with distinct embed_tokens weights. Keeping separate embedding weights from the target model.
+(Worker_TP1 pid=222087) INFO 07-24 08:32:35 [llm_base_proposer.py:498] [spec_decode/base] Detected DSpark model with distinct lm_head weights. Keeping separate lm_head weights from the target model.
+(Worker_TP2 pid=222088) INFO 07-24 08:32:36 [model_runner_v1.py:3838] Loading model weights took 6.2804 GB
+(Worker_TP2 pid=222088) INFO 07-24 08:32:36 [model_runner_v1.py:3864] Model runner load_model total time: 13.56 seconds
+(Worker_TP1 pid=222087) INFO 07-24 08:32:36 [model_runner_v1.py:3838] Loading model weights took 6.2804 GB
+(Worker_TP1 pid=222087) INFO 07-24 08:32:36 [model_runner_v1.py:3864] Model runner load_model total time: 14.14 seconds
+(Worker_TP0 pid=222086) INFO 07-24 08:32:42 [worker_310p.py:118] Available KV cache memory: 12.61 GiB (halved for workspace)
+(EngineCore pid=221789) INFO 07-24 08:32:42 [kv_cache_utils.py:2146] GPU KV cache size: 322,432 tokens
+(EngineCore pid=221789) INFO 07-24 08:32:42 [kv_cache_utils.py:2147] Maximum concurrency for 4,096 tokens per request: 78.72x
+(Worker_TP3 pid=222089) INFO 07-24 08:32:42 [worker.py:751] Free memory on device (41.79/42.67 GiB) on startup. Desired GPU memory utilization is (0.8, 34.14 GiB). Actual usage: 6.28 GiB for weights, 0.83 GiB for peak activation, 0.52 GiB for non-torch memory, 0.0 GiB for NPU graph memory. Replace gpu_memory_utilization with `--kv-cache-memory=28307264307` (26.36 GiB) to fit into requested memory, or `--kv-cache-memory=36527587328` (34.02 GiB) to fully utilize NPU free memory. Current KV cache memory: 12.82 GiB. After warmup: torch reserved memory 19.18 GiB, torch allocated memory 19.15 GiB.
+(Worker_TP2 pid=222088) INFO 07-24 08:32:42 [worker.py:751] Free memory on device (42.2/43.24 GiB) on startup. Desired GPU memory utilization is (0.8, 34.59 GiB). Actual usage: 6.28 GiB for weights, 0.83 GiB for peak activation, 0.52 GiB for non-torch memory, 0.0 GiB for NPU graph memory. Replace gpu_memory_utilization with `--kv-cache-memory=28799084953` (26.82 GiB) to fit into requested memory, or `--kv-cache-memory=36969201664` (34.43 GiB) to fully utilize NPU free memory. Current KV cache memory: 12.96 GiB. After warmup: torch reserved memory 19.18 GiB, torch allocated memory 19.15 GiB.
+(Worker_TP0 pid=222086) INFO 07-24 08:32:42 [worker.py:751] Free memory on device (41.5/43.24 GiB) on startup. Desired GPU memory utilization is (0.8, 34.59 GiB). Actual usage: 6.28 GiB for weights, 0.83 GiB for peak activation, 0.52 GiB for non-torch memory, 0.0 GiB for NPU graph memory. Replace gpu_memory_utilization with `--kv-cache-memory=28797790617` (26.82 GiB) to fit into requested memory, or `--kv-cache-memory=36213121024` (33.73 GiB) to fully utilize NPU free memory. Current KV cache memory: 12.61 GiB. After warmup: torch reserved memory 19.18 GiB, torch allocated memory 19.15 GiB.
+(Worker_TP1 pid=222087) INFO 07-24 08:32:42 [worker.py:751] Free memory on device (42.09/42.67 GiB) on startup. Desired GPU memory utilization is (0.8, 34.14 GiB). Actual usage: 6.28 GiB for weights, 0.83 GiB for peak activation, 0.52 GiB for non-torch memory, 0.0 GiB for NPU graph memory. Replace gpu_memory_utilization with `--kv-cache-memory=28308546355` (26.36 GiB) to fit into requested memory, or `--kv-cache-memory=36844507136` (34.31 GiB) to fully utilize NPU free memory. Current KV cache memory: 12.96 GiB. After warmup: torch reserved memory 19.18 GiB, torch allocated memory 19.15 GiB.
+(Worker_TP0 pid=222086) INFO 07-24 08:32:42 [worker_310p.py:127] Skip warm-up atb ops for 310P device.
+(Worker_TP3 pid=222089) INFO 07-24 08:32:50 [cpu_binding.py:542] [cpu_bind_mode] mode=topo_affinity rank=3 visible_npus=[0, 1, 2, 3, 4, 5, 6, 7]
+(Worker_TP3 pid=222089) WARNING 07-24 08:32:50 [worker.py:763] Bind cpus failed in rank3: CPUs available in 'Cpus_allowed_list' conflict with NUMA affinity. Skip binding cpu.
+(Worker_TP2 pid=222088) INFO 07-24 08:32:50 [cpu_binding.py:542] [cpu_bind_mode] mode=topo_affinity rank=2 visible_npus=[0, 1, 2, 3, 4, 5, 6, 7]
+(Worker_TP2 pid=222088) WARNING 07-24 08:32:50 [worker.py:763] Bind cpus failed in rank2: CPUs available in 'Cpus_allowed_list' conflict with NUMA affinity. Skip binding cpu.
+(Worker_TP1 pid=222087) INFO 07-24 08:32:50 [cpu_binding.py:542] [cpu_bind_mode] mode=topo_affinity rank=1 visible_npus=[0, 1, 2, 3, 4, 5, 6, 7]
+(Worker_TP1 pid=222087) WARNING 07-24 08:32:50 [worker.py:763] Bind cpus failed in rank1: CPUs available in 'Cpus_allowed_list' conflict with NUMA affinity. Skip binding cpu.
+(Worker_TP0 pid=222086) INFO 07-24 08:32:51 [cpu_binding.py:542] [cpu_bind_mode] mode=topo_affinity rank=0 visible_npus=[0, 1, 2, 3, 4, 5, 6, 7]
+(Worker_TP0 pid=222086) WARNING 07-24 08:32:51 [worker.py:763] Bind cpus failed in rank0: CPUs available in 'Cpus_allowed_list' conflict with NUMA affinity. Skip binding cpu.
+(EngineCore pid=221789) INFO 07-24 08:32:51 [core.py:344] init engine (profile, create kv cache, warmup model) took 14.19 s
+(EngineCore pid=221789) INFO 07-24 08:32:52 [vllm.py:1042] Asynchronous scheduling is enabled.
+(EngineCore pid=221789) WARNING 07-24 08:32:52 [vllm.py:1066] Disabling cascade attention (not yet compatible with async speculative decoding).
+(EngineCore pid=221789) WARNING 07-24 08:32:52 [vllm.py:1096] Enforce eager set, disabling torch.compile and CUDAGraphs. This is equivalent to setting -cc.mode=none -cc.cudagraph_mode=none
+(EngineCore pid=221789) WARNING 07-24 08:32:52 [vllm.py:1144] Inductor compilation was disabled by user settings, optimizations settings that are only active during inductor compilation will be ignored.
+(EngineCore pid=221789) INFO 07-24 08:32:52 [kernel.py:292] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native'])
+(EngineCore pid=221789) WARNING 07-24 08:32:52 [vllm.py:1648] max_num_scheduled_tokens is set to 6656 based on the speculative decoding settings. This may lead to suboptimal performance. Consider increasing max_num_batched_tokens to accommodate the additional draft token slots, or decrease num_speculative_tokens or max_num_seqs.
+(EngineCore pid=221789) INFO 07-24 08:32:52 [vllm.py:1322] Cudagraph is disabled under eager mode
+(EngineCore pid=221789) INFO 07-24 08:32:52 [utils.py:174] No quantization signature detected from model files for "/opt/foundation_model/Qwen3-8B". The model will be loaded as float. To force a quantization method, pass "--quantization <method>" explicitly.
+(EngineCore pid=221789) WARNING 07-24 08:32:52 [platform.py:1043] GPU-specific parameter is not supported on Ascend. parameter=disable_cascade_attn, value=True, action: resetting to False.
+(EngineCore pid=221789) INFO 07-24 08:32:52 [ascend_config.py:824] Dynamic EPLB is False
+(EngineCore pid=221789) INFO 07-24 08:32:52 [ascend_config.py:825] The number of redundant experts is 0
+(EngineCore pid=221789) INFO 07-24 08:32:52 [platform.py:486] Compilation disabled, using eager mode by default
+(EngineCore pid=221789) INFO 07-24 08:32:52 [platform.py:770] Set PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
+(EngineCore pid=221789) INFO 07-24 08:32:52 [compilation.py:312] Enabled custom fusions: norm_quant, act_quant
+Rendering prompts: 100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 3/3 [00:00<00:00, 1356.79it/s]
+Processed prompts:   0%|                                                                          | 0/3 [00:00<?, ?it/s, est. speed input: 0.00 toks/s, output: 0.00 toks/s]....(Worker_TP0 pid=222086) WARNING 07-24 08:32:53 [sampler.py:54] [sample/sampler] Triton not available, falling back to vLLM default penalty implementation. Penalty performance may be degraded on NPU. 
+Processed prompts: 100%|█████████████████████████████████████████████████████████████████| 3/3 [00:05<00:00,  1.85s/it, est. speed input: 3.79 toks/s, output: 34.67 toks/s]
+(EngineCore pid=221789) INFO 07-24 08:32:58 [core.py:1214] [shutdown] EngineCore: trigger received signal=SIGTERM
+(EngineCore pid=221789) INFO 07-24 08:32:58 [core.py:1333] [shutdown] EngineCore: start mode=abort timeout=0s
+(EngineCore pid=221789) INFO 07-24 08:32:58 [core.py:1364] [shutdown] EngineCore: request processing complete; starting resource teardown
+(EngineCore pid=221789) INFO 07-24 08:32:58 [core.py:1227] [shutdown] EngineCore: exiting busy loop
+(EngineCore pid=221789) INFO 07-24 08:32:58 [multiproc_executor.py:426] [shutdown] Executor: waiting for worker exit count=4
+(Worker_TP0 pid=222086) INFO 07-24 08:32:58 [multiproc_executor.py:790] Parent process exited, terminating worker queues
+WARNING 07-24 08:33:03 [utils.py:626] [shutdown] Process manager: force killing remaining processes count=1
+FAILED[INFO] Model cache cleared
+
+
+================================================================================= FAILURES ==================================================================================
+____________________________________________________________ test_dspark_tp4_eager_matches_baseline_and_accepts _____________________________________________________________
+
+    @pytest.mark.skipif(
+        _missing(MAIN_MODEL) or _missing(SPEC_MODEL),
+        reason=f"model path not found (MAIN_MODEL={MAIN_MODEL}, SPEC_MODEL={SPEC_MODEL}); "
+        "set QWEN3_8B_PATH / DSPARK_QWEN3_8B_PATH",
+    )
+    def test_dspark_tp4_eager_matches_baseline_and_accepts():
+        # Baseline: identical config, no speculation.
+        with VllmRunner(MAIN_MODEL, **COMMON) as llm:
+            baseline = llm.generate_greedy(PROMPTS, MAX_TOKENS)
+        baseline_ids = [tuple(ids) for ids, _ in baseline]
+    
+        # Speculative: DSpark drafter, same target and config.
+        speculative_config = {
+            "method": "dspark",
+            "model": SPEC_MODEL,
+            "num_speculative_tokens": NUM_SPECULATIVE_TOKENS,
+            "draft_tensor_parallel_size": 4,
+        }
+        with VllmRunner(MAIN_MODEL, speculative_config=speculative_config, **COMMON) as llm:
+            spec = llm.generate_greedy(PROMPTS, MAX_TOKENS)
+            metrics = llm.model.get_metrics()
+        spec_ids = [tuple(ids) for ids, _ in spec]
+    
+        # Correctness: greedy speculative decoding is output-lossless, so the tokens
+        # must be identical to the non-speculative greedy run. Any difference means
+        # the draft/verify/reject loop corrupted the result.
+        for i, (base, sp) in enumerate(zip(baseline_ids, spec_ids)):
+>           assert base == sp, (
+                f"prompt {i}: speculative tokens differ from baseline\n"
+                f"  baseline: {base}\n"
+                f"  spec:     {sp}"
+            )
+E           AssertionError: prompt 2: speculative tokens differ from baseline
+E               baseline: (840, 20772, 304, 825, 11652, 3170, 279, 12884, 374, 6303, 25, 576, 12884, 7952, 6303, 1576, 39020, 374, 36967, 803, 553, 23327, 92859, 320, 12203, 3100, 8, 1091, 5021, 92859, 320, 1151, 3100, 8, 4152, 311, 13255, 62969, 71816, 11, 892, 374, 803, 7373, 369, 9155, 18730, 304, 279, 16566, 13, 4710, 7039, 11, 3410, 264, 11682, 16148, 315, 279, 1852, 24844, 11, 2670, 279, 3476, 315, 13255, 62969, 71816, 11, 279, 18037, 315, 279)
+E               spec:     (840, 20772, 304, 825, 11652, 3170, 279, 12884, 374, 6303, 25, 576, 12884, 7952, 6303, 1576, 39020, 374, 36967, 803, 553, 23327, 92859, 320, 12203, 3100, 8, 1091, 5021, 92859, 320, 1151, 11, 18575, 11, 4992, 6138, 4152, 311, 13255, 62969, 71816, 11, 3259, 6303, 3100, 803, 45841, 304, 279, 16566, 13, 220, 576, 12884, 7952, 6303, 1576, 39020, 374, 36967, 803, 553, 23327, 92859, 320, 12203, 3100, 8, 1091, 5021, 92859, 320, 1151, 11)
+E           assert (840, 20772, ...52, 3170, ...) == (840, 20772, ...52, 3170, ...)
+E             
+E             At index 32 diff: 3100 != 11
+E             
+E             Full diff:
+E               (
+E                   840,
+E                   20772,...
+E             
+E             ...Full output truncated (110 lines hidden), use '-vv' to show
+
+tests/e2e/pull_request/four_card/_310p/test_qwen3_8b_parallel_draft_eager_310p.py:116: AssertionError
+----------------------------------------------------------------------------- Captured log call -----------------------------------------------------------------------------
+INFO     torch_npu.env:patch_getenv.py:15 get env VLLM_USE_V2_MODEL_RUNNER = 0
+INFO     torch_npu.env:patch_getenv.py:15 get env VLLM_WORKER_MULTIPROC_METHOD = spawn
+INFO     torch_npu.env:patch_getenv.py:15 get env PYTORCH_NPU_ALLOC_CONF = expandable_segments:True
+============================================================================= warnings summary ==============================================================================
+../../usr/local/python3.12.13/lib/python3.12/site-packages/torch/jit/_script.py:362: 14 warnings
+  /usr/local/python3.12.13/lib/python3.12/site-packages/torch/jit/_script.py:362: DeprecationWarning: `torch.jit.script_method` is deprecated. Please switch to `torch.compile` or `torch.export`.
+    warnings.warn(
+
+tests/e2e/pull_request/four_card/_310p/test_qwen3_8b_parallel_draft_eager_310p.py::test_dspark_tp4_eager_matches_baseline_and_accepts
+  /vllm-workspace/vllm-ascend/tests/e2e/conftest.py:974: DeprecationWarning: The 'swap_space' parameter is deprecated and ignored. It will be removed in a future version.
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+========================================================================== short test summary info ==========================================================================
+FAILED tests/e2e/pull_request/four_card/_310p/test_qwen3_8b_parallel_draft_eager_310p.py::test_dspark_tp4_eager_matches_baseline_and_accepts - AssertionError: prompt 2: speculative tokens differ from baseline
+================================================================ 1 failed, 15 warnings in 177.09s (0:02:57) =================================================================
+/usr/local/python3.12.13/lib/python3.12/multiprocessing/resource_tracker.py:279: UserWarning: resource_tracker: There appear to be 2 leaked shared_memory objects to clean up at shutdown
+  warnings.warn('resource_tracker: There appear to be %d '
