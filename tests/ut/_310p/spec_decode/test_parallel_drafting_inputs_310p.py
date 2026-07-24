@@ -490,9 +490,13 @@ def make_dspark_proposer(*, num_spec=7, num_groups=1, kv_spec_block_size=BLOCK_S
         SimpleNamespace(kv_cache_group_id=gid, kv_cache_spec=SimpleNamespace(block_size=kv_spec_block_size))
         for gid in gids
     ]
-    p._per_group_block_table_buffers = {
+    # Stub the source, not the derived dict: set_inputs_first_pass rebuilds
+    # _per_group_block_table_buffers from _per_group_block_tables on every call,
+    # so anything written to the former is discarded before it is read.
+    p._per_group_block_tables = {
         gid: torch.arange(2 * 6, dtype=torch.int32).flip(0).reshape(2, 6) + 6 for gid in gids
     }
+    p._per_group_block_table_buffers = {}
     p._per_group_slot_mappings = {gid: torch.arange(64, dtype=torch.int32) * 3 + 7 for gid in gids}
     p._per_group_context_slot_mapping_buffers = {gid: torch.zeros(64, dtype=torch.int32) for gid in gids}
     p._per_group_query_slot_mapping_buffers = {gid: torch.zeros(64, dtype=torch.int32) for gid in gids}
@@ -569,7 +573,7 @@ class TestDSparkDispatch(TestBase):
         self.assertIs(seen["out_context_slot_mapping"], proposer._per_group_context_slot_mapping_buffers[0])
         self.assertIs(seen["out_query_slot_mapping"], proposer._per_group_query_slot_mapping_buffers[0])
         self.assertIs(seen["context_slot_mapping"], proposer._per_group_slot_mappings[0])
-        self.assertIs(seen["block_table"], proposer._per_group_block_table_buffers[0])
+        self.assertIs(seen["block_table"], proposer._per_group_block_tables[0])
 
     def test_multi_group_is_refused_on_310p(self):
         proposer = make_dspark_proposer(num_groups=2)
@@ -607,7 +611,7 @@ class TestDSparkDispatch(TestBase):
         (result, _) = self._run_310p(proposer)
         num_query_total = result[0]
 
-        block_table = proposer._per_group_block_table_buffers[0]
+        block_table = proposer._per_group_block_tables[0]
         want = torch.zeros(64, dtype=torch.int32)
         for req, seq_len in enumerate(self.SEQ_LENS):
             for q_idx in range(self.Q_PER_REQ):

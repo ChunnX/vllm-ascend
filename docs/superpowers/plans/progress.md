@@ -155,6 +155,25 @@ TORCH_DEVICE_BACKEND_AUTOLOAD=0 pytest -q tests/ut/_310p/
 值得记的是：**这条断言本身就是为了防止其余断言变成摆设而写的，它第一次运行就抓到了问题。**
 如果没有它，一个完全忽略 block table 的实现也能让其余用例全绿。
 
+### stub 属性名靠猜（同类错误已发生三次）
+
+1. 计划里把 `_context_slot_mapping_buffers` 写成单数 `_context_slot_mapping_buffer`（review 抓到）；
+2. Task 1.3b 的 DSpark stub 设了 `_per_group_block_table_buffers`，但
+   `set_inputs_first_pass:212-214` 每次调用都会**从 `_per_group_block_tables` 重建它**，
+   所以写进去的东西在被读之前就被丢弃了 → 5 条 `AttributeError`。
+
+根因都是同一个：**按邻近命名推断属性名，而不是读代码确认**。尤其 DSpark 里同时存在
+"源 dict"和"派生 dict"两套同前缀的属性时，stub 必须打在源头。
+
+固定做法——写 stub 前先列出目标方法实际读的每个属性：
+
+```bash
+awk '/    def set_inputs_first_pass/,/    @torch.inference_mode/' \
+    vllm_ascend/spec_decode/dspark_proposer.py | grep -oE "self\.[_a-zA-Z0-9]+" | sort -u
+```
+
+再和 stub 逐项比对。被方法**写入**的属性（如 `_dflash_num_context`）不需要 stub。
+
 ### 回归命令开得太宽（流程问题）
 
 我最初给的回归命令是 `pytest tests/ut/spec_decode/ tests/ut/_310p/`，把 A2（910B）平台的测试
