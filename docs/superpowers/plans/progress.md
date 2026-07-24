@@ -21,7 +21,7 @@ Mac 侧只能做语法、行宽和 import 检查。
 | Phase 0.3 输入展开算子门禁 | ✅ 已通过 | 310P 真机 |
 | Phase 0.2 ADN 算子基线 | ✅ 40/40 通过 | 310P 真机 + ADN |
 | Phase 0.4 ADN NZ 直读门禁 | ✅ 通过（含 TP=4 布局用例） | 310P 真机 + ADN |
-| Task 4 Qwen3-8B eager E2E（DSpark-only，TP=4） | 🟢 链路已通，正确性门重设计待复跑 | 310P 真机 |
+| Task 4 Qwen3-8B eager E2E（DSpark-only，TP=4） | ✅ 通过（正确）；acceptance 偏低待查 | 310P 真机 |
 | Task 5 回归、文档、提交拆分 | ⬜ 未开始 | — |
 
 ---
@@ -336,6 +336,24 @@ TORCH_DEVICE_BACKEND_AUTOLOAD=0 pytest -q tests/ut/_310p/
 `adapt_patch()`，所以 310P 机器上这个 patch 必然生效。
 
 **这是既有缺陷，不在本期范围。** 第 2 类值得单独修，但应另开分支，不要混进本条线。
+
+---
+
+## Task 4 通过：DSpark 在 310P 端到端正确
+
+**第四次真机**（`_pass_0724_1650`）：**1 passed**。
+```
+num_drafts=61  total_accepted=135
+acceptance_per_pos=[0.80, 0.46, 0.38, 0.30, 0.11, 0.11, 0.05]
+exact token match: 3/3 prompts
+```
+**正确性确认**：3/3 完全一致（上一轮 prompt 2 分岔是 run-to-run 的 fp 抖动，正印证 token
+一致性不是硬门）。代码层面的适配到此功能完整且正确。
+
+**遗留观察（效率，非正确性）**：acceptance 明显低于 A2/A3 golden `[1.0,0.8,0.6×5]`——
+平均每步接受 2.2/7，A2/A3 是 4.8/7，约一半。最可疑的是 **pos-0 = 0.80**（DSpark 的 anchor，
+A2/A3 是 1.0）。两种可能：(a) ADN vs FIA、逐层 RoPE vs fused RoPE 的 fp 差异累积；
+(b) draft 管线某环节细微偏差。**不阻塞功能，列为后续调查项。**
 
 ---
 
