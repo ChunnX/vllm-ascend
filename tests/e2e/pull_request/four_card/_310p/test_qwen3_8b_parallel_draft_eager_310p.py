@@ -37,9 +37,9 @@ from tests.e2e.conftest import VllmRunner  # noqa: E402
 
 # Resolve to local paths so the four TP ranks never race to download. Override
 # with QWEN3_8B_PATH / DSPARK_QWEN3_8B_PATH; the defaults are the target host's
-# layout (note the two parent dirs differ). A HF repo id still works if set.
+# layout. A HF repo id still works if set.
 MAIN_MODEL = os.environ.get("QWEN3_8B_PATH", "/opt/foundation_model/Qwen3-8B")
-SPEC_MODEL = os.environ.get("DSPARK_QWEN3_8B_PATH", "/opt/foundation/dspark_qwen3_8b_block7")
+SPEC_MODEL = os.environ.get("DSPARK_QWEN3_8B_PATH", "/opt/foundation_model/dspark_qwen3_8b_block7")
 NUM_SPECULATIVE_TOKENS = 7  # DSpark block7
 
 PROMPTS = [
