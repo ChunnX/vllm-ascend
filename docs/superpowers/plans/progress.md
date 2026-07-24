@@ -16,8 +16,8 @@ Mac 侧只能做语法、行宽和 import 检查。
 | Task 1.1/1.2 无 Triton 输入展开 helper | ✅ 已验证 | CPU 单测 |
 | Task 1.3a DFlash dispatch seam | ✅ 已验证 | CPU 单测 |
 | Task 1.3b DSpark per-group dispatch | ✅ 已验证 | CPU 单测 |
-| Task 2 五层逐层 context RoPE + patch gate | 🟡 待验证 | CPU 单测 |
-| Task 3 ADN adapter + 精确路由 | ⬜ 未开始 | CPU 单测 |
+| Task 2 五层逐层 context RoPE + patch gate | ✅ 已验证 | CPU 单测 |
+| Task 3 ADN adapter + 精确路由 | 🟡 待验证 | CPU 单测 |
 | Phase 0 硬件门禁（ADN NZ readback / 输入展开 op smoke） | ⬜ 未开始 | **需 310P 真机** |
 | Task 4 Qwen3-8B TP=2 eager E2E | ⬜ 未开始 | **需 310P 真机 + checkpoint** |
 | Task 5 回归、文档、提交拆分 | ⬜ 未开始 | — |
@@ -79,8 +79,8 @@ DSpark 复用继承来的 `_expand_drafting_inputs`，不重复定义。它与 D
 
 ### Task 2：五层逐层 context RoPE + patch gate
 
-提交：待填
-验证：**待服务器确认**，预期 25 passed（20 原有 + 5 新增）+ 新文件 5 passed
+提交：`924401ff4`
+验证：**30 passed**（服务器）
 
 三处改动：
 
@@ -110,31 +110,51 @@ DSpark 复用继承来的 `_expand_drafting_inputs`，不重复定义。它与 D
 长度不同（12 vs 18 / 14），这样"只覆盖第一个 forward"的半修复会被抓住。异常路径用例强制
 `is_310p=True`，否则 context manager 直接 yield，断言恒真。
 
+### Task 3：ADN adapter + 精确路由
+
+提交：待填
+验证：**待服务器确认**，预期新增两个文件 37 passed（adapter 30 + routing 7）
+
+新增 `_310p/attention/adn_fused_infer_attention.py`：
+
+- `load_adn()` 惰性导入并缓存。`adn_custom_ops` 的包 `__init__` 顶层 import torchair，
+  急加载会让 torchair 成为每次 310P 运行的硬依赖。导入失败时**明确不回退**——
+  落到 causal splitfuse 会返回看似合理的错数值；
+- `validate_adn_scope()` 锁死本期唯一验证过的配置：method ∈ {dflash:K8, dspark:K7}、
+  draft architecture、`enforce_eager`、TP=2、`(Nq,Nkv,D)==(16,4,128)`、FP16、
+  rank-4 NZ、`get_npu_format == ACL_FORMAT_FRACTAL_NZ`、cache 物理 block == 128。
+  首次调用后置 flag 缓存，不进热路径；
+- `forward_parallel_draft_adn()` 每步动态校验 q-len/kv-len/block table，然后固定
+  `attn_mask=None`、`inner_precise=2`、`force_call=False`、`input_layout="TND"`。
+
+**block size 一律对 `ADN_BLOCK_SIZE` 常量比，不从 cache 反推**。上一版计划里
+`block_size = key_cache.shape[-2]` 之后又断言 `key_cache.shape[-2] != block_size` 是恒真检查。
+
+**返回值严格比 `query_tnd.shape`**，不只比 numel——numel 相同会放过转置或错头的结果。
+
+路由加在 `forward_impl` 最前面：`draft + dflash/dspark + ChunkedPrefill + non-causal` → ADN；
+**其他任何 `causal=False` 抛 `NotImplementedError`**，不静默落到 causal splitfuse。
+guard 只在 310P 的 `forward_impl`，不上移到共享层（会打挂 A2/A3 的 non-causal 路径）。
+
+顺带清掉 `forward_chunked_prefill_310` 里一个冗余的函数内 `_EXTRA_CTX` import
+（已确认 `ascend_forward_context` 不依赖任何 attention 模块，无循环导入风险，
+基类 attention_v1 也是模块级导入它）。
+
 ---
 
 ## 下一步
 
-**Task 3：ADN adapter + 精确路由。**
+**Phase 0 硬件门禁**，需要 310P 真机 + 已安装 ADN：
 
-新增 `_310p/attention/adn_fused_infer_attention.py`（lazy import、scope 锁、forward adapter），
-并在 `_310p/attention/attention_v1.py::forward_impl` 最前面加精确路由：
-`draft + dflash/dspark + ChunkedPrefill + non-causal` → ADN，其他 `causal=False` 主动报错。
+1. `0.2` 跑 Ascend_Ops 现有的 TND no-mask ATK case，记录**实际判据**
+   （YAML 写的是 `standard: acc: default`，没有字面 atol/rtol，要从结果 JSON 或框架配置抄）；
+2. `0.4` NZ writer→ADN 直通：用 `torch_npu.empty_with_format` 分配两个 rank-4 NZ cache
+   （复刻 `model_runner_310p.py:845-850`），`DeviceOperator.reshape_and_cache` 写入，
+   ADN 读回比对 FP32 golden。**scale 必须用运行时的 `128 ** -0.5`**，
+   不是 ATK 基类的 `1/128`（`fia_common.py:508`）；
+3. 覆盖 q=9 / q=7、ragged、1/2/3 页、乱序 physical page、future-token dominance。
 
-注意这一步的 UT 需要 mock `adn_custom_ops`（服务器上未必装了 ADN 包），
-真机数值验证属于 Phase 0，另算。
-
-两件事：
-
-1. `patch/worker/__init__.py` 把 `patch_qwen3_dflash` 移出 `if not is_310p()`
-   （`patch_qwen3_dspark` 已被删除，DSpark 靠继承同一个模型侧实现）；
-2. `patch_qwen3_dflash.py` 的 context RoPE 改为 310P 逐层：当前是把
-   `[L * num_ctx]` 一次性送进 RoPE，而 310P drafting 期的全局 cos/sin buffer 只有
-   `max_num_batched_tokens` 大，5 层 drafter 一定溢出。逐层每次只送 `num_ctx`。
-   同时必须接住 out-of-place 返回值（310P RoPE 返回新 tensor，不原地改）。
-
-外加 §2.2 下半段的 `_profile_rope_context`：profile 路径绕过 `_run_merged_draft`，
-drafting flag 从未打开，两个 forward（context KV 预写 + 紧随的 query forward）都会读到
-target 遗留的 cos/sin slice。用 `try/finally` 把整个 `is_profile` 分支包起来。
+这一步跑不通的话 Task 3 的"直接传 cache 不做 gather"这个前提就不成立，adapter 要重写。
 
 ---
 
