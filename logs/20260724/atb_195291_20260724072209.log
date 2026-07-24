@@ -1,0 +1,4 @@
+[2026-07-24 07:22:09.408679] [error] [196507] [param.cpp:78] tensor.hostData is null
+[2026-07-24 07:22:09.408935] [error] [196507] [self_attention_encoder_fuison_ops_runner_910a.cpp:218] SelfAttentionEncoderFusionOpsRunner910A_1:0  build param from host tensor fail
+[2026-07-24 07:22:09.408950] [error] [196507] [operation_base.cpp:530] SelfAttentionOperation_1 runner setup fail
+[2026-07-24 07:22:09.408956] [error] [196507] [operation_base.cpp:630] SelfAttentionOperation_1 setup fail, error code: 1
