@@ -55,9 +55,11 @@ def require_env():
     except Exception as exc:
         sys.exit(
             f"adn_custom_ops could not be imported ({exc}).\n"
-            "Build and install the Ascend_Ops custom_opp and PTA wheels first; see "
-            "Ascend_Ops/AGENTS.md. This gate cannot be skipped -- the adapter has no "
-            "fallback path."
+            "If the failure names torchair: this scope never uses it, but "
+            "adn_custom_ops/__init__.py imports it at module scope, so it has to be "
+            "importable regardless. Otherwise build and install the Ascend_Ops "
+            "custom_opp and PTA wheels; see Ascend_Ops/AGENTS.md.\n"
+            "This gate cannot be skipped -- the adapter has no fallback path."
         )
 
 
