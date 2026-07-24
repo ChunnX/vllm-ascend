@@ -20,8 +20,8 @@ Mac 侧只能做语法、行宽和 import 检查。
 | Task 3 ADN adapter + 精确路由 | ✅ 已验证 | CPU 单测 |
 | Phase 0.3 输入展开算子门禁 | ✅ 已通过 | 310P 真机 |
 | Phase 0.2 ADN 算子基线 | ✅ 40/40 通过 | 310P 真机 + ADN |
-| Phase 0.4 ADN NZ 直读门禁 | ✅ 5/5 已过；新增 TP=4 布局用例待复跑 | 310P 真机 + ADN |
-| Task 4 Qwen3-8B eager E2E（DSpark-only，TP=4） | ⬜ 未开始 | **需 310P 真机 + DSpark checkpoint** |
+| Phase 0.4 ADN NZ 直读门禁 | ✅ 通过（含 TP=4 布局用例） | 310P 真机 + ADN |
+| Task 4 Qwen3-8B eager E2E（DSpark-only，TP=4） | 🟡 已写，待真机 | **需 310P 真机 + Qwen3-8B + DSpark** |
 | Task 5 回归、文档、提交拆分 | ⬜ 未开始 | — |
 
 ---
@@ -197,6 +197,34 @@ smoke 脚本已改用同一判据（`MEAN_ATOL = 1e-4`）。
   `1/head_dim` 坑不复存在；
 - ADN 的 Python ABI 精简了（移除全部 quant/dequant/antiquant 与 `kv_padding_size`）。
   本期 adapter 全程只用关键字实参且从未传过这些，**核对后无需改动**。
+
+---
+
+### Task 4：Qwen3-8B DSpark TP=4 eager E2E
+
+提交：待填
+状态：**已写，待真机**
+
+`tests/e2e/pull_request/four_card/_310p/test_qwen3_8b_parallel_draft_eager_310p.py`。
+只测 DSpark（K=7）+ TP=4，配置：`dtype=float16`、`block_size=128`、`enforce_eager=True`、
+`distributed_executor_backend="mp"`、`enable_prefix_caching=False`，顶部 `os.environ.setdefault
+("VLLM_USE_V2_MODEL_RUNNER","0")` 锁 MRV1。
+
+两组断言：
+
+1. **正确性（token 一致）** — greedy 投机解码是无损的，所以开投机的输出 token 必须与不开投机的
+   baseline **逐 token 相同**。不一致即 draft/verify/reject 环路有数值 bug。这是最硬的正确性门。
+2. **投机确实在发生且在拒绝** — `num_drafts > 0`、`total_accepted > 0`、
+   **`total_accepted < num_drafts * K`**。第三条关键：光有 token 一致，在"每个 draft 都被拒、
+   静默退化成纯 target 解码"时也会通过；加上界才证明真的在接受又在拒绝。
+
+**不**拿 acceptance 去比 A2/A3 的 golden `[1.0,0.8,0.6,...]`——那是 TP=1/graph 模式在 A2/A3 上测的，
+不是 310P eager。首轮只打印 310P eager 的 acceptance_per_pos 记录，断言只卡结构性质。
+
+两次 8B 加载（baseline + DSpark）各用独立 `with` 上下文，退出即释放。
+
+已知延后项：revision 未 pin SHA（沿用仓库自身 dspark 测试的惯例，不 pin）；exact-token-id 页边界
+prompt 未加（页边界已在 Phase 0.4 NZ 门禁算子层覆盖）。
 
 ---
 
