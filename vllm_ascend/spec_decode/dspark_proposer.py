@@ -12,8 +12,8 @@ from vllm.v1.worker.utils import AttentionGroup
 
 from vllm_ascend.ascend_forward_context import set_ascend_forward_context
 from vllm_ascend.attention.attention_v1 import AscendAttentionState
-from vllm_ascend.ops.triton.spec_decode.utils import copy_and_expand_dflash_and_dspark_inputs_kernel_single_grid
 from vllm_ascend.spec_decode.dflash_proposer import AscendDflashProposer
+from vllm_ascend.utils import is_310p
 
 
 class AscendDSparkProposer(AscendDflashProposer):
@@ -228,40 +228,56 @@ class AscendDSparkProposer(AscendDflashProposer):
         # per kv-cache-group to fill positions / input_ids / query slot_mapping
         # / token_indices (SAMPLE_FROM_ANCHOR: anchor at q_idx=0 is sampled too).
         draft_attn_groups = getattr(self, "draft_attn_groups", [])
+        if is_310p():
+            # Qwen3-8B DSpark has 5 identical attention layers, which vLLM merges
+            # into a single KV cache group. The per-group machinery here exists for
+            # DeepSeek-V4 DSpark; 310P has only been validated for the single-group
+            # case, so refuse rather than silently expanding just one of several.
+            active_gids = [
+                g.kv_cache_group_id
+                for g in draft_attn_groups
+                if self._per_group_block_table_buffers.get(g.kv_cache_group_id) is not None
+            ]
+            if len(active_gids) != 1:
+                raise RuntimeError(
+                    f"310P DSpark drafting only covers a single draft KV cache group, got "
+                    f"{active_gids}. Multi-group DSpark (DeepSeek-V4) is out of scope."
+                )
+
         for attn_group in draft_attn_groups:
             gid = attn_group.kv_cache_group_id
             gid_block_table = self._per_group_block_table_buffers.get(gid)
             if gid_block_table is None:
                 continue
+            # Allocation block size, unchanged from before and deliberately not
+            # pinned here: this line runs on every device. The 310P branch of the
+            # dispatch substitutes resolve_310p_block_size() instead.
             kv_block_size = int(attn_group.kv_cache_spec.block_size)
-            copy_and_expand_dflash_and_dspark_inputs_kernel_single_grid[1,](
-                # Inputs
-                next_token_ids_ptr=next_token_ids,
-                target_positions_ptr=target_positions,
-                context_slot_mapping_ptr=self._per_group_slot_mappings[gid],
-                # Outputs
-                out_input_ids_ptr=self.input_ids,
-                out_context_positions_ptr=self._context_positions_buffer,
-                out_query_positions_ptr=self.positions,
-                out_context_slot_mapping_ptr=self._per_group_context_slot_mapping_buffers[gid],
-                out_query_slot_mapping_ptr=self._per_group_query_slot_mapping_buffers[gid],
-                out_token_indices_ptr=token_indices_to_sample,
-                # Block table
-                block_table_ptr=gid_block_table,
-                block_table_stride=gid_block_table.stride(0),
-                # Metadata
-                query_start_loc_ptr=cad.query_start_loc,
-                seq_lens_ptr=cad.seq_lens,
-                num_rejected_tokens_ptr=num_rejected_tokens_gpu,
-                # Scalars
+            self._expand_drafting_inputs(
+                next_token_ids=next_token_ids,
+                target_positions=target_positions,
+                context_slot_mapping=self._per_group_slot_mappings[gid],
+                out_input_ids=self.input_ids,
+                out_context_positions=self._context_positions_buffer,
+                out_query_positions=self.positions,
+                out_context_slot_mapping=self._per_group_context_slot_mapping_buffers[gid],
+                out_query_slot_mapping=self._per_group_query_slot_mapping_buffers[gid],
+                out_token_indices=token_indices_to_sample,
+                block_table=gid_block_table,
+                query_start_loc=cad.query_start_loc,
+                seq_lens=cad.seq_lens,
+                num_rejected_tokens=num_rejected_tokens_gpu,
                 parallel_drafting_token_id=self.parallel_drafting_token_id,
                 block_size=kv_block_size,
+                # `block_size` above is the paged KV cache block (128); the local
+                # `block_size` below is DSpark's algorithm block, i.e. K (7). Two
+                # different things with the same name -- swapping them does not
+                # raise, it just misplaces every slot.
                 num_query_per_req=block_size,
                 num_speculative_tokens=block_size,
                 total_input_tokens=self._dflash_num_context,
                 batch_size=batch_size,
-                HAS_NUM_REJECTED=has_num_rejected,
-                SAMPLE_FROM_ANCHOR=True,
+                sample_from_anchor=True,
             )
         # to compute self._context_slot_mapping_buffers from dict to list
         self._context_slot_mapping_buffers = [

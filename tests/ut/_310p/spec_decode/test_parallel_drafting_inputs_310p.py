@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import contextlib
 from types import SimpleNamespace
 from unittest.mock import patch as mock_patch
 
@@ -456,3 +457,176 @@ class TestResolve310pBlockSize(TestBase):
     def test_rejects_a_candidate_list_without_the_supported_size(self):
         with self.assertRaisesRegex(RuntimeError, "not in the runner's candidate list"):
             self._resolve(candidates=[64])
+
+
+def make_dspark_proposer(*, num_spec=7, num_groups=1, kv_spec_block_size=BLOCK_SIZE):
+    """Build an AscendDSparkProposer without running __init__.
+
+    DSpark drives the expansion per KV cache group, so it needs the per-group
+    buffers on top of what DFlash uses.
+    """
+    from vllm_ascend.spec_decode.dspark_proposer import AscendDSparkProposer
+
+    p = AscendDSparkProposer.__new__(AscendDSparkProposer)
+    p.num_speculative_tokens = num_spec
+    p.device = torch.device("cpu")
+    p.parallel_drafting_token_id = MASK_ID
+    p.kernel_block_size = BLOCK_SIZE
+    p.kv_cache_gid = 0
+    p.input_ids = torch.zeros(64, dtype=torch.int32)
+    p.positions = torch.zeros(64, dtype=torch.int32)
+    p._context_positions_buffer = torch.zeros(64, dtype=torch.int32)
+    p._dflash_hidden_states = torch.zeros(64, 8)
+    p._dspark_seed_buffer = torch.zeros(64, dtype=torch.int64)
+    p.arange_dflash = torch.arange(65, dtype=torch.int32)
+    p.token_arange_np = np.arange(65, dtype=np.int32)
+    p.runner = SimpleNamespace(
+        input_batch=SimpleNamespace(block_table={0: SimpleNamespace(block_size=BLOCK_SIZE)}),
+        kernel_block_sizes={0: [128, 64]},
+    )
+
+    gids = list(range(num_groups))
+    p.draft_attn_groups = [
+        SimpleNamespace(kv_cache_group_id=gid, kv_cache_spec=SimpleNamespace(block_size=kv_spec_block_size))
+        for gid in gids
+    ]
+    p._per_group_block_table_buffers = {
+        gid: torch.arange(2 * 6, dtype=torch.int32).flip(0).reshape(2, 6) + 6 for gid in gids
+    }
+    p._per_group_slot_mappings = {gid: torch.arange(64, dtype=torch.int32) * 3 + 7 for gid in gids}
+    p._per_group_context_slot_mapping_buffers = {gid: torch.zeros(64, dtype=torch.int32) for gid in gids}
+    p._per_group_query_slot_mapping_buffers = {gid: torch.zeros(64, dtype=torch.int32) for gid in gids}
+    p._layer_group_idx = gids
+    return p
+
+
+class TestDSparkDispatch(TestBase):
+    CTX_LENS = [2, 4]
+    SEQ_LENS = [257, 134]
+    Q_PER_REQ = 7  # DSpark queries K positions, not K + 1
+
+    def _call(self, proposer, cad):
+        total = sum(self.CTX_LENS)
+        return proposer.set_inputs_first_pass(
+            target_token_ids=torch.zeros(total, dtype=torch.int32),
+            next_token_ids=torch.tensor([11, 22], dtype=torch.int32),
+            target_positions=torch.cat(
+                [
+                    torch.arange(n_seq - n_ctx, n_seq, dtype=torch.int32)
+                    for n_ctx, n_seq in zip(self.CTX_LENS, self.SEQ_LENS)
+                ]
+            ),
+            target_hidden_states=torch.zeros(total, 8),
+            token_indices_to_sample=None,
+            cad=cad,
+            num_rejected_tokens_gpu=None,
+        )
+
+    def _run_310p(self, proposer, spy=None):
+        """Drive set_inputs_first_pass as if on 310P.
+
+        `is_310p` is patched in both modules: dspark_proposer reads it for the
+        single-group scope guard, dflash_proposer for the dispatch itself.
+        With spy=None the real helper runs, so the wiring is exercised end to end.
+        """
+        cad = make_dflash_cad(self.CTX_LENS, self.SEQ_LENS)
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock_patch(f"{DFLASH_MOD}.is_310p", return_value=True))
+            stack.enter_context(
+                mock_patch("vllm_ascend.spec_decode.dspark_proposer.is_310p", return_value=True)
+            )
+            stack.enter_context(
+                mock_patch(
+                    f"{DFLASH_MOD}.copy_and_expand_dflash_and_dspark_inputs_kernel_single_grid",
+                    _ExplodingLauncher(),
+                )
+            )
+            if spy is not None:
+                stack.enter_context(mock_patch(f"{HELPER_MOD}.expand_parallel_drafting_inputs", spy))
+            return self._call(proposer, cad), cad
+
+    def test_single_group_calls_helper_once_with_dspark_semantics(self):
+        calls = []
+
+        def spy(**kwargs):
+            calls.append(kwargs)
+
+        proposer = make_dspark_proposer()
+        self._run_310p(proposer, spy=spy)
+
+        self.assertEqual(len(calls), 1, "Qwen3-8B DSpark must drive exactly one draft KV group")
+        seen = calls[0]
+        # DSpark queries K positions and samples from the anchor; DFlash does K + 1
+        # and skips it. Getting these wrong does not raise, it only degrades
+        # acceptance, so assert them explicitly.
+        self.assertEqual(seen["num_query_per_req"], 7)
+        self.assertEqual(seen["num_speculative_tokens"], 7)
+        self.assertIs(seen["sample_from_anchor"], True)
+        # 310P substitutes the pinned kernel block size for the caller's allocation
+        # block size, so this is 128 (the cache block), not 7 (the algorithm block).
+        self.assertEqual(seen["block_size"], BLOCK_SIZE)
+        # Per-group buffers, not the DFlash flat ones.
+        self.assertIs(seen["out_context_slot_mapping"], proposer._per_group_context_slot_mapping_buffers[0])
+        self.assertIs(seen["out_query_slot_mapping"], proposer._per_group_query_slot_mapping_buffers[0])
+        self.assertIs(seen["context_slot_mapping"], proposer._per_group_slot_mappings[0])
+        self.assertIs(seen["block_table"], proposer._per_group_block_table_buffers[0])
+
+    def test_multi_group_is_refused_on_310p(self):
+        proposer = make_dspark_proposer(num_groups=2)
+        with self.assertRaisesRegex(RuntimeError, "single draft KV cache group"):
+            self._run_310p(proposer, spy=lambda **kw: None)
+
+    def test_metadata_matches_dspark_layout(self):
+        proposer = make_dspark_proposer()
+        (result, _) = self._run_310p(proposer)
+        num_query_total, token_indices, out_cad, _ = result
+
+        from vllm_ascend.attention.attention_v1 import AscendAttentionState
+
+        self.assertEqual(num_query_total, 2 * self.Q_PER_REQ)
+        self.assertEqual(token_indices.shape[0], 2 * self.Q_PER_REQ)
+        self.assertEqual(out_cad.num_actual_tokens, 2 * self.Q_PER_REQ)
+        self.assertEqual(out_cad.num_input_tokens, 2 * self.Q_PER_REQ)
+        self.assertEqual(out_cad.max_query_len, self.Q_PER_REQ)
+        self.assertEqual(out_cad.positions.shape[0], 2 * self.Q_PER_REQ)
+        self.assertIs(out_cad.causal, False)
+        self.assertIsNone(out_cad.attn_mask)
+        self.assertEqual(out_cad.attn_state, AscendAttentionState.ChunkedPrefill)
+        self.assertEqual(out_cad.actual_seq_lengths_q, [self.Q_PER_REQ] * 2)
+        torch.testing.assert_close(
+            out_cad.seq_lens,
+            torch.tensor([257 + self.Q_PER_REQ, 134 + self.Q_PER_REQ], dtype=torch.int32),
+        )
+        # slot_mapping must come from the primary group's query buffer.
+        expected = proposer._per_group_query_slot_mapping_buffers[0][: 2 * self.Q_PER_REQ]
+        self.assertEqual(out_cad.slot_mapping.data_ptr(), expected.data_ptr())
+
+    def test_slot_mapping_matches_the_verified_helper(self):
+        """Runs the real helper end to end, so the per-group wiring is checked."""
+        proposer = make_dspark_proposer()
+        (result, _) = self._run_310p(proposer)
+        num_query_total = result[0]
+
+        block_table = proposer._per_group_block_table_buffers[0]
+        want = torch.zeros(64, dtype=torch.int32)
+        for req, seq_len in enumerate(self.SEQ_LENS):
+            for q_idx in range(self.Q_PER_REQ):
+                cache_pos = seq_len + q_idx
+                physical = int(block_table[req, cache_pos // BLOCK_SIZE])
+                want[req * self.Q_PER_REQ + q_idx] = physical * BLOCK_SIZE + cache_pos % BLOCK_SIZE
+        torch.testing.assert_close(
+            proposer._per_group_query_slot_mapping_buffers[0][:num_query_total],
+            want[:num_query_total],
+        )
+
+    def test_non_310p_still_launches_triton(self):
+        proposer = make_dspark_proposer()
+        cad = make_dflash_cad(self.CTX_LENS, self.SEQ_LENS)
+        with (
+            mock_patch(f"{DFLASH_MOD}.is_310p", return_value=False),
+            mock_patch("vllm_ascend.spec_decode.dspark_proposer.is_310p", return_value=False),
+            mock_patch(f"{DFLASH_MOD}.copy_and_expand_dflash_and_dspark_inputs_kernel_single_grid",
+                       _ExplodingLauncher()),
+        ):
+            with self.assertRaisesRegex(AssertionError, "Triton kernel was launched"):
+                self._call(proposer, cad)
