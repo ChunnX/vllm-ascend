@@ -1,0 +1,17 @@
+INFO 07-24 03:24:39 [__init__.py:44] Available plugins for group vllm.platform_plugins:
+INFO 07-24 03:24:39 [__init__.py:46] - ascend -> vllm_ascend:register
+INFO 07-24 03:24:39 [__init__.py:49] All plugins in this group will be loaded. Set `VLLM_PLUGINS` to control which plugins to load.
+INFO 07-24 03:24:39 [__init__.py:237] Platform plugin ascend is activated
+INFO 07-24 03:24:39 [platform.py:61] Breakable cudagraph is force disabled on Ascend because DeepSeek V4 PIECEWISE cudagraph is not supported yet.
+INFO 07-24 03:24:46 [importing.py:88] Triton not installed or not compatible; certain GPU-related functions will not be available.
+Comparing the 310P helper on NPU against the same helper on CPU.
+
+[W724 03:25:00.269073970 AddKernelNpu.cpp:82] Warning: The oprator of add is executed, Currently High Accuracy but Low Performance OP with 64-bit has been used, Please Do Some Cast at Python Functions with 32-bit for Better Performance! (function operator())
+.[PASS] DFlash q=9, ragged segment, distinct seq_lens
+[PASS] DSpark q=7, ragged segment, distinct seq_lens
+[PASS] rejected tail (advanced indexing with a computed index)
+[PASS] query slots crossing a page boundary (seq_len=127)
+[PASS] query slots crossing a page boundary (seq_len=128)
+[PASS] query slots crossing a page boundary (seq_len=129)
+
+PASS: every op the helper needs works on 310P and agrees with CPU.

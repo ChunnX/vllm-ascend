@@ -1,0 +1,25 @@
+scale = 0.08838835  (ATK uses 1/head_dim = 0.00781250; production uses this one)
+tolerance atol=0.005 rtol=0.005  <-- replace with the value Phase 0.2 recorded
+
+INFO 07-24 03:22:13 [__init__.py:44] Available plugins for group vllm.platform_plugins:
+INFO 07-24 03:22:13 [__init__.py:46] - ascend -> vllm_ascend:register
+INFO 07-24 03:22:13 [__init__.py:49] All plugins in this group will be loaded. Set `VLLM_PLUGINS` to control which plugins to load.
+INFO 07-24 03:22:13 [__init__.py:237] Platform plugin ascend is activated
+INFO 07-24 03:22:13 [platform.py:61] Breakable cudagraph is force disabled on Ascend because DeepSeek V4 PIECEWISE cudagraph is not supported yet.
+INFO 07-24 03:22:20 [importing.py:88] Triton not installed or not compatible; certain GPU-related functions will not be available.
+[PASS] DFlash q=9, single request, 2 pages: max_abs=0.000657 mean_abs=0.000065
+[PASS] DFlash q=9, ragged batch, 1/2/3 pages: max_abs=0.001195 mean_abs=0.000078
+[PASS] DSpark q=7, ragged batch, 1/2/3 pages: max_abs=0.001195 mean_abs=0.000079
+Traceback (most recent call last):
+  File "/vllm-workspace/vllm-ascend/tests/e2e/_310p/adn/smoke_adn_nz_readback.py", line 275, in <module>
+    main()
+  File "/vllm-workspace/vllm-ascend/tests/e2e/_310p/adn/smoke_adn_nz_readback.py", line 256, in main
+    run_case("page-boundary KV lengths", [9, 9, 9], [127, 128, 129])
+  File "/vllm-workspace/vllm-ascend/tests/e2e/_310p/adn/smoke_adn_nz_readback.py", line 169, in run_case
+    block_table_cpu = shuffled_block_table(batch, pages_per_req, num_blocks)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/vllm-workspace/vllm-ascend/tests/e2e/_310p/adn/smoke_adn_nz_readback.py", line 111, in shuffled_block_table
+    assert bool((table != identity).all()), "block table has a fixed point; regenerate with another seed"
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: block table has a fixed point; regenerate with another seed
+[ERROR] 2026-07-24-03:22:30 (PID:152119, Device:0, RankID:-1) ERR99999 UNKNOWN applicaiton exception
