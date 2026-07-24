@@ -228,8 +228,18 @@ class AscendAttentionBackendImpl310(AscendAttentionBackendImpl):
         Returns:
             The output tensor after flash attention.
         """
-        real_tokens = int(attn_metadata.seq_lens.sum().item())
+        # ATB's SelfAttention encoder reads seq_len from host memory. In non-spec
+        # runs the builder hands out a CPU tensor, so this held implicitly; but
+        # parallel drafting (DFlash/DSpark) makes the builder return a device
+        # tensor for the A2/A3 FIA path (attention_v1.py: parallel_drafting
+        # branch), and passing that straight through segfaults ATB with
+        # "tensor.hostData is null". Coerce to host here -- the mirror of
+        # forward_paged_attention, which coerces seq_lens to device for the paged
+        # op. Each path pins seq_lens to what its own operator needs.
         seq_len = attn_metadata.seq_lens
+        if seq_len.device.type != "cpu":
+            seq_len = seq_len.cpu()
+        real_tokens = int(seq_len.sum().item())
         aligned_tokens = int(query.shape[0])
         delta = aligned_tokens - real_tokens
 

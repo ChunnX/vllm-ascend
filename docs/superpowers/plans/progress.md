@@ -339,6 +339,36 @@ TORCH_DEVICE_BACKEND_AUTOLOAD=0 pytest -q tests/ut/_310p/
 
 ---
 
+## 真机踩坑：parallel_drafting 把 seq_lens 变 device，310P prefill 段错误
+
+**首次真机 E2E 崩溃**（`atb_195291`）：
+```
+[param.cpp:78] tensor.hostData is null
+[self_attention_encoder_fuison_ops_runner_910a.cpp:218] build param from host tensor fail
+```
+segfault，不是 Python 异常。"910a" 只是 ATB 这个 SelfAttention 融合算子的 kernel 家族名，
+310P/300I-DUO 共用这套 runner，**不代表跑到了 910 硬件**。
+
+**根因**：baseline（无投机）成功（3/3, 30 tok/s），只有 DSpark 崩。基类
+`AscendMetadata.build`（`attention_v1.py:299`）有一条 `parallel_drafting` 分支把 `seq_lens`
+设成 **device 张量**（为 A2/A3 的 FIA 加的，那边 FIA 要 device）。DSpark 的
+`parallel_drafting=True` 让**整个引擎**（含 target 的 prefill）都拿到 device seq_lens。而 310P 的
+`forward_prefill_310` 把它直接当 host 传给 ATB SelfAttention encoder → `hostData is null` → 段错误。
+
+有意思的是两个 310P 路径要求相反：`forward_paged_attention`（decode）显式把 seq_lens 搬到
+**device**，`forward_prefill_310`（prefill）需要 **host**。非投机时基类给 CPU，prefill 正好；
+投机翻成 device，prefill 就炸。**DSpark 在 310P 跑是第一次，这个潜伏不兼容第一次被触发。**
+
+**修法**：`forward_prefill_310` 里把 seq_len 强制到 host（`.cpu()`），对称于 decode 的强制到
+device——每条路各自把 seq_lens 钉到自己算子需要的位置，不依赖基类 builder 的猜测。附一条 CPU
+单测：mock 一个 device seq_lens，断言传给 `_npu_flash_attention` 的是 host 张量。
+
+**排查心得**：`EngineDeadError` / shm `RuntimeError: cancelled` 全是 worker 死后的包装，
+根因在**独立的 atb_*.log**（segfault 不进 Python 栈）。以及先确认 baseline 成没成——它成了
+就把范围从"310P prefill 普遍坏"缩到"DSpark 特有"，直接指向 parallel_drafting。
+
+---
+
 ## 踩过的坑
 
 ### block table fixture 的不动点（`585d6d6aa`）
