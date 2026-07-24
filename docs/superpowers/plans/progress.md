@@ -20,8 +20,8 @@ Mac 侧只能做语法、行宽和 import 检查。
 | Task 3 ADN adapter + 精确路由 | ✅ 已验证 | CPU 单测 |
 | Phase 0.3 输入展开算子门禁 | ✅ 已通过 | 310P 真机 |
 | Phase 0.2 ADN 算子基线 | ✅ 40/40 通过 | 310P 真机 + ADN |
-| Phase 0.4 ADN NZ 直读门禁 | 🟡 5/5 数值已过，dominance 判据修正待复跑 | 310P 真机 + ADN |
-| Task 4 Qwen3-8B TP=2 eager E2E | ⬜ 未开始 | **需 310P 真机 + checkpoint** |
+| Phase 0.4 ADN NZ 直读门禁 | ✅ 5/5 已过；新增 TP=4 布局用例待复跑 | 310P 真机 + ADN |
+| Task 4 Qwen3-8B eager E2E（DSpark-only，TP=4） | ⬜ 未开始 | **需 310P 真机 + DSpark checkpoint** |
 | Task 5 回归、文档、提交拆分 | ⬜ 未开始 | — |
 
 ---
@@ -197,6 +197,27 @@ smoke 脚本已改用同一判据（`MEAN_ATOL = 1e-4`）。
   `1/head_dim` 坑不复存在；
 - ADN 的 Python ABI 精简了（移除全部 quant/dequant/antiquant 与 `kv_padding_size`）。
   本期 adapter 全程只用关键字实参且从未传过这些，**核对后无需改动**。
+
+---
+
+## scope 调整：放开 TP（2026-07-24）
+
+原设计把 ADN scope 锁死在 **TP=2 + 硬编码 (Nq,Nkv)=(16,4)**。实机要用 **TP=4**，据此放开：
+
+- **TP 不再校验。** TP 只是把 head 切到各 rank，每个 rank 跑相同的 attention，不改数值。
+  真正要管的是 per-rank head 布局；
+- **head 布局改为结构约束**，不硬编码具体数：`0 < head_dim <= 256`、
+  `head_dim * block <= 16384`（block=128 时自然把 head_dim 卡在 <=128）、`Nq % Nkv == 0`、
+  `Nq/Nkv <= 64`、`Nkv * head_dim` 16 对齐。TP=2(16/4)、TP=4(8/2)、TP=8(4/1) 都自然通过；
+- 这也更稳：drafter 的确切 head 数由 checkpoint 决定，结构约束不依赖我猜数字。
+
+`validate_adn_scope` 相应重写，单测把"拒绝 TP=4 / 拒绝 Nq=16 外的布局"两条换成
+"TP=4 布局放行 + 非法 GQA/非 16 对齐拒绝"。NZ 直读门禁参数化 head 数，新增一个
+**TP=4 布局(8/2, NZ dim1=16)** 用例——因为 TP=4 是实机实际要跑的，dim1 从 32 变 16，
+给 writer/reader 路径在该维度一个真机证据，而不是假设它和 dim1=32 一样。
+
+**Task 4 随之收窄**：实机只有 DSpark checkpoint，只测 DSpark（K=7）+ TP=4。DFlash 端到端延后
+（无 checkpoint），但其 q=9/skip-anchor 布局有 CPU 单测 + Phase 0.4 的 DFlash q=9 门禁覆盖。
 
 ---
 

@@ -89,7 +89,7 @@ if getattr(draft_hf_config, "ptd_token_id", None) is None:
 | Runner | Model Runner V1；启动时显式 `VLLM_USE_V2_MODEL_RUNNER=0` |
 | 执行模式 | `enforce_eager=True`；不捕获、不回放 ACLGraph |
 | dtype | target、draft 和 KV cache 全部为 FP16 |
-| 并行 | target TP=2，draft TP=2，`distributed_executor_backend="mp"` |
+| 并行 | TP 不锁死；每 rank head 布局满足结构约束即可（TP=2→16/4，TP=4→8/2）。本轮实机用 **TP=4**，`distributed_executor_backend="mp"` |
 | Attention layout | query 为 TND；K/V 为 310P NZ paged cache |
 | KV block size | vLLM 运行参数和实际 kernel block size 均为 128 |
 | Sampling | greedy，`temperature=0` |
@@ -230,7 +230,7 @@ Triton 分支仍然用它。所以本期不修改它的赋值，但要用 guard 
 | `actual_seq_lengths_q` | Python `list[int]`，每请求 raw q-len `[9, ...]` 或 `[7, ...]` |
 | `actual_seq_lengths_kv` | Python `list[int]`，每请求包含当前 query 的总 KV 长度 |
 | `block_table` | NPU int32 rank-2 physical page IDs |
-| `num_heads` / `num_key_value_heads` | TP=2 后 local Nq=16、local Nkv=4 |
+| `num_heads` / `num_key_value_heads` | 每 rank local 值；TP=2→16/4，TP=4→8/2，由结构约束校验 |
 | `block_size` | 128 |
 | `input_layout` | `"TND"` |
 | `scale_value` | `128 ** -0.5` |
@@ -1716,9 +1716,15 @@ import torch_npu
 from vllm_ascend._310p.attention.metadata_builder import get_query_lens_cpu
 from vllm_ascend.utils import ACL_FORMAT_FRACTAL_NZ
 
-# The single supported configuration for this scope. These are not ADN's generic
-# limits -- they are the exact shape this plan validated on hardware. Anything
-# else must fail at startup rather than run unvalidated.
+# NOTE (2026-07-24 amendment): the TP=2 / hardcoded-head-count version below is
+# superseded. The implemented validator (validate_adn_scope in
+# _310p/attention/adn_fused_infer_attention.py) does NOT pin TP or a fixed head
+# count. TP only shards heads across ranks without changing the numerics, and the
+# drafter's exact head layout comes from its checkpoint, so the per-rank layout is
+# constrained structurally instead: 0 < head_dim <= 256, head_dim * block <= 16384
+# (which caps head_dim at 128 given block=128), Nq % Nkv == 0, Nq/Nkv <= 64, and
+# Nkv*head_dim 16-aligned. This lets TP=2 (16/4) and TP=4 (8/2) both run. The
+# source is authoritative; the snapshot below is kept only for narrative context.
 ADN_BLOCK_SIZE = 128
 ADN_HEAD_DIM = 128
 ADN_LOCAL_NUM_HEADS = 16  # Qwen3-8B: 32 Q heads / TP=2
@@ -2052,10 +2058,17 @@ TORCH_DEVICE_BACKEND_AUTOLOAD=0 pytest -sv tests/ut/_310p/attention/test_paralle
 
 ---
 
-### Task 4：Qwen3-8B TP=2 eager E2E
+### Task 4：Qwen3-8B eager E2E
 
-测试放在 `four_card/_310p` 是刻意的：当前 CI 没有 310P 双卡路由，四卡 runner 上的测试本身
-只申请 TP=2。完成后更新 `.github/workflows/scripts/test_config.yaml` 的 estimated time。
+> **NOTE (2026-07-24 amendment):** 实机只有 `deepseek-ai/dspark_qwen3_8b_block7`，且要用 **TP=4**。
+> 因此本轮 E2E **只测 DSpark（K=7）**，`tensor_parallel_size=4`、`draft_tensor_parallel_size=4`。
+> DFlash 没有 checkpoint，端到端**延后**——但它并非零覆盖：DFlash 的 q=9 / skip-anchor 布局有
+> CPU 单测，且 Phase 0.4 的 NZ 门禁包含 DFlash q=9 用例，attention 算子层已验证。下面 4.1 里
+> DFlash 的 runner 本轮跳过，其余（baseline vs spec 一致性、acceptance 防全拒绝、精确页边界）
+> 照常，只是 runner 从三个减为两个（baseline + DSpark）。
+
+测试放在 `four_card/_310p` 是刻意的：四卡 runner 正好申请到 TP=4。完成后更新
+`.github/workflows/scripts/test_config.yaml` 的 estimated time。
 
 #### 4.1 固定 runner 配置
 

@@ -84,14 +84,14 @@ DTYPE = torch.float16
 MEAN_ATOL = 1e-4
 
 
-def allocate_production_caches(num_blocks):
+def allocate_production_caches(num_blocks, num_kv_heads):
     """Allocate exactly as the 310P model runner does."""
     import torch_npu
 
     from vllm_ascend._310p.attention.attention_v1 import AscendAttentionBackend310
     from vllm_ascend.utils import ACL_FORMAT_FRACTAL_NZ
 
-    full_shape = AscendAttentionBackend310.get_kv_cache_shape(num_blocks, BLOCK_SIZE, NUM_KV_HEADS, HEAD_DIM)
+    full_shape = AscendAttentionBackend310.get_kv_cache_shape(num_blocks, BLOCK_SIZE, num_kv_heads, HEAD_DIM)
     per_cache_shape = full_shape[1:]  # drop the leading 2; K and V are separate tensors
     key_cache = torch_npu.empty_with_format(
         size=per_cache_shape, dtype=DTYPE, device=DEVICE, acl_format=ACL_FORMAT_FRACTAL_NZ
@@ -148,7 +148,7 @@ def write_cache(key_cache, value_cache, key_nd, value_nd, kv_lens, block_table_c
         )
 
 
-def golden(query, key_nd, value_nd, q_lens, kv_lens, *, causal=False):
+def golden(query, key_nd, value_nd, q_lens, kv_lens, num_heads, num_kv_heads, *, causal=False):
     """softmax(QK^T * scale) V in fp32.
 
     With causal=True the query block is treated as sitting at the end of the KV
@@ -157,7 +157,7 @@ def golden(query, key_nd, value_nd, q_lens, kv_lens, *, causal=False):
     """
     outputs = []
     q_offset = 0
-    repeats = NUM_HEADS // NUM_KV_HEADS
+    repeats = num_heads // num_kv_heads
     for b, (q_len, kv_len) in enumerate(zip(q_lens, kv_lens)):
         q = query[q_offset : q_offset + q_len].float()
         k = key_nd[b, :kv_len].float().repeat_interleave(repeats, dim=1)
@@ -173,7 +173,8 @@ def golden(query, key_nd, value_nd, q_lens, kv_lens, *, causal=False):
     return torch.cat(outputs, dim=0)
 
 
-def run_case(name, q_lens, kv_lens, *, value_builder=None, assert_accuracy=True):
+def run_case(name, q_lens, kv_lens, *, value_builder=None, assert_accuracy=True,
+             num_heads=NUM_HEADS, num_kv_heads=NUM_KV_HEADS):
     import adn_custom_ops
 
     batch = len(q_lens)
@@ -188,15 +189,15 @@ def run_case(name, q_lens, kv_lens, *, value_builder=None, assert_accuracy=True)
     block_table = block_table_cpu.to(DEVICE)
 
     generator = torch.Generator().manual_seed(1234)
-    key_nd = torch.randn(batch, max_kv, NUM_KV_HEADS, HEAD_DIM, generator=generator).to(DTYPE)
+    key_nd = torch.randn(batch, max_kv, num_kv_heads, HEAD_DIM, generator=generator).to(DTYPE)
     value_nd = (
         value_builder(batch, max_kv, kv_lens)
         if value_builder is not None
-        else torch.randn(batch, max_kv, NUM_KV_HEADS, HEAD_DIM, generator=generator).to(DTYPE)
+        else torch.randn(batch, max_kv, num_kv_heads, HEAD_DIM, generator=generator).to(DTYPE)
     )
-    query = torch.randn(sum(q_lens), NUM_HEADS, HEAD_DIM, generator=generator).to(DTYPE)
+    query = torch.randn(sum(q_lens), num_heads, HEAD_DIM, generator=generator).to(DTYPE)
 
-    key_cache, value_cache = allocate_production_caches(num_blocks)
+    key_cache, value_cache = allocate_production_caches(num_blocks, num_kv_heads)
     write_cache(key_cache, value_cache, key_nd.to(DEVICE), value_nd.to(DEVICE), kv_lens, block_table_cpu)
 
     out = adn_custom_ops.adn_fused_infer_attention(
@@ -207,8 +208,8 @@ def run_case(name, q_lens, kv_lens, *, value_builder=None, assert_accuracy=True)
         actual_seq_lengths_q=list(q_lens),
         actual_seq_lengths_kv=list(kv_lens),
         block_table=block_table,
-        num_heads=NUM_HEADS,
-        num_key_value_heads=NUM_KV_HEADS,
+        num_heads=num_heads,
+        num_key_value_heads=num_kv_heads,
         block_size=BLOCK_SIZE,
         input_layout="TND",
         scale_value=SCALE,
@@ -216,7 +217,7 @@ def run_case(name, q_lens, kv_lens, *, value_builder=None, assert_accuracy=True)
         force_call=False,
     )
 
-    reference = golden(query, key_nd, value_nd, q_lens, kv_lens)
+    reference = golden(query, key_nd, value_nd, q_lens, kv_lens, num_heads, num_kv_heads)
     actual = out.cpu().float()
     diff = (actual - reference).abs()
     max_err, mean_err = diff.max().item(), diff.mean().item()
@@ -255,7 +256,9 @@ def future_token_dominance():
 
     case = run_case("future-token dominance", q_lens, kv_lens, value_builder=build_values, assert_accuracy=False)
 
-    causal_reference = golden(case["query"], case["key_nd"], case["value_nd"], q_lens, kv_lens, causal=True)
+    causal_reference = golden(
+        case["query"], case["key_nd"], case["value_nd"], q_lens, kv_lens, NUM_HEADS, NUM_KV_HEADS, causal=True
+    )
     goldens_gap = (case["reference"] - causal_reference).abs().mean().item()
     if goldens_gap <= MEAN_ATOL:
         FAILURES.append(
@@ -282,13 +285,22 @@ def main():
     print(f"scale = {SCALE:.8f}  (same as production and Ascend_Ops/tests/test_adn_fia.py)")
     print(f"criterion: mean_abs <= {MEAN_ATOL}  (from Ascend_Ops/tests/test_adn_fia.py)\n")
 
+    # Default head layout is Qwen3-8B at TP=2 (16 query / 4 KV heads).
     # DFlash queries K+1 = 9 per request, DSpark K = 7. KV lengths span one, two
     # and three pages, with the last two straddling a page boundary.
+    print("--- TP=2 layout: 16 query / 4 KV heads (NZ dim1=32) ---")
     run_case("DFlash q=9, single request, 2 pages", [9], [200])
     run_case("DFlash q=9, ragged batch, 1/2/3 pages", [9, 9, 9], [65, 133, 257])
     run_case("DSpark q=7, ragged batch, 1/2/3 pages", [7, 7, 7], [65, 133, 257])
     run_case("page-boundary KV lengths", [9, 9, 9], [127, 128, 129])
     future_token_dominance()
+
+    # TP=4 halves both head counts, which changes the NZ dim1 from 32 to 16. That
+    # is the layout the E2E actually runs, so give the writer/reader path evidence
+    # at that dimension rather than trusting it to behave like dim1=32.
+    print("\n--- TP=4 layout: 8 query / 2 KV heads (NZ dim1=16) ---")
+    run_case("DSpark q=7, ragged batch, TP=4 layout", [7, 7, 7], [65, 133, 257],
+             num_heads=8, num_kv_heads=2)
 
     print()
     if FAILURES:

@@ -20,14 +20,17 @@ import torch_npu
 from vllm_ascend._310p.attention.metadata_builder import get_query_lens_cpu
 from vllm_ascend.utils import ACL_FORMAT_FRACTAL_NZ
 
-# The single configuration this path has been validated at. These are not ADN's
-# generic limits: they pin Qwen3-8B at TP=2, which is the only shape whose
-# numerics anyone has checked. Anything else fails at startup rather than
-# running unvalidated.
+# The configuration this path covers. TP is deliberately not pinned: it slices
+# the head dimension and every rank runs the same attention on its own shard, so
+# it does not change the numerics. What matters is the per-rank head layout, and
+# that is constrained structurally below (GQA legality + ADN's NZ alignment)
+# rather than by hardcoding a head count, since the drafter's exact head layout
+# comes from its checkpoint. head_dim is bounded to <= 128 by the fixed 128-token
+# block through ADN's head_dim * block_size <= 16384 rule.
 ADN_BLOCK_SIZE = 128
-ADN_HEAD_DIM = 128
-ADN_LOCAL_NUM_HEADS = 16  # Qwen3-8B: 32 query heads / TP=2
-ADN_LOCAL_NUM_KV_HEADS = 4  # Qwen3-8B: 8 KV heads / TP=2
+ADN_MAX_HEAD_DIM = 256  # ADN's own ceiling
+ADN_MAX_HEAD_DIM_X_BLOCK = 16384  # ADN's own ceiling; with block=128 this caps head_dim at 128
+ADN_MAX_GQA_RATIO = 64  # ADN's own ceiling for the no-RoPE-fusion path
 ADN_SUPPORTED_METHODS = {"dflash": 8, "dspark": 7}  # method -> num_speculative_tokens
 ADN_SUPPORTED_ARCHITECTURES = {"DFlashQwen3ForCausalLM", "Qwen3DSparkForCausalLM"}
 
@@ -91,15 +94,27 @@ def validate_adn_scope(*, vllm_config, query, key_cache, value_cache, num_heads,
 
     if not vllm_config.model_config.enforce_eager:
         raise RuntimeError("this scope is eager-only; ACLGraph is validated separately")
-    tp = vllm_config.parallel_config.tensor_parallel_size
-    if tp != 2:
-        raise RuntimeError(f"this scope is validated at TP=2 only, got TP={tp}")
 
-    if (num_heads, num_kv_heads, head_size) != (ADN_LOCAL_NUM_HEADS, ADN_LOCAL_NUM_KV_HEADS, ADN_HEAD_DIM):
+    # Per-rank head layout, constrained structurally rather than by a fixed count.
+    # TP is not checked: it only shards these heads across ranks and does not
+    # change the numerics, so any TP whose resulting layout satisfies the rules
+    # below is fine (e.g. Qwen3-8B is 32Q/8KV -> 16/4 at TP=2, 8/2 at TP=4).
+    if not 0 < head_size <= ADN_MAX_HEAD_DIM:
+        raise RuntimeError(f"ADN requires 0 < head_dim <= {ADN_MAX_HEAD_DIM}, got {head_size}")
+    if head_size * ADN_BLOCK_SIZE > ADN_MAX_HEAD_DIM_X_BLOCK:
+        # With the fixed 128-token block this caps head_dim at 128.
         raise RuntimeError(
-            f"this scope only covers local Nq={ADN_LOCAL_NUM_HEADS}, Nkv={ADN_LOCAL_NUM_KV_HEADS}, "
-            f"D={ADN_HEAD_DIM} (Qwen3-8B at TP=2), got Nq={num_heads}, Nkv={num_kv_heads}, "
-            f"D={head_size}"
+            f"head_dim * block_size = {head_size * ADN_BLOCK_SIZE} exceeds ADN's "
+            f"{ADN_MAX_HEAD_DIM_X_BLOCK}"
+        )
+    if num_kv_heads <= 0 or num_heads % num_kv_heads != 0:
+        raise RuntimeError(f"invalid GQA layout: {num_heads} query heads / {num_kv_heads} KV heads")
+    if num_heads // num_kv_heads > ADN_MAX_GQA_RATIO:
+        raise RuntimeError(f"GQA ratio {num_heads // num_kv_heads} exceeds ADN's {ADN_MAX_GQA_RATIO}")
+    if (num_kv_heads * head_size) % 16 != 0:
+        raise RuntimeError(
+            f"NZ alignment: num_kv_heads * head_dim = {num_kv_heads * head_size} must be a "
+            f"multiple of 16"
         )
 
     for name, tensor in (("query", query), ("key_cache", key_cache), ("value_cache", value_cache)):

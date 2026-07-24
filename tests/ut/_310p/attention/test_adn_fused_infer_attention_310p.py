@@ -258,11 +258,35 @@ class TestAdnScopeValidation(TestBase):
     def test_graph_mode_is_refused(self):
         self._expect_refusal("eager-only", vllm_config=make_vllm_config(eager=False))
 
-    def test_other_tp_is_refused(self):
-        self._expect_refusal("TP=2 only", vllm_config=make_vllm_config(tp=4))
+    def test_tp4_layout_is_allowed(self):
+        """TP only shards heads; the per-rank layout is what is checked. Qwen3-8B
+        at TP=4 is 8 query / 2 KV heads, which satisfies the structural rules, so
+        it must run rather than be refused."""
+        impl = make_impl(
+            vllm_config=make_vllm_config(tp=4),
+            num_heads=8,
+            num_kv_heads=2,
+            cache=make_cache(num_kv_heads=2),
+        )
+        _, adn, _ = run_forward(impl=impl)
+        self.assertEqual(len(adn.calls), 1)
+        self.assertEqual(adn.calls[0]["num_heads"], 8)
+        self.assertEqual(adn.calls[0]["num_key_value_heads"], 2)
 
-    def test_other_head_layout_is_refused(self):
-        self._expect_refusal("only covers local Nq=16", num_heads=32)
+    def test_illegal_gqa_is_refused(self):
+        # 17 query heads do not divide evenly by 4 KV heads.
+        self._expect_refusal("invalid GQA layout", num_heads=17)
+
+    def test_non_16_aligned_kv_is_refused(self):
+        # Any num_kv_heads * 128 is 16-aligned, so break it with a small head_dim:
+        # 1 KV head * 8 = 8 is not a multiple of 16.
+        self._expect_refusal(
+            "must be a multiple of 16",
+            num_heads=4,
+            num_kv_heads=1,
+            head_size=8,
+            cache=make_cache(num_kv_heads=1),
+        )
 
     def test_bf16_is_refused(self):
         self._expect_refusal("only supports float16", cache=make_cache(dtype=torch.bfloat16))
