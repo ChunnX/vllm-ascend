@@ -228,7 +228,26 @@ class TestAdnScopeValidation(TestBase):
             run_forward(impl=make_impl(**impl_kwargs))
 
     def test_unsupported_method_is_refused(self):
-        self._expect_refusal("only covers", vllm_config=make_vllm_config(method="eagle3"))
+        # Refused by the adapter's own early check, before the scope validator: it
+        # has to resolve queries-per-request from the method first. Reaching here
+        # at all means routing let something through, hence the wording.
+        self._expect_refusal("reached with unsupported method", vllm_config=make_vllm_config(method="eagle3"))
+
+    def test_scope_validator_refuses_unsupported_method_on_its_own(self):
+        """The validator is the documented scope lock, so its method branch is
+        covered directly -- the adapter's early check shadows it in the forward
+        path, which would otherwise leave it untested."""
+        cache = make_cache()
+        with self.assertRaisesRegex(RuntimeError, "only covers"):
+            adn_mod.validate_adn_scope(
+                vllm_config=make_vllm_config(method="eagle3"),
+                query=torch.zeros(1, NUM_HEADS, HEAD_DIM, dtype=torch.float16),
+                key_cache=cache,
+                value_cache=cache.clone(),
+                num_heads=NUM_HEADS,
+                num_kv_heads=NUM_KV_HEADS,
+                head_size=HEAD_DIM,
+            )
 
     def test_unexpected_k_is_refused(self):
         self._expect_refusal("only validated at num_speculative_tokens=8", vllm_config=make_vllm_config(num_spec=5))
