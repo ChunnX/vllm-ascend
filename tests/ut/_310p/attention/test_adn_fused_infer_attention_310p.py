@@ -34,7 +34,7 @@ DFLASH_Q = 9  # K + 1
 KV_LENS = [200, 133, 65]
 
 
-def make_vllm_config(*, method="dflash", num_spec=8, arch="DFlashQwen3ForCausalLM", eager=True, tp=2):
+def make_vllm_config(*, method="dflash", num_spec=8, arch="DFlashDraftModel", eager=True, tp=2):
     return SimpleNamespace(
         speculative_config=SimpleNamespace(
             method=method,
@@ -169,7 +169,7 @@ class TestAdnCallContract(TestBase):
         self.assertIs(result, output, "adapter must return the caller's output buffer")
 
     def test_dspark_expects_k_queries_not_k_plus_one(self):
-        impl = make_impl(vllm_config=make_vllm_config(method="dspark", num_spec=7, arch="Qwen3DSparkForCausalLM"))
+        impl = make_impl(vllm_config=make_vllm_config(method="dspark", num_spec=7, arch="Qwen3DSparkModel"))
         md = make_metadata(q_lens=[7] * BATCH)
         _, adn, _ = run_forward(impl=impl, md=md)
         self.assertEqual(adn.calls[0]["actual_seq_lengths_q"], [7] * BATCH)

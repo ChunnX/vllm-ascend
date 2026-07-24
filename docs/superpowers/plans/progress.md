@@ -339,6 +339,31 @@ TORCH_DEVICE_BACKEND_AUTOLOAD=0 pytest -q tests/ut/_310p/
 
 ---
 
+## 真机踩坑（二）：scope guard 检查了错误的架构名层级
+
+**第二次真机**（`_07241620`）：prefill 段错误已消失，baseline 成功（3/3, 32.66 tok/s），
+draft attention **成功路由到 ADN**（`forward_parallel_draft_adn`）——证明整条投机链已打通。
+崩在 `validate_adn_scope`，且是一条干净可操作的报错（scope guard 本该如此）：
+```
+RuntimeError: draft architecture Qwen3DSparkModel is outside this scope
+(['DFlashQwen3ForCausalLM', 'Qwen3DSparkForCausalLM'])
+```
+
+**根因**：我把白名单写成了 vLLM 的**类名**，而 `hf_config.architectures` 存的是 checkpoint
+`config.json` 里的 **architecture 字符串（= vLLM registry 的 key）**。registry
+（`vllm/model_executor/models/registry.py:595,597`）映射：
+```
+"DFlashDraftModel"  -> DFlashQwen3ForCausalLM
+"Qwen3DSparkModel"  -> Qwen3DSparkForCausalLM
+```
+config 写的是 key，我匹配的是 value，永远不中。改成匹配 config key
+`{"DFlashDraftModel", "Qwen3DSparkModel"}`。
+
+**这次值得记的**：scope guard 起作用了——它没让错配置静默跑，而是清楚地把实际架构名打了出来，
+一眼定位。防御式校验的价值正在于此：报错本身就是修复线索。
+
+---
+
 ## 真机踩坑：parallel_drafting 把 seq_lens 变 device，310P prefill 段错误
 
 **首次真机 E2E 崩溃**（`atb_195291`）：

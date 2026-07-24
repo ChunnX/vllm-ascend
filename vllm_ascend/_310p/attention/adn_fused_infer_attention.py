@@ -32,7 +32,12 @@ ADN_MAX_HEAD_DIM = 256  # ADN's own ceiling
 ADN_MAX_HEAD_DIM_X_BLOCK = 16384  # ADN's own ceiling; with block=128 this caps head_dim at 128
 ADN_MAX_GQA_RATIO = 64  # ADN's own ceiling for the no-RoPE-fusion path
 ADN_SUPPORTED_METHODS = {"dflash": 8, "dspark": 7}  # method -> num_speculative_tokens
-ADN_SUPPORTED_ARCHITECTURES = {"DFlashQwen3ForCausalLM", "Qwen3DSparkForCausalLM"}
+# These are the architecture strings in the checkpoint's config.json (the vLLM
+# registry keys), NOT the model class names. hf_config.architectures holds the
+# former: the registry maps "DFlashDraftModel" -> DFlashQwen3ForCausalLM and
+# "Qwen3DSparkModel" -> Qwen3DSparkForCausalLM. Matching against the class names
+# never fires.
+ADN_SUPPORTED_ARCHITECTURES = {"DFlashDraftModel", "Qwen3DSparkModel"}
 
 
 def expected_queries_per_request(method):

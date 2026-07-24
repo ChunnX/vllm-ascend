@@ -1778,7 +1778,7 @@ def validate_adn_capability(*, vllm_config, query, key_cache, value_cache, num_h
         )
 
     arch = getattr(spec_config.draft_model_config.hf_config, "architectures", [None])[0]
-    if arch not in {"DFlashQwen3ForCausalLM", "Qwen3DSparkForCausalLM"}:
+    if arch not in {"DFlashDraftModel", "Qwen3DSparkModel"}:  # config keys, not class names
         raise RuntimeError(f"unsupported draft architecture {arch} for this scope")
 
     if not vllm_config.model_config.enforce_eager:
