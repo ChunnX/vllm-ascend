@@ -358,12 +358,16 @@ class AscendDSparkProposer(AscendDflashProposer):
             draft_attn_metadatas=[],
         ):
             if is_profile:
-                self.model.precompute_and_store_context_kv(context_states, context_positions)
-                self.model(
-                    input_ids=self.input_ids[:num_query_total],
-                    positions=self._get_positions(num_query_total),
-                    inputs_embeds=None,
-                )
+                # Both forwards must run with the 310P drafting RoPE flag on: they
+                # use different positions (context vs query, different lengths) and
+                # neither refreshes the global cos/sin slice on its own here.
+                with self._profile_rope_context():
+                    self.model.precompute_and_store_context_kv(context_states, context_positions)
+                    self.model(
+                        input_ids=self.input_ids[:num_query_total],
+                        positions=self._get_positions(num_query_total),
+                        inputs_embeds=None,
+                    )
 
             else:
                 self._dflash_num_context = num_input_tokens

@@ -15,6 +15,7 @@
 
 import contextlib
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 from unittest.mock import patch as mock_patch
 
 import numpy as np
@@ -26,6 +27,28 @@ from vllm_ascend._310p.spec_decode.parallel_drafting_inputs import expand_parall
 MASK_ID = 151666
 BLOCK_SIZE = 128
 GUARD = -99  # sentinel written past the used region to catch overruns
+
+# Profile-run fixture sizes. These must differ so a fix that only covers the
+# context forward is distinguishable from one that covers both.
+NUM_REQS = 2
+CONTEXT_TOKENS = 12
+
+
+def _flag_now():
+    from vllm_ascend._310p.ops.rotary_embedding import AscendRotaryEmbedding310
+
+    return AscendRotaryEmbedding310._is_drafting_update_enabled
+
+
+def _set_flag(state):
+    from vllm_ascend._310p.ops.rotary_embedding import AscendRotaryEmbedding310
+
+    AscendRotaryEmbedding310.set_rope_position_flag_310p(state)
+
+
+@contextlib.contextmanager
+def _null_context(*args, **kwargs):
+    yield
 
 # `_expand_drafting_inputs` is defined in dflash_proposer, so every name it looks
 # up -- is_310p, the Triton launcher -- resolves from that module even when the
@@ -634,3 +657,125 @@ class TestDSparkDispatch(TestBase):
         ):
             with self.assertRaisesRegex(AssertionError, "Triton kernel was launched"):
                 self._call(proposer, cad)
+
+
+class TestProfileRopeFlagCoverage(TestBase):
+    """dummy_run(is_profile=True) must keep the 310P drafting RoPE flag on for both
+    the context KV precompute and the query forward that follows it.
+
+    The flag is what makes each rotary call refresh the global cos/sin slice with
+    its own positions. Covering only the first forward leaves the query forward
+    reading the context slice, which produces wrong numbers rather than an error.
+    """
+
+    def _fake_model(self, seen):
+        class FakeModel:
+            def precompute_and_store_context_kv(_self, states, positions):
+                seen.append(("context", _flag_now(), int(positions.shape[0])))
+
+            def __call__(_self, *, input_ids, positions, inputs_embeds):
+                seen.append(("query", _flag_now(), int(positions.shape[0])))
+
+        return FakeModel()
+
+    def _make_proposer(self, cls, seen, num_spec):
+        p = cls.__new__(cls)
+        p.model = self._fake_model(seen)
+        p.num_speculative_tokens = num_spec
+        p.max_query_tokens = 64
+        p.use_cuda_graph = False
+        p.vllm_config = SimpleNamespace()
+        p.input_ids = torch.zeros(64, dtype=torch.int32)
+        p.hidden_states = torch.zeros(64, 8)
+        p.token_indices_to_sample = torch.zeros(64, dtype=torch.int32)
+        p._context_positions_buffer = torch.arange(64, dtype=torch.int32)
+        p._slot_mapping_buffer = torch.zeros(64, dtype=torch.int32)
+        p._dflash_hidden_states = torch.zeros(64, 8)
+        p.arange_dflash = torch.arange(65, dtype=torch.int32)
+        p.token_arange_np = np.arange(65, dtype=np.int32)
+        p.attn_layer_names = []
+        p.draft_attn_groups = []
+        p.kv_cache_gid = 0
+        p._get_positions = lambda n: torch.arange(n, dtype=torch.int32)
+        p._pad_draft_buffers = lambda *a, **kw: None
+        p.runner = MagicMock()
+        p.runner._sync_metadata_across_dp.return_value = (CONTEXT_TOKENS, None, None)
+        p.runner.attn_groups = []
+        return p
+
+    def _run_profile(self, cls, num_spec, caller_module):
+        import importlib
+
+        seen = []
+        proposer = self._make_proposer(cls, seen, num_spec)
+        module = importlib.import_module(caller_module)
+
+        # set_ascend_forward_context / get_forward_context are imported directly
+        # into each proposer module, so they must be patched where dummy_run reads
+        # them; patching llm_base_proposer.* would not be seen. dspark_proposer
+        # does not import get_forward_context at all, so patch it only where it
+        # exists rather than creating an attribute that production code lacks.
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock_patch(f"{DFLASH_MOD}.is_310p", return_value=True))
+            stack.enter_context(mock_patch(f"{caller_module}.set_ascend_forward_context", _null_context))
+            if hasattr(module, "get_forward_context"):
+                stack.enter_context(mock_patch(f"{caller_module}.get_forward_context", MagicMock()))
+            proposer.dummy_run(num_tokens=CONTEXT_TOKENS, num_reqs=NUM_REQS, is_profile=True)
+        return seen
+
+    def _assert_both_forwards_covered(self, seen):
+        self.assertEqual([kind for kind, _, _ in seen], ["context", "query"])
+        for kind, flag, _ in seen:
+            self.assertTrue(flag, f"{kind} forward ran with the drafting RoPE flag off")
+        ctx_len, q_len = seen[0][2], seen[1][2]
+        self.assertNotEqual(
+            ctx_len,
+            q_len,
+            "context and query lengths coincide, so this cannot tell a half fix "
+            "(flag on for only the first forward) from a full one",
+        )
+
+    def test_dflash_profile_covers_context_and_query(self):
+        from vllm_ascend.spec_decode.dflash_proposer import AscendDflashProposer
+
+        self._assert_both_forwards_covered(
+            self._run_profile(AscendDflashProposer, 8, "vllm_ascend.spec_decode.dflash_proposer")
+        )
+
+    def test_dspark_profile_covers_context_and_query(self):
+        from vllm_ascend.spec_decode.dspark_proposer import AscendDSparkProposer
+
+        self._assert_both_forwards_covered(
+            self._run_profile(AscendDSparkProposer, 7, "vllm_ascend.spec_decode.dspark_proposer")
+        )
+
+    def test_flag_is_restored_after_the_profile_branch(self):
+        from vllm_ascend.spec_decode.dflash_proposer import AscendDflashProposer
+
+        _set_flag(False)
+        self._run_profile(AscendDflashProposer, 8, "vllm_ascend.spec_decode.dflash_proposer")
+        self.assertFalse(_flag_now(), "flag leaked out of the profile branch")
+
+    def test_flag_is_restored_even_when_the_forward_raises(self):
+        from vllm_ascend.spec_decode.dflash_proposer import AscendDflashProposer
+
+        proposer = AscendDflashProposer.__new__(AscendDflashProposer)
+        # Forcing is_310p matters: without it the context manager yields without
+        # touching the flag and the restore assertion below passes vacuously.
+        with mock_patch(f"{DFLASH_MOD}.is_310p", return_value=True):
+            _set_flag(False)
+            with self.assertRaises(ValueError):
+                with proposer._profile_rope_context():
+                    self.assertTrue(_flag_now(), "flag was never set, so the check below is vacuous")
+                    raise ValueError("boom")
+        self.assertFalse(_flag_now())
+
+    def test_non_310p_leaves_the_flag_untouched(self):
+        from vllm_ascend.spec_decode.dflash_proposer import AscendDflashProposer
+
+        proposer = AscendDflashProposer.__new__(AscendDflashProposer)
+        _set_flag(False)
+        with mock_patch(f"{DFLASH_MOD}.is_310p", return_value=False):
+            with proposer._profile_rope_context():
+                self.assertFalse(_flag_now(), "non-310P must not enable the 310P drafting flag")
+        self.assertFalse(_flag_now())

@@ -15,8 +15,8 @@ Mac 侧只能做语法、行宽和 import 检查。
 | --- | --- | --- |
 | Task 1.1/1.2 无 Triton 输入展开 helper | ✅ 已验证 | CPU 单测 |
 | Task 1.3a DFlash dispatch seam | ✅ 已验证 | CPU 单测 |
-| Task 1.3b DSpark per-group dispatch | 🟡 待验证 | CPU 单测 |
-| Task 2 五层逐层 context RoPE + patch gate | ⬜ 未开始 | CPU 单测 |
+| Task 1.3b DSpark per-group dispatch | ✅ 已验证 | CPU 单测 |
+| Task 2 五层逐层 context RoPE + patch gate | 🟡 待验证 | CPU 单测 |
 | Task 3 ADN adapter + 精确路由 | ⬜ 未开始 | CPU 单测 |
 | Phase 0 硬件门禁（ADN NZ readback / 输入展开 op smoke） | ⬜ 未开始 | **需 310P 真机** |
 | Task 4 Qwen3-8B TP=2 eager E2E | ⬜ 未开始 | **需 310P 真机 + checkpoint** |
@@ -63,8 +63,8 @@ A2/A3 换个 cache block 配置就会被 `!= 128` 的 guard 打挂。现在 310P
 
 ### Task 1.3b：DSpark per-group dispatch
 
-提交：待填
-验证：**待服务器确认**，预期 20 passed（15 原有 + 5 新增）
+提交：`740275779`，fixture 修正 `e75061925`
+验证：**20 passed**（服务器）
 
 DSpark 复用继承来的 `_expand_drafting_inputs`，不重复定义。它与 DFlash 的差异全部保留：
 按 KV cache group 循环、per-group buffers、query 数为 K（非 K+1）、`sample_from_anchor=True`。
@@ -77,11 +77,51 @@ DSpark 复用继承来的 `_expand_drafting_inputs`，不重复定义。它与 D
 
 删掉了 `dspark_proposer.py` 已不再使用的 Triton import。
 
+### Task 2：五层逐层 context RoPE + patch gate
+
+提交：待填
+验证：**待服务器确认**，预期 25 passed（20 原有 + 5 新增）+ 新文件 5 passed
+
+三处改动：
+
+1. **`patch/worker/__init__.py`** — `patch_qwen3_dflash` 移出 `if not is_310p()`。
+   `patch_qwen3_5` / `patch_qwen3vl` 仍保持 310P gate，不扩大模型范围。
+   DSpark 不需要 worker patch：模型侧 `Qwen3DSparkModel(DFlashQwen3Model)` 继承同一实现，
+   mask token 走 platform 层的 `patch_speculative_config`（见 §0.1）。
+
+2. **`patch_qwen3_dflash.py`** — 抽出 `apply_context_rope()` 做设备分支：
+   - 310P 逐层旋转，每层只送 `num_ctx` 个 position，结果写回 `all_k_normed`；
+   - 非 310P 保持一次 fused `[L * num_ctx]` 调用。
+
+   两条路径都**接住返回值**。核实过：A2/A3 走 `rope_forward_oot`，其 `else` 分支对已连续的
+   张量调 `.contiguous()` 返回同一对象、原地改再返回该存储，所以接住返回值是 no-op；
+   310P 走 `npu_apply_rotary_pos_emb`，返回**新张量**，不接住就会把未旋转的 K 写进 cache。
+   后者是"数值错但不报错"的故障。
+
+   310P 用 `layers[i].self_attn.rotary_emb` 而非 `layers[0]` 的——各层 RoPE 参数本就要求一致
+   （`_build_fused_kv_buffers` 有断言），逐层取不依赖该断言且零代价。
+
+3. **两个 proposer 的 `dummy_run`** — `is_profile` 分支整体包进 `_profile_rope_context()`
+   （定义在 dflash，DSpark 继承）。这是计划里的 P0：profile 路径绕过 `_run_merged_draft`，
+   drafting flag 从未打开，**两个** forward（context KV 预写 + 紧随的 query forward）都会读到
+   target dummy run 遗留的 cos/sin slice。故障形态是"用错值"不是崩溃。
+
+测试要点：profile 用例驱动**真实**的 `dummy_run(is_profile=True)`，并让 context 与 query
+长度不同（12 vs 18 / 14），这样"只覆盖第一个 forward"的半修复会被抓住。异常路径用例强制
+`is_310p=True`，否则 context manager 直接 yield，断言恒真。
+
 ---
 
 ## 下一步
 
-**Task 2：五层逐层 context RoPE + patch gate。**
+**Task 3：ADN adapter + 精确路由。**
+
+新增 `_310p/attention/adn_fused_infer_attention.py`（lazy import、scope 锁、forward adapter），
+并在 `_310p/attention/attention_v1.py::forward_impl` 最前面加精确路由：
+`draft + dflash/dspark + ChunkedPrefill + non-causal` → ADN，其他 `causal=False` 主动报错。
+
+注意这一步的 UT 需要 mock `adn_custom_ops`（服务器上未必装了 ADN 包），
+真机数值验证属于 Phase 0，另算。
 
 两件事：
 
