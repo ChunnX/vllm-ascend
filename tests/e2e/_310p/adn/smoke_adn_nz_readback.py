@@ -98,17 +98,25 @@ def allocate_production_caches(num_blocks):
 
 
 def shuffled_block_table(batch, pages_per_req, num_blocks):
-    """Non-contiguous, out-of-order physical pages.
+    """Non-contiguous, out-of-order physical pages, none equal to its own column.
 
     If logical page i mapped to physical page i, a kernel that ignored the block
     table entirely would still produce the right answer and this gate would pass
     while proving nothing.
+
+    Page ids are drawn only from [pages_per_req, num_blocks), so no entry can
+    equal its column index by construction. Sampling from the full range and
+    asserting afterwards makes the property depend on the seed -- which is how
+    this failed the first time it ran.
     """
+    pool = torch.arange(pages_per_req, num_blocks)
+    needed = batch * pages_per_req
+    assert pool.numel() >= needed, f"need {needed} pages outside the identity range, pool has {pool.numel()}"
     generator = torch.Generator().manual_seed(0)
-    perm = torch.randperm(num_blocks, generator=generator)[: batch * pages_per_req]
-    table = perm.reshape(batch, pages_per_req).to(torch.int32)
+    picked = pool[torch.randperm(pool.numel(), generator=generator)[:needed]]
+    table = picked.reshape(batch, pages_per_req).to(torch.int32)
     identity = torch.arange(pages_per_req, dtype=torch.int32)
-    assert bool((table != identity).all()), "block table has a fixed point; regenerate with another seed"
+    assert bool((table != identity).all()), "block table has a fixed point"  # structural, kept as a net
     return table
 
 
@@ -164,7 +172,10 @@ def run_case(name, q_lens, kv_lens, *, value_builder=None):
     batch = len(q_lens)
     max_kv = max(kv_lens)
     pages_per_req = (max_kv + BLOCK_SIZE - 1) // BLOCK_SIZE
-    num_blocks = max(8, batch * pages_per_req + 4)
+    # The first pages_per_req ids are excluded from the pool (see
+    # shuffled_block_table), so the cache needs room for those plus every page
+    # actually handed out.
+    num_blocks = pages_per_req + batch * pages_per_req + 4
 
     block_table_cpu = shuffled_block_table(batch, pages_per_req, num_blocks)
     block_table = block_table_cpu.to(DEVICE)
