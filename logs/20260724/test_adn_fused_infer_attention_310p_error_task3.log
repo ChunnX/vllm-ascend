@@ -1,0 +1,77 @@
+INFO 07-24 02:16:29 [__init__.py:44] Available plugins for group vllm.platform_plugins:
+INFO 07-24 02:16:29 [__init__.py:46] - ascend -> vllm_ascend:register
+INFO 07-24 02:16:29 [__init__.py:49] All plugins in this group will be loaded. Set `VLLM_PLUGINS` to control which plugins to load.
+INFO 07-24 02:16:29 [__init__.py:237] Platform plugin ascend is activated
+INFO 07-24 02:16:34 [platform.py:61] Breakable cudagraph is force disabled on Ascend because DeepSeek V4 PIECEWISE cudagraph is not supported yet.
+INFO 07-24 02:16:34 [importing.py:88] Triton not installed or not compatible; certain GPU-related functions will not be available.
+============================= test session starts ==============================
+platform linux -- Python 3.12.13, pytest-8.3.2, pluggy-1.6.0 -- /usr/local/python3.12.13/bin/python3
+cachedir: .pytest_cache
+rootdir: /vllm-workspace/vllm-ascend
+configfile: pyproject.toml
+plugins: xdist-3.6.1, anyio-4.14.2
+collecting ... collected 37 items
+
+tests/ut/_310p/attention/test_adn_fused_infer_attention_310p.py::TestAdnCallContract::test_caches_are_passed_by_reference PASSED
+tests/ut/_310p/attention/test_adn_fused_infer_attention_310p.py::TestAdnCallContract::test_dspark_expects_k_queries_not_k_plus_one PASSED
+tests/ut/_310p/attention/test_adn_fused_infer_attention_310p.py::TestAdnCallContract::test_head_counts_and_scale PASSED
+tests/ut/_310p/attention/test_adn_fused_infer_attention_310p.py::TestAdnCallContract::test_kv_lens_are_passed_through PASSED
+tests/ut/_310p/attention/test_adn_fused_infer_attention_310p.py::TestAdnCallContract::test_mask_is_none_regardless_of_metadata PASSED
+tests/ut/_310p/attention/test_adn_fused_infer_attention_310p.py::TestAdnCallContract::test_precision_layout_and_force_call_flags PASSED
+tests/ut/_310p/attention/test_adn_fused_infer_attention_310p.py::TestAdnCallContract::test_q_lens_are_raw_not_cumulative PASSED
+tests/ut/_310p/attention/test_adn_fused_infer_attention_310p.py::TestAdnCallContract::test_query_is_reshaped_to_tnd PASSED
+tests/ut/_310p/attention/test_adn_fused_infer_attention_310p.py::TestAdnCallContract::test_result_is_copied_into_the_caller_buffer PASSED
+tests/ut/_310p/attention/test_adn_fused_infer_attention_310p.py::TestAdnDynamicGuards::test_batch_size_disagreement_is_refused PASSED
+tests/ut/_310p/attention/test_adn_fused_infer_attention_310p.py::TestAdnDynamicGuards::test_cumulative_q_lens_are_refused PASSED
+tests/ut/_310p/attention/test_adn_fused_infer_attention_310p.py::TestAdnDynamicGuards::test_kv_len_exceeding_block_table_capacity_is_refused PASSED
+tests/ut/_310p/attention/test_adn_fused_infer_attention_310p.py::TestAdnDynamicGuards::test_missing_raw_q_lens_is_refused PASSED
+tests/ut/_310p/attention/test_adn_fused_infer_attention_310p.py::TestAdnDynamicGuards::test_non_int32_block_table_is_refused PASSED
+tests/ut/_310p/attention/test_adn_fused_infer_attention_310p.py::TestAdnDynamicGuards::test_q_len_greater_than_kv_len_is_refused PASSED
+tests/ut/_310p/attention/test_adn_fused_infer_attention_310p.py::TestAdnDynamicGuards::test_token_count_disagreement_is_refused PASSED
+tests/ut/_310p/attention/test_adn_fused_infer_attention_310p.py::TestAdnDynamicGuards::test_wrong_q_len_for_method_is_refused PASSED
+tests/ut/_310p/attention/test_adn_fused_infer_attention_310p.py::TestAdnScopeValidation::test_bf16_is_refused PASSED
+tests/ut/_310p/attention/test_adn_fused_infer_attention_310p.py::TestAdnScopeValidation::test_graph_mode_is_refused PASSED
+tests/ut/_310p/attention/test_adn_fused_infer_attention_310p.py::TestAdnScopeValidation::test_non_nz_cache_format_is_refused PASSED
+tests/ut/_310p/attention/test_adn_fused_infer_attention_310p.py::TestAdnScopeValidation::test_other_head_layout_is_refused PASSED
+tests/ut/_310p/attention/test_adn_fused_infer_attention_310p.py::TestAdnScopeValidation::test_other_tp_is_refused PASSED
+tests/ut/_310p/attention/test_adn_fused_infer_attention_310p.py::TestAdnScopeValidation::test_scope_is_validated_once_then_cached PASSED
+tests/ut/_310p/attention/test_adn_fused_infer_attention_310p.py::TestAdnScopeValidation::test_unexpected_k_is_refused PASSED
+tests/ut/_310p/attention/test_adn_fused_infer_attention_310p.py::TestAdnScopeValidation::test_unsupported_architecture_is_refused PASSED
+tests/ut/_310p/attention/test_adn_fused_infer_attention_310p.py::TestAdnScopeValidation::test_unsupported_method_is_refused FAILED
+tests/ut/_310p/attention/test_adn_fused_infer_attention_310p.py::TestAdnScopeValidation::test_wrong_cache_block_size_is_refused PASSED
+tests/ut/_310p/attention/test_adn_fused_infer_attention_310p.py::TestAdnLoader::test_missing_package_fails_loud_without_fallback PASSED
+tests/ut/_310p/attention/test_adn_fused_infer_attention_310p.py::TestAdnReturnShape::test_mismatched_return_dtype_is_refused PASSED
+tests/ut/_310p/attention/test_adn_fused_infer_attention_310p.py::TestAdnReturnShape::test_mismatched_return_shape_is_refused PASSED
+tests/ut/_310p/attention/test_parallel_draft_routing_310p.py::TestParallelDraftRouting::test_causal_paths_are_unchanged PASSED
+tests/ut/_310p/attention/test_parallel_draft_routing_310p.py::TestParallelDraftRouting::test_dflash_draft_non_causal_chunked_prefill_goes_to_adn PASSED
+tests/ut/_310p/attention/test_parallel_draft_routing_310p.py::TestParallelDraftRouting::test_draft_non_causal_in_other_states_fails_loud PASSED
+tests/ut/_310p/attention/test_parallel_draft_routing_310p.py::TestParallelDraftRouting::test_dspark_draft_non_causal_chunked_prefill_goes_to_adn PASSED
+tests/ut/_310p/attention/test_parallel_draft_routing_310p.py::TestParallelDraftRouting::test_no_speculative_config_non_causal_fails_loud PASSED
+tests/ut/_310p/attention/test_parallel_draft_routing_310p.py::TestParallelDraftRouting::test_non_draft_non_causal_fails_loud PASSED
+tests/ut/_310p/attention/test_parallel_draft_routing_310p.py::TestParallelDraftRouting::test_unsupported_method_non_causal_fails_loud PASSED
+
+=================================== FAILURES ===================================
+__________ TestAdnScopeValidation.test_unsupported_method_is_refused ___________
+RuntimeError: ADN draft attention reached with unsupported method eagle3
+
+During handling of the above exception, another exception occurred:
+
+self = <tests.ut._310p.attention.test_adn_fused_infer_attention_310p.TestAdnScopeValidation testMethod=test_unsupported_method_is_refused>
+
+    def test_unsupported_method_is_refused(self):
+>       self._expect_refusal("only covers", vllm_config=make_vllm_config(method="eagle3"))
+
+tests/ut/_310p/attention/test_adn_fused_infer_attention_310p.py:231: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/ut/_310p/attention/test_adn_fused_infer_attention_310p.py:227: in _expect_refusal
+    with self.assertRaisesRegex(RuntimeError, pattern):
+E   AssertionError: "only covers" does not match "ADN draft attention reached with unsupported method eagle3"
+=============================== warnings summary ===============================
+../../usr/local/python3.12.13/lib/python3.12/site-packages/torch/jit/_script.py:362: 14 warnings
+  /usr/local/python3.12.13/lib/python3.12/site-packages/torch/jit/_script.py:362: DeprecationWarning: `torch.jit.script_method` is deprecated. Please switch to `torch.compile` or `torch.export`.
+    warnings.warn(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/ut/_310p/attention/test_adn_fused_infer_attention_310p.py::TestAdnScopeValidation::test_unsupported_method_is_refused
+================== 1 failed, 36 passed, 14 warnings in 0.84s ===================
