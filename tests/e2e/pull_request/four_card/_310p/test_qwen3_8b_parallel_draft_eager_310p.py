@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import os
 
+import pytest
+
 # 310P adaptation lives on Model Runner V1. Ascend already defaults V2 off unless
 # this is set explicitly, but pin it so an environment difference cannot flip it.
 os.environ.setdefault("VLLM_USE_V2_MODEL_RUNNER", "0")
@@ -33,8 +35,11 @@ os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
 
 from tests.e2e.conftest import VllmRunner  # noqa: E402
 
-MAIN_MODEL = "Qwen/Qwen3-8B"
-SPEC_MODEL = "deepseek-ai/dspark_qwen3_8b_block7"
+# Resolve to local paths so the four TP ranks never race to download. Override
+# with QWEN3_8B_PATH / DSPARK_QWEN3_8B_PATH; the defaults are the target host's
+# layout (note the two parent dirs differ). A HF repo id still works if set.
+MAIN_MODEL = os.environ.get("QWEN3_8B_PATH", "/opt/foundation_model/Qwen3-8B")
+SPEC_MODEL = os.environ.get("DSPARK_QWEN3_8B_PATH", "/opt/foundation/dspark_qwen3_8b_block7")
 NUM_SPECULATIVE_TOKENS = 7  # DSpark block7
 
 PROMPTS = [
@@ -75,6 +80,17 @@ def _drafts_and_accepted(metrics):
     return num_drafts, total_accepted, accepted_per_pos
 
 
+def _missing(path):
+    """A HF repo id (no slash-rooted local path) is assumed present; a local path
+    must actually exist, or the four ranks would each fail to find it."""
+    return path.startswith("/") and not os.path.isdir(path)
+
+
+@pytest.mark.skipif(
+    _missing(MAIN_MODEL) or _missing(SPEC_MODEL),
+    reason=f"model path not found (MAIN_MODEL={MAIN_MODEL}, SPEC_MODEL={SPEC_MODEL}); "
+    "set QWEN3_8B_PATH / DSPARK_QWEN3_8B_PATH",
+)
 def test_dspark_tp4_eager_matches_baseline_and_accepts():
     # Baseline: identical config, no speculation.
     with VllmRunner(MAIN_MODEL, **COMMON) as llm:
