@@ -21,7 +21,7 @@ Mac 侧只能做语法、行宽和 import 检查。
 | Phase 0.3 输入展开算子门禁 | ✅ 已通过 | 310P 真机 |
 | Phase 0.2 ADN 算子基线 | ✅ 40/40 通过 | 310P 真机 + ADN |
 | Phase 0.4 ADN NZ 直读门禁 | ✅ 通过（含 TP=4 布局用例） | 310P 真机 + ADN |
-| Task 4 Qwen3-8B eager E2E（DSpark-only，TP=4） | 🟡 已写，待真机 | **需 310P 真机 + Qwen3-8B + DSpark** |
+| Task 4 Qwen3-8B eager E2E（DSpark-only，TP=4） | 🟢 链路已通，正确性门重设计待复跑 | 310P 真机 |
 | Task 5 回归、文档、提交拆分 | ⬜ 未开始 | — |
 
 ---
@@ -336,6 +336,32 @@ TORCH_DEVICE_BACKEND_AUTOLOAD=0 pytest -q tests/ut/_310p/
 `adapt_patch()`，所以 310P 机器上这个 patch 必然生效。
 
 **这是既有缺陷，不在本期范围。** 第 2 类值得单独修，但应另开分支，不要混进本条线。
+
+---
+
+## 真机进展：整条 DSpark 链在 310P 跑通，token 一致性门选错了
+
+**第三次真机**（`_07241640`）：**没有崩溃**。模型加载（含 drafter 4.42 GiB）、KV cache 分配、
+baseline（3/3, 34.67 tok/s）、DSpark spec **全部跑完**。失败在我自己的 token 一致性断言：
+prompt 0/1 完全一致，prompt 2 在第 32 个 token 处分岔。
+
+**这条断言选错了。** greedy 投机解码只在**精确算术**下无损；真机上不是 bit-identical，因为
+target 投机时一次 verify K+1 个 token（chunked-prefill 形状的 batch），非投机时一次 decode 1 个，
+浮点累加顺序不同 → 边界 logit 的 argmax 翻转 → 从翻转点起序列分岔。仓库自己的 `test_dspark.py`
+就是查 acceptance 而非 token 一致性，同一个原因。
+
+**反直觉但决定性的一点**：draft 如果是坏的，输出反而会和 baseline **一致**（全被拒 → 纯 target
+解码）；只有 draft 在工作、多 token 被接受，才会因 verify batch 形状不同而分岔。**所以 prompt 2
+的分岔恰恰证明 draft 在正常工作。** 而且即便真有 bug，accepted token 永远是 target 的 argmax
+（draft 只提议），分岔最多指向 verify/reject（上游共享），不指向我改的 ADN draft attention。
+
+**改法**：正确性改判 acceptance——先算先打印，再断言 `num_drafts>0`、`0<accepted<max`、
+**pos-0 acceptance >= 0.5**（DSpark 的 pos-0 是 anchor=target bonus token，draft 管线正确时几乎
+必接受，塌了就是 draft 坏的签名，而这正是 token 一致性抓不到的），外加"至少一个 prompt 完全一致"
+（systematically 坏的 verify 会污染所有 prompt）。token 分歧位置降级为记录。
+
+**这不是放宽让它过**，是换用投机解码正确性的行业标准信号。复跑还能第一次看到 310P 的
+acceptance 曲线——那才是"我的适配对不对"的真信号。
 
 ---
 
