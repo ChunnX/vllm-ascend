@@ -119,6 +119,31 @@ class TestParallelDraftRouting(TestBase):
                 call(make_impl(method=None), make_metadata(AscendAttentionState.ChunkedPrefill, causal=False))
         self.assertEqual(calls, {})
 
+    def test_causal_paths_do_not_need_a_forward_context(self):
+        """Causal routing must not consult _EXTRA_CTX.
+
+        Reading it requires an active forward context. Adding that requirement to
+        the causal path would break callers that never needed one -- as it did
+        break test_forward_mtp_310, which mocks out the split-fuse method and so
+        establishes no context.
+        """
+
+        class Exploding:
+            def __getattr__(self, name):
+                raise AssertionError(f"causal path read _EXTRA_CTX.{name}")
+
+        for state in CAUSAL_STATES:
+            with (
+                mock_patch(f"{ATTN_MOD}._EXTRA_CTX", Exploding()),
+                mock_patch(f"{ATTN_MOD}.forward_parallel_draft_adn"),
+                mock_patch.object(AscendAttentionBackendImpl310, "forward_prefill_310", lambda *a: "prefill"),
+                mock_patch.object(AscendAttentionBackendImpl310, "forward_paged_attention", lambda *a: "paged"),
+                mock_patch.object(
+                    AscendAttentionBackendImpl310, "forward_chunked_prefill_310", lambda *a: "splitfuse"
+                ),
+            ):
+                call(make_impl("dflash"), make_metadata(state, causal=True))
+
     def test_draft_non_causal_in_other_states_fails_loud(self):
         """Only ChunkedPrefill is validated; other non-causal states must refuse."""
         for state in (AscendAttentionState.DecodeOnly, AscendAttentionState.SpecDecoding):

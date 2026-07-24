@@ -234,6 +234,29 @@ awk '/    def set_inputs_first_pass/,/    @torch.inference_mode/' \
 
 再和 stub 逐项比对。被方法**写入**的属性（如 `_dflash_num_context`）不需要 stub。
 
+### 在共享路径顶部读 `_EXTRA_CTX` 引入了新前置要求
+
+Task 3 最初把路由条件写成一个大 `and` 表达式放在 `forward_impl` 顶部，其中
+`_EXTRA_CTX.is_draft_model` 是第一个条件。读它需要活跃的 forward context，于是
+**所有 causal 路径也开始要求 forward context**——`test_forward_mtp_310` 因此失败
+（它 mock 掉了 `forward_chunked_prefill_310`，原本根本走不到任何 `_EXTRA_CTX` 访问，
+所以不像同文件另外两个 forward 测试那样 patch `get_forward_context`）。
+
+生产环境里 attention 总在 `set_forward_context` 内跑，不会炸，但这仍是给 causal 路径
+加了原本没有的要求。
+
+修法不是改测试，而是把便宜的本地条件提到最前：
+
+```python
+if not attn_metadata.causal:      # 本地、绝大多数调用为 False
+    ...  # 只有这里才读 _EXTRA_CTX
+```
+
+顺带也更快：省掉每层每步一次 contextvar 查找。
+
+**教训**：短路求值的顺序不只是风格问题——它决定了哪些调用方需要满足哪些前置条件。
+把需要全局状态的条件放在 `and` 链前面，等于给所有走这条路的人加了依赖。
+
 ### 回归命令开得太宽（流程问题）
 
 我最初给的回归命令是 `pytest tests/ut/spec_decode/ tests/ut/_310p/`，把 A2（910B）平台的测试

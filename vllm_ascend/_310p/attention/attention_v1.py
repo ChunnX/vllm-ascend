@@ -335,24 +335,27 @@ class AscendAttentionBackendImpl310(AscendAttentionBackendImpl):
         """
         state = attn_metadata.attn_state
 
-        # DFlash/DSpark parallel drafting is the only non-causal path that reaches
-        # forward_impl; pooling's non-causal case returns earlier in forward().
-        # self.vllm_config is bound in AscendAttentionBackendImpl.__init__ via
-        # get_current_vllm_config().
-        spec_config = self.vllm_config.speculative_config
-        is_parallel_draft_adn = (
-            _EXTRA_CTX.is_draft_model
-            and spec_config is not None
-            and spec_config.method in ADN_SUPPORTED_METHODS
-            and state == AscendAttentionState.ChunkedPrefill
-            and not attn_metadata.causal
-        )
-        if is_parallel_draft_adn:
-            return forward_parallel_draft_adn(self, query, attn_metadata, output)
+        # Everything below this block is causal. Test `causal` first because it is
+        # local and false for almost every call: that keeps the causal path free of
+        # the forward-context lookup _EXTRA_CTX needs, which it never required
+        # before, and skips that lookup per layer per step.
         if not attn_metadata.causal:
-            # Everything below is causal. Falling through would hand a non-causal
-            # request to the split-fuse kernel, which returns a plausible but wrong
-            # result instead of failing, so refuse here.
+            # DFlash/DSpark parallel drafting is the only non-causal path that
+            # reaches forward_impl; pooling's non-causal case returns earlier in
+            # forward(). self.vllm_config is bound in
+            # AscendAttentionBackendImpl.__init__ via get_current_vllm_config().
+            spec_config = self.vllm_config.speculative_config
+            is_parallel_draft_adn = (
+                _EXTRA_CTX.is_draft_model
+                and spec_config is not None
+                and spec_config.method in ADN_SUPPORTED_METHODS
+                and state == AscendAttentionState.ChunkedPrefill
+            )
+            if is_parallel_draft_adn:
+                return forward_parallel_draft_adn(self, query, attn_metadata, output)
+            # Falling through would hand a non-causal request to the split-fuse
+            # kernel, which returns a plausible but wrong result instead of
+            # failing, so refuse here.
             raise NotImplementedError(
                 f"310P has no non-causal attention path for attn_state={state}, "
                 f"is_draft_model={_EXTRA_CTX.is_draft_model}, "
