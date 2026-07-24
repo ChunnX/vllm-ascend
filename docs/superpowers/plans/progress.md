@@ -19,8 +19,8 @@ Mac 侧只能做语法、行宽和 import 检查。
 | Task 2 五层逐层 context RoPE + patch gate | ✅ 已验证 | CPU 单测 |
 | Task 3 ADN adapter + 精确路由 | ✅ 已验证 | CPU 单测 |
 | Phase 0.3 输入展开算子门禁 | ✅ 已通过 | 310P 真机 |
-| Phase 0.2 ADN 算子基线 | ⬜ 待跑 `Ascend_Ops/tests/test_adn_fia.py` | 310P 真机 + ADN |
-| Phase 0.4 ADN NZ 直读门禁 | 🟡 核心用例已过，fixture 修正待复跑 | 310P 真机 + ADN |
+| Phase 0.2 ADN 算子基线 | ✅ 40/40 通过 | 310P 真机 + ADN |
+| Phase 0.4 ADN NZ 直读门禁 | 🟡 5/5 数值已过，dominance 判据修正待复跑 | 310P 真机 + ADN |
 | Task 4 Qwen3-8B TP=2 eager E2E | ⬜ 未开始 | **需 310P 真机 + checkpoint** |
 | Task 5 回归、文档、提交拆分 | ⬜ 未开始 | — |
 
