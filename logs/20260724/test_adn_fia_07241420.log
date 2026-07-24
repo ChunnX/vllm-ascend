@@ -1,0 +1,107 @@
+============================================================
+Combination: layout=TND  head_dim=128  block_size=128
+============================================================
+check diff mean is 1.9609928131103516e-05, max is 0.0003662109375, sum is 21.40625
+  PASS [TND hd=128 bs=128 nh=1 nkv=1 B=2] case 1  max_diff=0.000366
+.check diff mean is 1.806020736694336e-05, max is 0.001708984375, sum is 886.5
+  PASS [TND hd=128 bs=128 nh=4 nkv=4 B=24] case 2  max_diff=0.001709
+.check diff mean is 1.621246337890625e-05, max is 0.0006103515625, sum is 592.5
+  PASS [TND hd=128 bs=128 nh=16 nkv=16 B=3] case 3  max_diff=0.000610
+.check diff mean is 2.1457672119140625e-05, max is 0.0009765625, sum is 258.75
+  PASS [TND hd=128 bs=128 nh=1 nkv=1 B=21] case 4  max_diff=0.000977
+.check diff mean is 1.5795230865478516e-05, max is 0.0006103515625, sum is 304.25
+  PASS [TND hd=128 bs=128 nh=4 nkv=4 B=9] case 5  max_diff=0.000610
+.check diff mean is 2.0623207092285156e-05, max is 0.001953125, sum is 411.5
+  PASS [TND hd=128 bs=128 nh=1 nkv=1 B=32] case 6  max_diff=0.001953
+.check diff mean is 1.2814998626708984e-05, max is 0.00030517578125, sum is 60.71875
+  PASS [TND hd=128 bs=128 nh=8 nkv=8 B=2] case 7  max_diff=0.000305
+.check diff mean is 2.0325183868408203e-05, max is 0.0006103515625, sum is 823.0
+  PASS [TND hd=128 bs=128 nh=16 nkv=16 B=5] case 8  max_diff=0.000610
+.check diff mean is 1.7821788787841797e-05, max is 0.00048828125, sum is 82.375
+  PASS [TND hd=128 bs=128 nh=1 nkv=1 B=9] case 9  max_diff=0.000488
+.check diff mean is 5.137920379638672e-05, max is 0.00244140625, sum is 117.75
+  PASS [TND hd=128 bs=128 nh=1 nkv=1 B=4] case 10  max_diff=0.002441
+
+  Subtotal: 10 passed, 0 failed
+
+============================================================
+Combination: layout=TND  head_dim=256  block_size=64
+============================================================
+.check diff mean is 1.4662742614746094e-05, max is 0.000732421875, sum is 6480.0
+  PASS [TND hd=256 bs=64 nh=16 nkv=16 B=23] case 1  max_diff=0.000732
+.check diff mean is 1.6927719116210938e-05, max is 0.00146484375, sum is 1507.0
+  PASS [TND hd=256 bs=64 nh=4 nkv=4 B=27] case 2  max_diff=0.001465
+.check diff mean is 1.3947486877441406e-05, max is 0.00048828125, sum is 204.375
+  PASS [TND hd=256 bs=64 nh=1 nkv=1 B=14] case 3  max_diff=0.000488
+.check diff mean is 1.8775463104248047e-05, max is 0.000732421875, sum is 820.0
+  PASS [TND hd=256 bs=64 nh=4 nkv=4 B=10] case 4  max_diff=0.000732
+.check diff mean is 1.537799835205078e-05, max is 0.0009765625, sum is 911.5
+  PASS [TND hd=256 bs=64 nh=8 nkv=8 B=8] case 5  max_diff=0.000977
+.check diff mean is 1.3709068298339844e-05, max is 0.001953125, sum is 6028.0
+  PASS [TND hd=256 bs=64 nh=16 nkv=16 B=28] case 6  max_diff=0.001953
+.check diff mean is 1.8656253814697266e-05, max is 0.00146484375, sum is 1088.0
+  PASS [TND hd=256 bs=64 nh=4 nkv=4 B=11] case 7  max_diff=0.001465
+.check diff mean is 1.1682510375976562e-05, max is 0.00018310546875, sum is 154.5
+  PASS [TND hd=256 bs=64 nh=2 nkv=2 B=6] case 8  max_diff=0.000183
+.check diff mean is 1.633167266845703e-05, max is 0.0009765625, sum is 938.5
+  PASS [TND hd=256 bs=64 nh=2 nkv=2 B=26] case 9  max_diff=0.000977
+.check diff mean is 1.6987323760986328e-05, max is 0.001953125, sum is 1906.0
+  PASS [TND hd=256 bs=64 nh=4 nkv=4 B=25] case 10  max_diff=0.001953
+
+  Subtotal: 10 passed, 0 failed
+
+============================================================
+Combination: layout=BSND  head_dim=128  block_size=128
+============================================================
+.check diff mean is 2.5093555450439453e-05, max is 0.00048828125, sum is 3.234375
+  PASS [BSND hd=128 bs=128 nh=1 nkv=1 B=2] case 1  max_diff=0.000488
+.check diff mean is 2.0623207092285156e-05, max is 0.00146484375, sum is 335.75
+  PASS [BSND hd=128 bs=128 nh=1 nkv=1 B=32] case 2  max_diff=0.001465
+.check diff mean is 2.3603439331054688e-05, max is 0.001953125, sum is 255.625
+  PASS [BSND hd=128 bs=128 nh=1 nkv=1 B=22] case 3  max_diff=0.001953
+.check diff mean is 1.7404556274414062e-05, max is 0.0009765625, sum is 348.0
+  PASS [BSND hd=128 bs=128 nh=16 nkv=16 B=5] case 4  max_diff=0.000977
+.check diff mean is 2.0444393157958984e-05, max is 0.0009765625, sum is 855.0
+  PASS [BSND hd=128 bs=128 nh=16 nkv=16 B=6] case 5  max_diff=0.000977
+.check diff mean is 2.002716064453125e-05, max is 0.00146484375, sum is 392.25
+  PASS [BSND hd=128 bs=128 nh=2 nkv=2 B=19] case 6  max_diff=0.001465
+.check diff mean is 2.9802322387695312e-05, max is 0.00390625, sum is 637.5
+  PASS [BSND hd=128 bs=128 nh=2 nkv=2 B=19] case 7  max_diff=0.003906
+.check diff mean is 2.574920654296875e-05, max is 0.0029296875, sum is 4808.0
+  PASS [BSND hd=128 bs=128 nh=16 nkv=16 B=28] case 8  max_diff=0.002930
+.check diff mean is 2.1517276763916016e-05, max is 0.00244140625, sum is 2392.0
+  PASS [BSND hd=128 bs=128 nh=8 nkv=8 B=25] case 9  max_diff=0.002441
+.check diff mean is 2.5987625122070312e-05, max is 0.00390625, sum is 4116.0
+  PASS [BSND hd=128 bs=128 nh=16 nkv=16 B=22] case 10  max_diff=0.003906
+
+  Subtotal: 10 passed, 0 failed
+
+============================================================
+Combination: layout=BSND  head_dim=256  block_size=64
+============================================================
+.check diff mean is 1.4424324035644531e-05, max is 0.0009765625, sum is 912.0
+  PASS [BSND hd=256 bs=64 nh=2 nkv=2 B=28] case 1  max_diff=0.000977
+.check diff mean is 1.4185905456542969e-05, max is 0.00048828125, sum is 1641.0
+  PASS [BSND hd=256 bs=64 nh=4 nkv=4 B=30] case 2  max_diff=0.000488
+.check diff mean is 1.901388168334961e-05, max is 0.0029296875, sum is 9248.0
+  PASS [BSND hd=256 bs=64 nh=16 nkv=16 B=29] case 3  max_diff=0.002930
+.check diff mean is 1.424551010131836e-05, max is 0.000732421875, sum is 1131.0
+  PASS [BSND hd=256 bs=64 nh=8 nkv=8 B=10] case 4  max_diff=0.000732
+.check diff mean is 1.6748905181884766e-05, max is 0.0009765625, sum is 983.0
+  PASS [BSND hd=256 bs=64 nh=2 nkv=2 B=25] case 5  max_diff=0.000977
+.check diff mean is 2.09808349609375e-05, max is 0.0009765625, sum is 1449.0
+  PASS [BSND hd=256 bs=64 nh=8 nkv=8 B=14] case 6  max_diff=0.000977
+.check diff mean is 1.7940998077392578e-05, max is 0.00146484375, sum is 301.0
+  PASS [BSND hd=256 bs=64 nh=1 nkv=1 B=21] case 7  max_diff=0.001465
+.check diff mean is 1.1622905731201172e-05, max is 0.000152587890625, sum is 16.609375
+  PASS [BSND hd=256 bs=64 nh=1 nkv=1 B=2] case 8  max_diff=0.000153
+.check diff mean is 1.7583370208740234e-05, max is 0.00146484375, sum is 605.0
+  PASS [BSND hd=256 bs=64 nh=1 nkv=1 B=32] case 9  max_diff=0.001465
+.check diff mean is 2.3663043975830078e-05, max is 0.0006103515625, sum is 66.8125
+  PASS [BSND hd=256 bs=64 nh=2 nkv=2 B=1] case 10  max_diff=0.000610
+
+  Subtotal: 10 passed, 0 failed
+
+============================================================
+TOTAL: 40 passed, 0 failed  (seed=42)
+============================================================

@@ -1,0 +1,21 @@
+scale = 0.08838835  (same as production and Ascend_Ops/tests/test_adn_fia.py)
+criterion: mean_abs <= 0.0001  (from Ascend_Ops/tests/test_adn_fia.py)
+
+INFO 07-24 06:15:58 [__init__.py:44] Available plugins for group vllm.platform_plugins:
+INFO 07-24 06:15:58 [__init__.py:46] - ascend -> vllm_ascend:register
+INFO 07-24 06:15:58 [__init__.py:49] All plugins in this group will be loaded. Set `VLLM_PLUGINS` to control which plugins to load.
+INFO 07-24 06:15:58 [__init__.py:237] Platform plugin ascend is activated
+INFO 07-24 06:15:58 [platform.py:61] Breakable cudagraph is force disabled on Ascend because DeepSeek V4 PIECEWISE cudagraph is not supported yet.
+INFO 07-24 06:16:07 [importing.py:88] Triton not installed or not compatible; certain GPU-related functions will not be available.
+[PASS] DFlash q=9, single request, 2 pages: mean_abs=0.00006503 (max_abs=0.000657)
+[PASS] DFlash q=9, ragged batch, 1/2/3 pages: mean_abs=0.00007820 (max_abs=0.001195)
+[PASS] DSpark q=7, ragged batch, 1/2/3 pages: mean_abs=0.00007933 (max_abs=0.001195)
+[PASS] page-boundary KV lengths: mean_abs=0.00007813 (max_abs=0.000805)
+[FAIL] future-token dominance: mean_abs=0.00031917 (max_abs=0.003667)
+    causal vs non-causal differ on the first query row by 1.4386
+    distance to the causal golden: mean_abs=0.50098300
+
+FAILED:
+  - future-token dominance
+
+Diagnose in this order: a descriptor/shape error means the NZ allocation or writer layout disagrees with ADN; correct shapes but wrong numbers usually means num_key_value_heads, block_size or scale. Do not add a repack to the hot path to work around it.
