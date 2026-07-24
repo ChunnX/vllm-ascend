@@ -33,9 +33,15 @@ Everything here mirrors production rather than convenience:
   what this gate is meant to check.
 * ``DeviceOperator.reshape_and_cache`` for the writes, so the dispatch is the
   one production uses.
-* ``scale = head_dim ** -0.5``. Note the ATK cases use ``1 / head_dim``
-  (``atk_test/fia_common.py:508``); they are self-consistent but exercise a
-  numeric range production never sees.
+* ``scale = head_dim ** -0.5``, matching both production and the operator-level
+  tests in ``Ascend_Ops/tests/test_adn_fia.py``.
+
+What this gate adds on top of those operator tests: they build the rank-4 cache
+by permuting an ND tensor and calling ``.contiguous()``, which yields ordinary
+ND storage that merely has the right shape. Production allocates with
+``ACL_FORMAT_FRACTAL_NZ`` and writes through ``_npu_reshape_and_cache``. Whether
+ADN reads *that* correctly is exactly what has to be proven here, and nothing
+upstream proves it.
 """
 
 import sys
@@ -71,10 +77,11 @@ SCALE = HEAD_DIM**-0.5
 DEVICE = "npu"
 DTYPE = torch.float16
 
-# Tolerance placeholder. Replace with the value Phase 0.2 read out of the ATK
-# result JSON or framework config; the YAML only says `standard: acc: default`.
-ATOL = 5e-3
-RTOL = 5e-3
+# The operator's own criterion, from Ascend_Ops/tests/test_adn_fia.py: pass when
+# the MEAN absolute difference is within 1e-4. Max difference is reported but not
+# asserted -- at fp16 with O(1) outputs a few elements land near the format's
+# resolution, so a max-based bound would be a test of luck.
+MEAN_ATOL = 1e-4
 
 
 def allocate_production_caches(num_blocks):
@@ -213,8 +220,8 @@ def run_case(name, q_lens, kv_lens, *, value_builder=None):
     actual = out.cpu().float()
     diff = (actual - reference).abs()
     max_err, mean_err = diff.max().item(), diff.mean().item()
-    ok = torch.allclose(actual, reference, atol=ATOL, rtol=RTOL)
-    print(f"[{'PASS' if ok else 'FAIL'}] {name}: max_abs={max_err:.6f} mean_abs={mean_err:.6f}")
+    ok = mean_err <= MEAN_ATOL
+    print(f"[{'PASS' if ok else 'FAIL'}] {name}: mean_abs={mean_err:.8f} (max_abs={max_err:.6f})")
     if not ok:
         FAILURES.append(name)
     return dict(actual=actual, reference=reference, query=query, key_nd=key_nd, value_nd=value_nd)
@@ -243,21 +250,23 @@ def future_token_dominance():
     causal_reference = golden(case["query"], case["key_nd"], case["value_nd"], q_lens, kv_lens, causal=True)
     first_row_gap = (case["reference"][0] - causal_reference[0]).abs().max().item()
     print(f"    causal vs non-causal differ on the first query row by {first_row_gap:.4f}")
-    if first_row_gap <= ATOL:
+    if first_row_gap <= MEAN_ATOL:
         FAILURES.append(
             "future-token dominance: the two goldens agree, so this case cannot tell "
             "causal from non-causal -- fix the fixture before trusting it"
         )
         return
 
-    if torch.allclose(case["actual"], causal_reference, atol=ATOL, rtol=RTOL):
+    causal_mean = (case["actual"] - causal_reference).abs().mean().item()
+    print(f"    distance to the causal golden: mean_abs={causal_mean:.8f}")
+    if causal_mean <= MEAN_ATOL:
         FAILURES.append("future-token dominance: ADN output matches the CAUSAL golden")
 
 
 def main():
     require_env()
-    print(f"scale = {SCALE:.8f}  (ATK uses 1/head_dim = {1.0 / HEAD_DIM:.8f}; production uses this one)")
-    print(f"tolerance atol={ATOL} rtol={RTOL}  <-- replace with the value Phase 0.2 recorded\n")
+    print(f"scale = {SCALE:.8f}  (same as production and Ascend_Ops/tests/test_adn_fia.py)")
+    print(f"criterion: mean_abs <= {MEAN_ATOL}  (from Ascend_Ops/tests/test_adn_fia.py)\n")
 
     # DFlash queries K+1 = 9 per request, DSpark K = 7. KV lengths span one, two
     # and three pages, with the last two straddling a page boundary.

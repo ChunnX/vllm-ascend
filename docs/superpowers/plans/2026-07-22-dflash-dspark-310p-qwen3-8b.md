@@ -344,29 +344,45 @@ for repo in ['Qwen/Qwen3-8B', 'z-lab/Qwen3-8B-DFlash-b16', 'deepseek-ai/dspark_q
 
 #### 0.2 先验证 ADN 自身的目标 case
 
-在已安装 ADN 的 310P 环境，从 `Ascend_Ops/atk_test` 执行现有目标 YAML：
+Ascend_Ops 已把 ATK 用例替换成直接可跑的 pytest 风格脚本，`atk_test/` 目录不再存在。
+在已安装 ADN 的 310P 环境执行：
 
 ```bash
-atk case -f op_fia_tnd_nocausal_hd128_bs128.yaml -p . -dt 1
-atk task -c result/op_fia_tnd_nocausal_hd128_bs128/json/all_op_fia_tnd_nocausal_hd128_bs128.json -n nodes.yaml -p . -sp
+python Ascend_Ops/tests/test_adn_fia.py
 ```
 
-- [ ] TND、non-causal、D=128、block size 128 的 ATK case 通过；
-- [ ] 记录 ATK 实际使用的判据和误差统计，供 NZ readback 复用；
-- [ ] 记录 ATK 用的 **scale**，并注意它与运行时不同（见下）。
+它覆盖 4 组 layout × head_dim × block_size，每组 10 个随机用例，`MAX_SEQ=8192`、
+`MAX_BATCH=32`，MHA 与 GQA 都在内；不传 `attn_mask`，走的正是本期用的 no-mask 路径。
+（`tests/test_adn_fia_tnd_compress_mask.py` 测的是 compressed-mask 即 causal 路径，本期不用。）
 
-⚠️ **ATK 的 scale 不是运行时的 scale。** `atk_test/fia_common.py:508` 用的是
-`scale = 1.0 / self.HEAD_DIM`，即 `1/128`；而 vLLM 运行时是 `self.scale = head_size ** -0.5`，
-即 `1/sqrt(128)`。ATK case 自身是自洽的（golden 和 kernel 用同一个 scale），所以它会通过——
-但那验证的不是生产数值区间。
+- [ ] 该脚本通过，其中 TND / head_dim=128 / block_size=128 这组是本期的目标组合。
 
-**Phase 0.4 的 NZ readback 必须显式用 `128 ** -0.5`**，golden 也用同一个值。直接照抄 ATK 的
-scale 会让 smoke 在一个生产永远不会出现的数值尺度上通过。
+**判据从这里取，不要另立一套。** `test_adn_fia.py:172` 定义：
 
-注意 `atk_test/op_fia_tnd_nocausal_hd128_bs128.yaml` 写的是 `standard: acc: default`，
-**YAML 里没有字面的 `atol`/`rtol`**。判据来自 ATK 框架对 FP16 的 default 精度标准，必须从
-运行产生的 result JSON 或 ATK 框架配置里把实际数值抄出来记进 PR，不能从 YAML 里找、也不能
-自己编一个。
+```python
+atol = 1e-4
+...
+passed = diff_flatten_mean <= atol
+```
+
+即**按平均绝对误差判定，阈值 1e-4**；最大误差只打印不参与判定。这个选择是合理的：
+fp16 在 O(1) 输出上单元素误差本就接近格式分辨率（~1e-3），拿 max 卡会变成看运气。
+Phase 0.4 的 NZ readback 沿用同一判据。
+
+**scale 已与生产一致。** `test_adn_fia.py:173` 用 `scale = head_dim ** -0.5`，
+和 vLLM 运行时的 `self.scale` 相同。（旧 `atk_test/fia_common.py` 曾用 `1/head_dim`，
+自洽但验的不是生产数值区间；该文件已随 ATK 一并移除，这条历史坑不再存在。）
+
+**ADN 的 Python ABI 已精简。** 新签名移除了全部 quant/dequant/antiquant 参数和
+`kv_padding_size`，保留：
+
+```text
+query, key, value, attn_mask, actual_seq_lengths_q, actual_seq_lengths_kv,
+block_table, num_heads, scale_value, input_layout, num_key_value_heads,
+block_size, inner_precise, force_call
+```
+
+本期 adapter 全程只用关键字实参且从未传过被移除的那些参数，**无需改动**。
 
 #### 0.3 验证 PyTorch NPU 输入展开所需算子
 
@@ -429,8 +445,8 @@ value_cache = torch_npu.empty_with_format(
 6. physical page IDs 乱序且不连续；
 7. 对比 FP32 full-attention golden；
 8. 增加 future-token-dominance case，使 causal 与 non-causal 输出明显不同；
-9. **scale 用运行时的 `128 ** -0.5`**（不是 ATK 的 `1/128`，见 Phase 0.2），kernel 与 golden 一致；
-10. 使用 Phase 0.2 从 ATK 结果/框架配置抄出来的实际判据，同时打印 max/mean absolute error；不得拍脑袋固定
+9. **scale 用 `128 ** -0.5`**，kernel 与 golden 一致（与 `Ascend_Ops/tests/test_adn_fia.py` 相同）；
+10. 判据沿用 0.2 的 **mean_abs <= 1e-4**，同时打印 max/mean absolute error；不得另立一套或拍脑袋固定
    `max_abs < 5e-3`。
 
 Phase 0 完成标准：两个 smoke 均在目标 310P 环境通过，且版本、命令和误差结果进入 PR 证据。
@@ -2212,7 +2228,7 @@ pre-commit run
 只有同时满足以下条件，Qwen3-8B 310P eager 适配才算完成：
 
 - [ ] scope 仍严格限定于本文支持矩阵；
-- [ ] ADN TND/no-mask/D128/B128 ATK case 通过；
+- [ ] `Ascend_Ops/tests/test_adn_fia.py` 通过（含 TND/no-mask/D128/B128 这组）；
 - [ ] vLLM rank-4 NZ writer-to-ADN readback 通过 q=9、q=7、ragged、3 页和 causal discriminator；
 - [ ] PyTorch NPU 输入展开 exact-op smoke 在 310P 通过；
 - [ ] 五层逐层 context RoPE 生效；
