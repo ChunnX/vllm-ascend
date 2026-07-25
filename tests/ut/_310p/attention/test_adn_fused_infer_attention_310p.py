@@ -379,13 +379,13 @@ class TestAdnCaptureGuard(TestBase):
         """Reading _EXTRA_CTX without a forward context raises, so the guard must
         short-circuit on availability -- otherwise it would break callers that
         never needed a context."""
-        with mock_patch(f"{ADN_MOD}.is_forward_context_available", return_value=False):
-            exploding = SimpleNamespace()
-
-            def _boom(_self, name):
+        class _Exploding:
+            # A real class, not SimpleNamespace: the latter is immutable, so
+            # __getattr__ cannot be attached to it.
+            def __getattr__(self, name):
                 raise AssertionError(f"read _EXTRA_CTX.{name} without a forward context")
 
-            type(exploding).__getattr__ = _boom
-            with mock_patch(f"{ADN_MOD}._EXTRA_CTX", exploding):
+        with mock_patch(f"{ADN_MOD}.is_forward_context_available", return_value=False):
+            with mock_patch(f"{ADN_MOD}._EXTRA_CTX", _Exploding()):
                 _, adn, _ = run_forward()
         self.assertEqual(len(adn.calls), 1)
