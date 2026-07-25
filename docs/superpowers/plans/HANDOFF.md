@@ -16,7 +16,8 @@
 让 **Qwen3-8B + DSpark drafter（K=7）在 Ascend 310P（Atlas 300I DUO）上跑通投机解码**，
 MRV1 + TP=4 + FP16 + eager。核心难点是 310P 没有 Triton、且没有 910 的 FIA 算子。
 
-**当前状态：eager 全链路已跑通并验证正确；图模式（target 入图）已实现待真机验证。**
+**当前状态：eager 全链路已跑通并验证正确；图模式捕获成功但 replay 崩在 aicore
+（见 §6.1），根因未定位。**
 
 ---
 
@@ -91,13 +92,142 @@ vllm-workspace/
 
 ## 6. 正在开发 / 待验证
 
-**target 入图 + drafter eager**（代码已完成，未真机验证）：
+**target 入图 + drafter eager**：捕获成功，**replay 阶段真机崩了**（07-25 11:40）。
 
 - 模式必须是 **`FULL_DECODE_ONLY`**（不是 PIECEWISE）——证据：PR #11765 = `41ff81e1a`
   自己的性能表两行都用 FULL_DECODE_ONLY
 - `cudagraph_capture_sizes` 必须是 **`uniform_decode_query_len = 1 + K = 8`** 的整数倍，
   按 prompt 数推导（`[8, 16, 24]`）。**写 7 永远不会命中**
-- 待跑：`VLLM_USE_V2_MODEL_RUNNER=0 pytest -sv tests/e2e/pull_request/four_card/_310p/test_qwen3_8b_parallel_draft_graph_310p.py`
+
+### 6.1 07-25 11:40 崩溃：已知事实
+
+日志：`logs/20260725/test_e2e_parallel_draft_graph_310p_07251140.log` +
+`logs/20260725/plog-80316_20260725034057875.log`
+
+| 事实 | 出处 |
+| --- | --- |
+| 捕获成功，`[8,16,24]` 三个图 6 秒捕完，0.21 GiB | e2e log:106,114 |
+| eager baseline 全过；崩的是第二个 `VllmRunner`（图模式） | e2e log:647-680 |
+| 崩溃时刻 = 首次 replay 之后约 0.8 s | e2e log:134 vs plog:65 |
+| **崩溃时 3 条 prompt 已完成 1 条，`num_running_reqs=2`** | e2e log:546 |
+| 只有 TP1/TP2 报 aicore 异常，TP0/TP3 是被拖死的 | e2e log:211,332 |
+| Python 栈停在 rejection sampler 的 `aclnnNonzeroV2`（**异步，栈不准**） | e2e log:248 |
+| **真正出错的核是 `Add_41dad…_high_performance`，`blockDim=1`、`tilingKey=0`** | plog:5,3 |
+| 报错语义：`Illegal instruction, usually caused by unaligned UUB addresses` | plog:28 |
+
+**读法**：`Illegal instruction / unaligned UUB` 不是数值越界，是**这个 Add 核拿到的
+tiling / 地址本身是坏的**——典型的"图里捕获的某个 op，其 tiling 或 workspace 缓冲在
+replay 时已经被别人复用"。`NonzeroV2` 只是崩溃后第一个 sync 点，**不要去查 rejection
+sampler**。
+
+### 6.1b 已排除的假设（有直接证据）
+
+用户在 **eager** 下用 `vllm serve` **显式开启 async-scheduling** 跑过，**正常**。
+
+`gpu_model_runner.py:658`：`use_async_spec_decode = use_async_scheduling and num_spec_tokens > 0`
+——只需这两个条件。所以那次 serve 里 `_prepare_inputs` 的异步簿记
+（`update_num_computed_tokens_for_batch_change`，含嫌疑 Add）**确实执行过**，
+且 serve 的连续批处理必然有请求先后结束 → batch 变化也覆盖了。
+
+| 假设 | 状态 |
+| --- | --- |
+| async scheduling 本身有问题 | ❌ 排除 |
+| 异步 spec decode 簿记代码本身有 bug | ❌ 排除（同一段代码在 eager serve 跑过） |
+| 图 replay 与其他东西的交互 | ✅ 唯一剩下的 |
+
+（此前是从 `vllm/config/vllm.py:992-1040` 的自动解析**推断** eager 也开着 async；
+现在有直接证据。）
+
+**因此 §6.4 的实验顺序调整为：先跑单 prompt**——既然簿记代码在 eager 下是好的，
+问题必然涉及图，而单 prompt 是"图 replay + DSpark"的最小可验配置
+（一张图 `[8]`、无尺寸切换、无 batch 变化、无 condense）。
+过了再用 `ASYNC_SCHEDULING=0`（3 prompt）分 (a)/(b)；还崩则说明问题更根本，范围反而更好缩。
+
+### 6.1c 补充证据（本次静态分析）
+
+1. **args 有 poison**：`arg12 = 0xa5a5a5a5_03054048`，高 32 位是典型未初始化/已释放填充。
+   配合 `tilingKey=0` 与 `unaligned UUB`，指向**该核拿到的 args/tiling 本身是脏的**，
+   而非数值越界。`arg1`(输入1) 与 `arg3`(tiling) 仅差 32 字节，同一 args 区。
+2. **嫌疑 Add 在图外**：`model_runner_310p.py:316` 的调用点位于 `_prepare_inputs`（`:245`），
+   在 model forward **之前**，不在捕获的图内。所以是"图 replay ↔ 图外主机代码"的交互，
+   不是"图内 op 被破坏"。形状也对得上：Add 规模 = `num_reqs` = 2 = args 9/10/11 的 `0x2`。
+3. **已有一道同类屏障，且我们正好踩在其触发条件上**：`model_runner_310p.py:113-123`
+   在 `finished_req_ids` 非空时 `torch.npu.current_stream().synchronize()`，
+   注释写明是为了「condense() 重写 block_table.np 前排干上一步的 ACL graph replay」。
+   崩溃正好发生在 batch 3→2（有请求结束）。**它只覆盖 `block_table.np`**，
+   而 `_prepare_inputs` 里那组 `num_computed_tokens` / `prev_positions` /
+   `valid_sampled_token_count` 缓冲不在保护范围内 —— 这是修复方向的第一候选。
+
+### 6.2 最可能的两条线（未验证，别直接改代码）
+
+崩在"batch 3→2"这一步，同时踩中两件事，必须先分开：
+
+- **(a) 图尺寸切换**：24 → 16，第一次换图。多个 graph size 共享一个 memory pool，
+  某个 ATB op 捕获期分配的 workspace/tiling 被另一张图复用
+- **(b) batch 变更的簿记**：`finished_req_ids` → `condense()` 搬 `block_table.np` 行 +
+  async spec decode 的 `update_num_computed_tokens_for_batch_change()`
+  （`vllm_ascend/spec_decode/utils.py:28` 正好是一个 `corrected = prev_computed + valid_counts`
+  的小 Add）。`model_runner_310p.py:112` 已有一道 sync 屏障，但那是给同步调度写的
+
+注意 310P 走的是**独立的图契约**（`model_runner_310p.py:66` 的 docstring）：不注册
+`graph_params`，所以 A2/A3 的 `update_graph_params()` 在 310P 上是空转
+（`attn_params` 为空 → early return）。也就是说 **replay 前没有任何 op 参数刷新**，
+一切靠"输入缓冲地址不变"。这正是 (a) 成立的前提条件。
+
+### 6.3 ⚠️ `ASCEND_LAUNCH_BLOCKING=1` 在图模式下用不了
+
+`vllm_ascend/platform.py:593-604`：只要 `cudagraph_mode != NONE` 且
+`ASCEND_LAUNCH_BLOCKING=1`，`check_and_update_config()` 直接 `raise ValueError`。
+设计文档 `docs/source/developer_guide/Design_Documents/ACL_Graph.md:71,122` 也写死了这条。
+原因是 launch blocking 在每次下发后插 stream sync，而 capture 期间对捕获流做 sync 非法。
+
+**所以拿不到"准确 Python 栈"这条路是堵死的**，只能从 plog / dump 侧反推。别再提这个建议。
+
+### 6.4 下一步实验（按序，每步一次跑，别并行改多个变量）
+
+**第 0 步不用跑，服务器上现成的文件就能定位到是哪个 Add：**
+
+- 完整（未过滤的）plog：`/root/ascend/log/debug/plog/` 里 pid 80316 那个文件，
+  查 `stream_id=11` 上 `task_id` 19943 / 19944 / **19945** / 19946 附近的 kernel name
+  → 出错的 Add 前后是哪几个算子，直接看出在图内还是图外
+- CANN 已经自动写好的异常 dump（plog:25,27）：
+  `extra-info/data-dump/1/exception_info.11.19945.20260725034057874`
+  `extra-info/data-dump/1/Add_41dadce325b0f810d03359af2a38990b_high_performance_223000000_host.o`
+  同目录/kernel_meta 里的同名 `.json` 有输入 shape 和 dtype → 对着源码认哪个 Add
+
+`tests/.../test_qwen3_8b_parallel_draft_graph_310p.py` 已加两个 env 旋钮，
+不用改代码就能 bisect（prompt 数会自动带着 capture sizes 一起缩）：
+
+```bash
+# 1) 打开 ACLGraphWrapper 的 replay 输入地址断言（acl_graph.py:101,243）——
+#    正好验证 §6.2 的"缓冲地址在 capture 与 replay 之间变了"这一族假设
+VLLM_LOGGING_LEVEL=DEBUG VLLM_USE_V2_MODEL_RUNNER=0 pytest -sv \
+  tests/e2e/pull_request/four_card/_310p/test_qwen3_8b_parallel_draft_graph_310p.py
+```
+
+```bash
+# 2) 单 prompt：无 batch 变化、无 condense、只有一张图 [8]
+GRAPH_E2E_NUM_PROMPTS=1 VLLM_USE_V2_MODEL_RUNNER=0 pytest -sv \
+  tests/e2e/pull_request/four_card/_310p/test_qwen3_8b_parallel_draft_graph_310p.py
+```
+
+```bash
+# 3) 3 prompt 但关掉异步调度：过了 = (b)，还崩 = (a)
+GRAPH_E2E_ASYNC_SCHEDULING=0 VLLM_USE_V2_MODEL_RUNNER=0 pytest -sv \
+  tests/e2e/pull_request/four_card/_310p/test_qwen3_8b_parallel_draft_graph_310p.py
+```
+
+**在第 0 步认出那个 Add 之前不要提交任何修复**——现在能编出至少四个都自洽的故事。
+
+### 6.5 `rejection_sampler.py:1042` 不是故障点
+
+`aclnnNonzeroV2` 是 AiCPU 算子，输出 shape 要回主机，PTA 在它内部调
+`aclrtSynchronizeStream`（plog:39 `UpdateOutputShapeFromExtInfo`）。它是**崩溃后第一个
+同步点**，不是出错的地方——出错的是更早下发的 `Add`，task_id 19945（plog:5）。
+在 1042 行上做任何改动只会把报错挪到下一个同步点。
+
+另外 `Illegal instruction / unaligned UUB` 是核内地址计算越界，**不是**索引越界：
+`target_argmax[global_idx[...]]` 就算 index 全错也不会让一个 `Add` 报这个。
 
 ---
 
@@ -135,8 +265,9 @@ pos-1 从 0.87 掉到 0.46 值得查，可能是 (a) ADN vs FIA / 逐层 vs fuse
 
 ## 8. 下一步
 
-1. **跑图模式 E2E**。捕获失败时按此顺序退：减 prompt 数（capture sizes 会自动跟着变）→ 只留 1 条。
+1. **定位 §6.1 的 Add**，按 §6.3 的三步跑。
    **不要只砍 capture sizes 不砍 prompt**，否则批次不匹配会静默回退 eager，测试通过但什么也没证明
+   （`GRAPH_E2E_NUM_PROMPTS` 已经把两者绑在一起了）
 2. **acceptance 复测**（可比条件下），再决定要不要深挖
 3. **Task 5**：整理提交、写 PR。建议提交边界见计划文档 §5.4
 4. （可选）向 Ascend_Ops 提 ADN 的 ABI 需求：lengths 的 tensor 形态 + `out=`

@@ -53,12 +53,18 @@ MAIN_MODEL = os.environ.get("QWEN3_8B_PATH", "/opt/foundation_model/Qwen3-8B")
 SPEC_MODEL = os.environ.get("DSPARK_QWEN3_8B_PATH", "/opt/foundation_model/dspark_qwen3_8b_block7")
 NUM_SPECULATIVE_TOKENS = 7  # DSpark block7
 
+# Bisect knobs for the 07-25 aicore fault, which first appeared on the step where
+# the running batch shrank (3 reqs -> 2, graph 24 -> 16). GRAPH_E2E_NUM_PROMPTS
+# shrinks the batch *and* the capture list together -- shrinking only the capture
+# list makes the batch fall back to eager and proves nothing.
 PROMPTS = [
     "Hello, my name is",
     "The capital of France is",
     "Explain in one sentence why the sky is blue:",
-]
+][: int(os.environ.get("GRAPH_E2E_NUM_PROMPTS", "3"))]
 MAX_TOKENS = 64
+# Separates "graph-size switch" from "async spec-decode batch-change bookkeeping".
+ASYNC_SCHEDULING = os.environ.get("GRAPH_E2E_ASYNC_SCHEDULING", "1") == "1"
 
 # Same as the eager E2E except enforce_eager is off. fp16 is required by ADN and
 # block_size must be 128 (the default 16 breaks 310P kernel block selection).
@@ -73,6 +79,7 @@ COMMON = dict(
     disable_log_stats=False,
     max_num_seqs=256,
     gpu_memory_utilization=0.8,
+    async_scheduling=ASYNC_SCHEDULING,
 )
 
 SPECULATIVE_CONFIG = {
