@@ -83,12 +83,30 @@ SPECULATIVE_CONFIG = {
 }
 
 
+# A batch counts as uniform decode only when num_tokens == uniform_decode_query_len
+# * num_reqs (gpu_model_runner: the max_num_scheduled_tokens check), and
+# uniform_decode_query_len is 1 + num_spec_tokens -- 8 here, not 7. Capture sizes
+# are token counts, so they must be multiples of 8; a size of 7 would never match
+# and the batch would fall back to eager.
+#
+# 7 is right for the A2/A3 PIECEWISE test, where the drafter is captured too and
+# DSpark's drafter forward is exactly K tokens per request. Here the drafter stays
+# eager, so only the target's K+1 shape matters.
+UNIFORM_DECODE_QUERY_LEN = 1 + NUM_SPECULATIVE_TOKENS
+CAPTURE_SIZES = [UNIFORM_DECODE_QUERY_LEN * n for n in range(1, len(PROMPTS) + 1)]
+
+
 def _graph_compilation_config():
-    # Keep the capture set minimal: at TP=4 the event-id budget limits how many
-    # graphs a 36-layer model can capture at all.
+    # Cover batch 1..len(PROMPTS): with all prompts in flight the batch is
+    # len(PROMPTS) * 8 tokens, and if that size is not captured the run silently
+    # falls back to eager and this test would prove nothing.
+    #
+    # At TP > 1 the 310P event-id budget caps how many graphs a model of this
+    # depth can capture. If capture fails outright, shrink this list (and the
+    # prompt count with it) rather than assuming the path is broken.
     return CompilationConfig(
         cudagraph_mode="FULL_DECODE_ONLY",
-        cudagraph_capture_sizes=[8, 16],
+        cudagraph_capture_sizes=CAPTURE_SIZES,
     )
 
 

@@ -386,6 +386,30 @@ device 张量**，地址不稳。investigation 结论是 parallel_drafting 下 s
 
 ---
 
+## cudagraph_capture_sizes 的正确取值
+
+`gpu_model_runner.py:842`：`uniform_decode_query_len = 1 + num_spec_tokens`
+→ DSpark K=7 时是 **8，不是 7**。
+
+`:3829-3830` 的 uniform decode 判定：
+```python
+(max_num_scheduled_tokens == uniform_decode_query_len)
+and (num_tokens == max_num_scheduled_tokens * num_reqs)
+```
+**capture size 是 token 数**，所以必须是 `uniform_decode_query_len` 的整数倍：
+batch 1..N → `[8, 16, 24, ...]`。
+
+**为什么会想到 7**：A2/A3 的 dspark 测试用 `cudagraph_capture_sizes=[7, 8]` + **PIECEWISE**。
+PIECEWISE 下 **drafter 也被捕获**，而 DSpark drafter 每请求正好 K=7 个 query token，所以 7、8 都要。
+我们是 FULL_DECODE_ONLY + drafter eager，drafter 永不入图，**7 用不上**。
+
+**修掉的真 bug**：图模式 E2E 原本写死 `[8, 16]`（batch 1、2），但测试有 3 条 prompt，
+`max_num_seqs=256` 会把它们批到一起 = **24 tokens**，两个 size 都不匹配 → **静默回退 eager**，
+图根本没被验证，测试会"通过"但什么也没证明。改为按 prompt 数推导
+`[UNIFORM_DECODE_QUERY_LEN * n for n in 1..len(PROMPTS)]`。
+
+---
+
 ## 图模式选择的证据链（PR #11765 复核）
 
 **结论：继续用 `FULL_DECODE_ONLY`。**
