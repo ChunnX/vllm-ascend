@@ -386,6 +386,25 @@ device 张量**，地址不稳。investigation 结论是 parallel_drafting 下 s
 
 ---
 
+## 图模式选择的证据链（PR #11765 复核）
+
+**结论：继续用 `FULL_DECODE_ONLY`。**
+
+PR #11765 就是本基线里的 `41ff81e1a [Feature] Add qwen/glm dspark for mrv1`（2026-07-13）——
+它是 **DSpark MRV1 的 PR，不是 310P 图模式的 PR**。而且它自己的性能表两行都写着
+`FULL_DECODE_ONLY`（DFlash 4.73 / DSpark 6.30），所以"只支持 eager 和 piecewise"的读法不成立。
+
+**时间线上有个值得知道的细节**：#11765 当时 DSpark **没有**关掉自己的图（继承基类的
+`use_cuda_graph = runner._use_aclgraph() and not spec.enforce_eager`），所以那次 6.30 的 benchmark
+里 drafter 很可能也在图中。一周后的 `8fe122d95 [Feature][Refactor] DSv4 DSpark (#11431)`
+（2026-07-21）才加上 `use_cuda_graph = False`，注释 "Ascend cudagraph unsupported on this path"。
+
+**对我们无影响**：ADN 的 `SymInt[]` 长度参数无论如何都要求 drafter 保持 eager，而当前基线已经
+强制了这一点。所以「target FULL_DECODE_ONLY + drafter eager」既是当前代码的既成行为，
+也是 ADN 约束下唯一可行的组合。
+
+---
+
 ## Task 6：target 入图 + drafter eager（已实现，待真机）
 
 按调查结论实现。**纠正一个前提**：310P 支持的是 **`FULL_DECODE_ONLY`，不是 PIECEWISE**
@@ -489,10 +508,20 @@ exact token match: 3/3 prompts
 **正确性确认**：3/3 完全一致（上一轮 prompt 2 分岔是 run-to-run 的 fp 抖动，正印证 token
 一致性不是硬门）。代码层面的适配到此功能完整且正确。
 
-**遗留观察（效率，非正确性）**：acceptance 明显低于 A2/A3 golden `[1.0,0.8,0.6×5]`——
-平均每步接受 2.2/7，A2/A3 是 4.8/7，约一半。最可疑的是 **pos-0 = 0.80**（DSpark 的 anchor，
-A2/A3 是 1.0）。两种可能：(a) ADN vs FIA、逐层 RoPE vs fused RoPE 的 fp 差异累积；
-(b) draft 管线某环节细微偏差。**不阻塞功能，列为后续调查项。**
+**遗留观察（效率，非正确性）**：acceptance 低于 A2/A3。
+
+⚠️ **参照修正**：先前拿 `tests/.../utils.py` 的 `BASELINES["dspark"]` 比是错的——那是测试的
+**宽松阈值**，不是真实性能。真实数字在 PR #11765（`41ff81e1a`）的性能表里：
+
+| | Acc Length | Acc Rate per Position |
+| --- | --- | --- |
+| A2/A3 DSpark（gsm8k 100 req，output 2048） | **6.30** | `[0.94, 0.87, 0.81, 0.74, 0.69, 0.63, 0.59]` |
+| 本次 310P（3 条短 prompt，64 token） | ~2.2 | `[0.80, 0.46, 0.38, 0.30, 0.11, 0.11, 0.05]` |
+
+差距比先前估计的**更大**。但两者**不可直接比**：数据集、输出长度差异很大，短生成的前几个 token
+本来就更难猜。pos-1 从 0.87 掉到 0.46 仍值得查。两种可能：(a) ADN vs FIA、逐层 RoPE vs fused
+RoPE 的 fp 差异累积；(b) draft 管线某环节细微偏差。**不阻塞功能，列为后续调查项**；
+要下结论应先在同数据集同输出长度下复测。
 
 ---
 
