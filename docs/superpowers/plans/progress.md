@@ -22,6 +22,7 @@ Mac 侧只能做语法、行宽和 import 检查。
 | Phase 0.2 ADN 算子基线 | ✅ 40/40 通过 | 310P 真机 + ADN |
 | Phase 0.4 ADN NZ 直读门禁 | ✅ 通过（含 TP=4 布局用例） | 310P 真机 + ADN |
 | Task 4 Qwen3-8B eager E2E（DSpark-only，TP=4） | ✅ 通过（正确）；acceptance 偏低待查 | 310P 真机 |
+| Task 6 target 入图 / drafter eager | 🟡 已实现，待真机 | 310P 真机 |
 | Task 5 回归、文档、提交拆分 | ⬜ 未开始 | — |
 
 ---
@@ -336,6 +337,52 @@ TORCH_DEVICE_BACKEND_AUTOLOAD=0 pytest -q tests/ut/_310p/
 `adapt_patch()`，所以 310P 机器上这个 patch 必然生效。
 
 **这是既有缺陷，不在本期范围。** 第 2 类值得单独修，但应另开分支，不要混进本条线。
+
+---
+
+## Task 6：target 入图 + drafter eager（已实现，待真机）
+
+按调查结论实现。**纠正一个前提**：310P 支持的是 **`FULL_DECODE_ONLY`，不是 PIECEWISE**
+（`docs/source/locale/.../310p.po` 的 Graph Mode Notes）。同一段还有个对我们直接相关的警告：
+
+> 当启用多个 TP 时，**可捕获的图数量受限**，取决于模型深度（Qwen3-32B 只能捕获重放 **2 个图**）；
+> TP=1 时无此限制。原因是**硬件 event-id 资源**。
+
+我们是 TP=4 + 36 层，所以 E2E 的 `cudagraph_capture_sizes` 只给 `[8, 16]`。捕获直接失败的话，
+这个限制是第一嫌疑。
+
+### 改动
+
+**把「整机 eager」的检查换成「ADN 不得被捕获」的逐次检查。** 原来的
+`if not model_config.enforce_eager: raise` 会误杀 target 入图这个完全合法的配置——它检查的是
+引擎全局，而真正的约束只针对 ADN 自己。新判据：
+
+```python
+if is_forward_context_available() and _EXTRA_CTX.capturing:
+    raise RuntimeError("ADN draft attention was reached during ACLGraph capture...")
+```
+
+`is_forward_context_available()` 的短路是必需的——直接读 `_EXTRA_CTX` 在无 forward context 时会抛
+"Forward context is not set"，那正是之前 `test_forward_mtp_310` 被我打挂的同一个坑。
+
+**为什么这个判据更好**：它不依赖配置推断，而是在 ADN 真的被捕获的那一刻拦下。将来谁把 drafter
+翻进图模式，会在这里响，而不是产出静默错误的数值。
+
+**分工无需额外代码**：proposer 的 `use_cuda_graph` 独立于 runner，且 DSpark 已在
+`dspark_proposer.py:57` 把自己钉成 False。
+
+### 310P 已有的 spec-decode 图基建（不用重造）
+
+- `model_runner_310p.py:638` `is_spec_graph_capture` —— "All the spec decoding cases has to run
+  splitfuse op on 310P"
+- `:692` `update_before_replay` —— spec decode 在 replay 前更新 full graph 参数
+- `temporary_modify_uniform_decode_query_len` —— 目前只对 ngram 生效
+
+### 单测
+
+capture guard 三条：capturing=True 必须拒绝、capturing=False（eager 与 **replay** 两种情形）
+必须放行、无 forward context 时不得读 `_EXTRA_CTX`（用"一读就炸"的假对象锁住）。
+原来那条"graph mode 必须被拒绝"翻转成"必须放行"。
 
 ---
 

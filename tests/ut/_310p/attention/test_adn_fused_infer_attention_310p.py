@@ -255,8 +255,12 @@ class TestAdnScopeValidation(TestBase):
     def test_unsupported_architecture_is_refused(self):
         self._expect_refusal("outside this scope", vllm_config=make_vllm_config(arch="LlamaForCausalLM"))
 
-    def test_graph_mode_is_refused(self):
-        self._expect_refusal("eager-only", vllm_config=make_vllm_config(eager=False))
+    def test_engine_graph_mode_is_allowed(self):
+        """Whole-engine graph mode must NOT be refused: the target may run in
+        ACLGraph while the drafter stays eager. What matters is that ADN itself is
+        not captured, which is checked per call (see TestAdnCaptureGuard)."""
+        _, adn, _ = run_forward(impl=make_impl(vllm_config=make_vllm_config(eager=False)))
+        self.assertEqual(len(adn.calls), 1)
 
     def test_tp4_layout_is_allowed(self):
         """TP only shards heads; the per-rank layout is what is checked. Qwen3-8B
@@ -346,3 +350,42 @@ class TestAdnReturnShape(TestBase):
 
         with self.assertRaisesRegex(RuntimeError, "expected the query shape"):
             run_forward(adn=_FakeAdn(bad_dtype))
+
+
+class TestAdnCaptureGuard(TestBase):
+    """ADN must never be captured into an ACLGraph.
+
+    Its lengths are SymInt[] -- frozen as constants at capture time -- while
+    actual_seq_lengths_kv grows every decode step, so a captured graph would
+    attend over stale ranges and be silently wrong. The target being captured is
+    fine and expected; only this path must stay eager.
+    """
+
+    def test_capture_is_refused(self):
+        with mock_patch(f"{ADN_MOD}.is_forward_context_available", return_value=True):
+            with mock_patch(f"{ADN_MOD}._EXTRA_CTX", SimpleNamespace(capturing=True)):
+                with self.assertRaisesRegex(RuntimeError, "during ACLGraph capture"):
+                    run_forward()
+
+    def test_replay_and_eager_are_allowed(self):
+        """capturing=False covers both eager and graph *replay*: the drafter runs
+        eagerly even when the target replays a captured graph."""
+        with mock_patch(f"{ADN_MOD}.is_forward_context_available", return_value=True):
+            with mock_patch(f"{ADN_MOD}._EXTRA_CTX", SimpleNamespace(capturing=False)):
+                _, adn, _ = run_forward()
+        self.assertEqual(len(adn.calls), 1)
+
+    def test_no_forward_context_is_not_treated_as_capturing(self):
+        """Reading _EXTRA_CTX without a forward context raises, so the guard must
+        short-circuit on availability -- otherwise it would break callers that
+        never needed a context."""
+        with mock_patch(f"{ADN_MOD}.is_forward_context_available", return_value=False):
+            exploding = SimpleNamespace()
+
+            def _boom(_self, name):
+                raise AssertionError(f"read _EXTRA_CTX.{name} without a forward context")
+
+            type(exploding).__getattr__ = _boom
+            with mock_patch(f"{ADN_MOD}._EXTRA_CTX", exploding):
+                _, adn, _ = run_forward()
+        self.assertEqual(len(adn.calls), 1)

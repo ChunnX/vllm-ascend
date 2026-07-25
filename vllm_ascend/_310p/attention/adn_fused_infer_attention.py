@@ -16,8 +16,10 @@
 
 import torch
 import torch_npu
+from vllm.forward_context import is_forward_context_available
 
 from vllm_ascend._310p.attention.metadata_builder import get_query_lens_cpu
+from vllm_ascend.ascend_forward_context import _EXTRA_CTX
 from vllm_ascend.utils import ACL_FORMAT_FRACTAL_NZ
 
 # The configuration this path covers. TP is deliberately not pinned: it slices
@@ -97,8 +99,11 @@ def validate_adn_scope(*, vllm_config, query, key_cache, value_cache, num_heads,
             f"({sorted(ADN_SUPPORTED_ARCHITECTURES)})"
         )
 
-    if not vllm_config.model_config.enforce_eager:
-        raise RuntimeError("this scope is eager-only; ACLGraph is validated separately")
+    # NOTE: whole-engine eager is deliberately NOT required. The target may run in
+    # ACLGraph (FULL_DECODE_ONLY) while the drafter stays eager -- the proposer's
+    # use_cuda_graph is independent of the runner's. What must hold is that ADN
+    # itself is never captured, which is enforced per call in
+    # forward_parallel_draft_adn rather than inferred from the engine config.
 
     # Per-rank head layout, constrained structurally rather than by a fixed count.
     # TP is not checked: it only shards these heads across ranks and does not
@@ -169,6 +174,27 @@ def forward_parallel_draft_adn(self, query, attn_metadata, output):
     round's entire query block. Never pass the 310P compressed split-fuse mask here,
     and never synthesize an all-zero causal mask to imitate it.
     """
+    # ADN must never be captured into an ACLGraph. Its schema declares the
+    # lengths as SymInt[] (registration.cpp: actual_seq_lengths_q/kv), so the
+    # Python lists would be frozen as constants at capture time -- and
+    # actual_seq_lengths_kv grows every decode step, so replay would attend over
+    # stale ranges and be silently wrong. It also allocates its output per call
+    # with no out= variant, which capture cannot accept. A2/A3's FIA avoids both
+    # by taking the lengths as a tensor whose contents are updated in place; ADN
+    # has no such overload yet.
+    #
+    # The target running in ACLGraph is fine and expected: the drafter keeps
+    # use_cuda_graph=False, so this path stays eager. Verify that per call rather
+    # than trusting the config -- a future change flipping the drafter into graph
+    # mode must fail here instead of producing wrong numbers.
+    if is_forward_context_available() and _EXTRA_CTX.capturing:
+        raise RuntimeError(
+            "ADN draft attention was reached during ACLGraph capture. It cannot be "
+            "captured: its sequence lengths are SymInt[] (frozen as constants at "
+            "capture, while KV length grows every step) and it allocates its output "
+            "per call. Keep the drafter eager -- the target may still be captured."
+        )
+
     adn = load_adn()
 
     num_tokens = int(attn_metadata.num_actual_tokens)
