@@ -1,0 +1,35 @@
+[root@bc3eceb41821 vllm-ascend]# TORCH_DEVICE_BACKEND_AUTOLOAD=0 pytest -q tests/ut/_310p/
+.................................F..........................................................................ss...................................................... [ 98%]
+..                                                                                                                                                                   [100%]
+================================================================================= FAILURES =================================================================================
+_________________________________________________ TestAdnCaptureGuard.test_no_forward_context_is_not_treated_as_capturing __________________________________________________
+
+self = <tests.ut._310p.attention.test_adn_fused_infer_attention_310p.TestAdnCaptureGuard testMethod=test_no_forward_context_is_not_treated_as_capturing>
+
+    def test_no_forward_context_is_not_treated_as_capturing(self):
+        """Reading _EXTRA_CTX without a forward context raises, so the guard must
+        short-circuit on availability -- otherwise it would break callers that
+        never needed a context."""
+        with mock_patch(f"{ADN_MOD}.is_forward_context_available", return_value=False):
+            exploding = SimpleNamespace()
+    
+            def _boom(_self, name):
+                raise AssertionError(f"read _EXTRA_CTX.{name} without a forward context")
+    
+>           type(exploding).__getattr__ = _boom
+E           TypeError: cannot set '__getattr__' attribute of immutable type 'types.SimpleNamespace'
+
+tests/ut/_310p/attention/test_adn_fused_infer_attention_310p.py:388: TypeError
+============================================================================= warnings summary =============================================================================
+../../usr/local/python3.12.13/lib/python3.12/site-packages/torch/jit/_script.py:362: 14 warnings
+  /usr/local/python3.12.13/lib/python3.12/site-packages/torch/jit/_script.py:362: DeprecationWarning: `torch.jit.script_method` is deprecated. Please switch to `torch.compile` or `torch.export`.
+    warnings.warn(
+
+tests/ut/_310p/test_model_runner_310p.py::test_model_forward_updates_mtp_full_graph_params_before_replay
+  /usr/local/python3.12.13/lib/python3.12/multiprocessing/popen_fork.py:66: DeprecationWarning: This process (pid=56212) is multi-threaded, use of fork() may lead to deadlocks in the child.
+    self.pid = os.fork()
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+========================================================================= short test summary info ==========================================================================
+FAILED tests/ut/_310p/attention/test_adn_fused_infer_attention_310p.py::TestAdnCaptureGuard::test_no_forward_context_is_not_treated_as_capturing - TypeError: cannot set '__getattr__' attribute of immutable type 'types.SimpleNamespace'
+1 failed, 163 passed, 2 skipped, 15 warnings in 6.35s

@@ -228,3 +228,4 @@ csrc/third_party/
 .codegraph/
 
 .vllm_ascend/
+extra-info/
