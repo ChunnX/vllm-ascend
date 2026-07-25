@@ -1,0 +1,88 @@
+[ERROR] RUNTIME(80316,):2026-07-25-03:40:57.872.652 [davinci_kernel_task.cc:1516]81346 PreCheckTaskErr:Kernel task happen error, retCode=0x26, [aicore exception].
+[ERROR] RUNTIME(80316,):2026-07-25-03:40:57.872.797 [davinci_kernel_task.cc:1350]81346 GetArgsInfo:[AIC_INFO] args(0 to 12) after execute:0x12c2801d9a00, 0x12c20047a428, 0x12c2801e4200, 0x12c20047a448, 0x12c240200000, 0x1, 0, 0, 0, 0x2, 0x2, 0x2, 0xa5a5a5a503054048.
+[ERROR] RUNTIME(80316,):2026-07-25-03:40:57.872.805 [davinci_kernel_task.cc:1354]81346 GetArgsInfo:tilingKey = 0, print 1 Times totalLen=(13*8), argsSize=104, schemMode=0, blockDim=1
+[ERROR] RUNTIME(80316,):2026-07-25-03:40:57.872.821 [davinci_kernel_task.cc:1434]81346 PrintErrorInfoForDavinciTask:[AIC_INFO] after execute:args print end
+[ERROR] RUNTIME(80316,):2026-07-25-03:40:57.874.235 [davinci_kernel_task.cc:1464]81346 PrintErrorInfoForDavinciTask:[DFX_INFO]Aicore kernel execute failed, device_id=1, stream_id=11, report_stream_id=11, task_id=19945, flip_num=0, fault kernel_name=Add_41dadce325b0f810d03359af2a38990b_high_performance_223000000, fault kernel info ext=none, program id=240, hash=98398437960715668.
+[ERROR] IDEDD(80316,):2026-07-25-03:40:57.874.387 [dump_args.cpp:1053][tid:81346] [AIC_INFO] args(0 to 13) after execute:0x12c2801d9a00, 0x12c20047a428, 0x12c2801e4200, 0x12c20047a448, 0x12c240200000, 0x1, 0, 0, 0, 0x2, 0x2, 0x2, 0xa5a5a5a503054048, 
+[ERROR] IDEDD(80316,):2026-07-25-03:40:57.874.396 [dump_args.cpp:902][tid:81346] [AIC_INFO] after execute:args print end
+[ERROR] IDEDD(80316,):2026-07-25-03:40:57.874.463 [dump_args.cpp:1053][tid:81346] [Dump][Exception] begin to load normal tensor, index:0
+[ERROR] IDEDD(80316,):2026-07-25-03:40:57.874.469 [dump_args.cpp:419][tid:81346] [Dump][Exception] tensor type:1, pointer type:1
+[ERROR] IDEDD(80316,):2026-07-25-03:40:57.874.473 [dump_args.cpp:1053][tid:81346] [Dump][Exception] exception info dump args data, addr:0x12c2801d9a00; size:32 bytes
+[ERROR] IDEDD(80316,):2026-07-25-03:40:57.874.477 [dump_args.cpp:1053][tid:81346] [Dump][Exception] end to load normal tensor, index:0
+[ERROR] IDEDD(80316,):2026-07-25-03:40:57.874.485 [dump_args.cpp:1053][tid:81346] [Dump][Exception] begin to load normal tensor, index:1
+[ERROR] IDEDD(80316,):2026-07-25-03:40:57.874.488 [dump_args.cpp:419][tid:81346] [Dump][Exception] tensor type:1, pointer type:1
+[ERROR] IDEDD(80316,):2026-07-25-03:40:57.874.492 [dump_args.cpp:1053][tid:81346] [Dump][Exception] exception info dump args data, addr:0x12c20047a428; size:32 bytes
+[ERROR] IDEDD(80316,):2026-07-25-03:40:57.874.495 [dump_args.cpp:1053][tid:81346] [Dump][Exception] end to load normal tensor, index:1
+[ERROR] IDEDD(80316,):2026-07-25-03:40:57.874.501 [dump_args.cpp:1053][tid:81346] [Dump][Exception] begin to load normal tensor, index:2
+[ERROR] IDEDD(80316,):2026-07-25-03:40:57.874.504 [dump_args.cpp:419][tid:81346] [Dump][Exception] tensor type:1, pointer type:1
+[ERROR] IDEDD(80316,):2026-07-25-03:40:57.874.507 [dump_args.cpp:1053][tid:81346] [Dump][Exception] exception info dump args data, addr:0x12c2801e4200; size:32 bytes
+[ERROR] IDEDD(80316,):2026-07-25-03:40:57.874.510 [dump_args.cpp:1053][tid:81346] [Dump][Exception] end to load normal tensor, index:2
+[ERROR] IDEDD(80316,):2026-07-25-03:40:57.874.514 [dump_args.cpp:586][tid:81346] [Dump][Exception] begin to load tiling data, index:3
+[ERROR] IDEDD(80316,):2026-07-25-03:40:57.874.518 [dump_args.cpp:1053][tid:81346] [Dump][Exception] exception info dump args data, addr:0x12c20047a448; size:32 bytes
+[ERROR] IDEDD(80316,):2026-07-25-03:40:57.874.521 [dump_args.cpp:600][tid:81346] [Dump][Exception] end to load tiling data, index:3
+[ERROR] IDEDD(80316,):2026-07-25-03:40:57.874.531 [kernel_info_collector.cpp:380][tid:81346] Get error register information. coreNum=0
+[ERROR] IDEDD(80316,):2026-07-25-03:40:57.874.805 [kernel_info_collector.cpp:473][tid:81346] It is Non-SuperKernel. functionCount=43, globalCount=44
+[ERROR] IDEDD(80316,):2026-07-25-03:40:57.875.484 [dump_args.cpp:1022][tid:81346] [Dump][Exception] dump exception to file, file: /vllm-workspace/vllm-ascend/extra-info/data-dump/1/exception_info.11.19945.20260725034057874
+[ERROR] RUNTIME(80316,):2026-07-25-03:40:57.877.018 [hwts_engine.cc:157]81346 ReportExceptProc:Task exception! device_id=1, stream_id=11, task_id=19945, type=0(KERNEL_AICORE), kernel_name=Add_41dadce325b0f810d03359af2a38990b_high_performance_223000000 , failure_mode=1, retCode=0x26, [aicore exception]
+[ERROR] IDEDD(80316,):2026-07-25-03:40:57.878.145 [kernel_info_collector.cpp:255][tid:86407] [Dump][Exception] dump host kernel to file, file: /vllm-workspace/vllm-ascend/extra-info/data-dump/1/Add_41dadce325b0f810d03359af2a38990b_high_performance_223000000_host.o
+[ERROR] RUNTIME(80316,):2026-07-25-03:40:57.898.887 [device_error_core_proc.cc:227]81346 PrintCoreErrorInfo:The error from device(1), serial number is 21, there is an error of aicore, core id is 6, error code = 0x10, dump info: pc start: 0x80012c18bc03f68, current: 0x12c18bc03f80, vec error info: 0x17f5f0fe, mte error info: 0x90, ifu error info: 0xaffc7fffcf80, ccu error info: 0x3901384e003fdfda, cube error info: 0x46, biu error info: 0, aic error mask: 0x65000200d00028c, para base: 0x12c20047a400, errorStr: Illegal instruction, which is usually caused by unaligned UUB addresses.
+[ERROR] RUNTIME(80316,):2026-07-25-03:40:57.898.949 [device_error_core_proc.cc:258]81346 PrintCoreErrorInfo:The extend info from device(1), serial number is 21, there is aicore error, core id is 6, aicore int: 0x10, aicore error2: 0, axi clamp ctrl: 0, axi clamp state: 0x1717, biu status0: 0x101d14000000000, biu status1: 0x80000201020000, clk gate mask: 0, dbg addr: 0, ecc en: 0, mte ccu ecc 1bit error: 0x3f80000000000000, vector cube ecc 1bit error: 0, run stall: 0x1, dbg data0: 0, dbg data1: 0, dbg data2: 0, dbg data3: 0, dfx data: 0xff
+[ERROR] RUNTIME(80316,):2026-07-25-03:40:57.898.996 [stream.cc:1656]81346 GetError:Stream Synchronize failed, stream_id=11, retCode=0x26, [aicore exception].
+[ERROR] RUNTIME(80316,):2026-07-25-03:40:57.899.001 [stream.cc:1659]81346 GetError:[AIC_INFO] after execute:args print end
+[ERROR] RUNTIME(80316,):2026-07-25-03:40:57.899.012 [stream.cc:1659]81346 GetError:[DFX_INFO]Aicore kernel execute failed, device_id=1, stream_id=11, report_stream_id=11, task_id=19945, flip_num=0, fault kernel_name=Add_41dadce325b0f810d03359af2a38990b_high_performance_223000000, fault kernel info ext=none, program id=240, hash=98398437960715668.
+[ERROR] RUNTIME(80316,):2026-07-25-03:40:57.899.022 [stream.cc:4078]81346 EnterFailureAbort:stream_id=11 enter failure abort.
+[ERROR] RUNTIME(80316,):2026-07-25-03:40:57.912.426 [stream.cc:2831]81346 WaitForTask:context is abort, status=0x7150026.
+[ERROR] RUNTIME(80316,):2026-07-25-03:40:57.912.446 [api_error.cc:1056]81346 StreamSynchronize:Stream synchronize failed, stream_id=11, timeout=-1ms.
+[ERROR] RUNTIME(80316,):2026-07-25-03:40:57.912.468 [api_c_stream.cc:157]81346 rtStreamSynchronize:ErrCode=507015, desc=[aicore exception], InnerCode=0x7150026
+[ERROR] RUNTIME(80316,):2026-07-25-03:40:57.912.474 [error_message_manage.cc:65]81346 FuncErrorReason:rtStreamSynchronize execution failed, reason=aicore exception
+[ERROR] ASCENDCL(80316,):2026-07-25-03:40:57.912.747 [stream.cpp:140]81346 aclrtSynchronizeStreamImpl:synchronize stream failed, runtime result = 507015
+[ERROR] OP(80316,):2026-07-25-03:40:57.912.786 [aicpu_ext_info_handle.cpp:379][NNOP][UpdateOutputShapeFromExtInfo][81346] errno[361001] OpName:[aclnnNonzeroV2_17514_NonzeroAiCpu] Assert ((aclrtSynchronizeStream(stream)) == 0) failed
+[ERROR] RUNTIME(80316,):2026-07-25-03:40:57.912.829 [api_impl.cc:1582]81346 StreamSynchronize:context is abort, status=0x7150026.
+[ERROR] RUNTIME(80316,):2026-07-25-03:40:57.912.834 [api_error.cc:1056]81346 StreamSynchronize:Stream synchronize failed, stream_id=11, timeout=-1ms.
+[ERROR] RUNTIME(80316,):2026-07-25-03:40:57.912.844 [api_c_stream.cc:157]81346 rtStreamSynchronize:ErrCode=507015, desc=[aicore exception], InnerCode=0x7150026
+[ERROR] RUNTIME(80316,):2026-07-25-03:40:57.912.848 [error_message_manage.cc:65]81346 FuncErrorReason:rtStreamSynchronize execution failed, reason=aicore exception
+[ERROR] ASCENDCL(80316,):2026-07-25-03:40:57.912.991 [stream.cpp:140]81346 aclrtSynchronizeStreamImpl:synchronize stream failed, runtime result = 507015
+[ERROR] OP(80316,):2026-07-25-03:40:57.913.009 [aicpu_ext_info_handle.cpp:379][NNOP][UpdateOutputShapeFromExtInfo][81346] errno[361001] OpName:[aclnnNonzeroV2_17514_NonzeroAiCpu] Assert ((aclrtSynchronizeStream(stream)) == 0) failed
+[ERROR] OP(80316,):2026-07-25-03:40:57.913.025 [aicpu_task.cpp:314][NNOP][Run][81346] errno[361001] OpName:[aclnnNonzeroV2_17514_NonzeroAiCpu] Assert ((extInfoHandle_->UpdateOutputShapeFromExtInfo(outputs_, stream)) == OK) failed
+[ERROR] RUNTIME(80316,):2026-07-25-03:40:57.913.034 [api_impl.cc:1582]81346 StreamSynchronize:context is abort, status=0x7150026.
+[ERROR] RUNTIME(80316,):2026-07-25-03:40:57.913.037 [api_error.cc:1056]81346 StreamSynchronize:Stream synchronize failed, stream_id=11, timeout=-1ms.
+[ERROR] RUNTIME(80316,):2026-07-25-03:40:57.913.044 [api_c_stream.cc:157]81346 rtStreamSynchronize:ErrCode=507015, desc=[aicore exception], InnerCode=0x7150026
+[ERROR] RUNTIME(80316,):2026-07-25-03:40:57.913.047 [error_message_manage.cc:65]81346 FuncErrorReason:rtStreamSynchronize execution failed, reason=aicore exception
+[ERROR] ASCENDCL(80316,):2026-07-25-03:40:57.913.162 [stream.cpp:140]81346 aclrtSynchronizeStreamImpl:synchronize stream failed, runtime result = 507015
+[ERROR] OP(80316,):2026-07-25-03:40:57.913.176 [aicpu_ext_info_handle.cpp:379][NNOP][UpdateOutputShapeFromExtInfo][81346] errno[361001] OpName:[aclnnNonzeroV2_17514_NonzeroAiCpu] Assert ((aclrtSynchronizeStream(stream)) == 0) failed
+[ERROR] RUNTIME(80316,):2026-07-25-03:40:57.913.204 [api_impl.cc:1582]81346 StreamSynchronize:context is abort, status=0x7150026.
+[ERROR] RUNTIME(80316,):2026-07-25-03:40:57.913.207 [api_error.cc:1056]81346 StreamSynchronize:Stream synchronize failed, stream_id=11, timeout=-1ms.
+[ERROR] RUNTIME(80316,):2026-07-25-03:40:57.913.213 [api_c_stream.cc:157]81346 rtStreamSynchronize:ErrCode=507015, desc=[aicore exception], InnerCode=0x7150026
+[ERROR] RUNTIME(80316,):2026-07-25-03:40:57.913.216 [error_message_manage.cc:65]81346 FuncErrorReason:rtStreamSynchronize execution failed, reason=aicore exception
+[ERROR] ASCENDCL(80316,):2026-07-25-03:40:57.913.327 [stream.cpp:140]81346 aclrtSynchronizeStreamImpl:synchronize stream failed, runtime result = 507015
+[ERROR] OP(80316,):2026-07-25-03:40:57.913.341 [aicpu_ext_info_handle.cpp:379][NNOP][UpdateOutputShapeFromExtInfo][81346] errno[361001] OpName:[aclnnNonzeroV2_17514_NonzeroAiCpu] Assert ((aclrtSynchronizeStream(stream)) == 0) failed
+[ERROR] OP(80316,):2026-07-25-03:40:57.913.359 [op_executor.cpp:831][NNOP][Run][81346] errno[361001] OpName:[aclnnNonzeroV2_17514_NonzeroAiCpu] launch failed for NonZero, errno:361001.
+[ERROR] RUNTIME(80316,):2026-07-25-03:40:57.914.867 [device_msg_handler.cc:165]81346 HandleMsgInHostBuf:
+DEVICE[1] PID[80316]: 
+EXCEPTION STREAM:
+  Exception info:TGID=95831, model id=65535, stream id=11, stream phase=3
+  Message info[0]:RTS_HWTS: Aicore exception, slot_id=25, stream_id=11
+    Other info[0]:time=2026-07-25-11:40:56.805.007, function=process_hwts_error_exception, line=646, error code=0x26
+[ERROR] APP(80316,):2026-07-25-03:40:57.916.022 81346 OpParamMaker.cpp:ExecFuncOpApi:457: "[PTA]:Custom hand error:operator():../third_party/op-plugin/op_plugin/utils/AdvancedIndex.cpp:82 NPU function error: call aclnnNonzeroV2 failed, error code is 507015
+[ERROR] 2026-07-25-03:40:57 (PID:80316, Device:1, RankID:-1) ERR00100 PTA call acl api failed
+[Error]: The aicore execution is abnormal. 
+        Rectify the fault based on the error information in the ascend log.
+[PID: 80316] 2026-07-25-03:40:57.912.799 AclNN_Runtime_Error(EZ9903): Assert ((aclrtSynchronizeStream(stream)) == 0) failed
+        Solution: In this scenar"
+[ERROR] APP(80316,):2026-07-25-03:40:57.916.034 81346 OpParamMaker.cpp:ExecFuncOpApi:461: "[PTA]:Custom hand fail! name=aclnnNonzeroV2, ret=100000"
+[ERROR] APP(80316,):2026-07-25-03:40:57.916.043 81346 NPUQueue.cpp:ReadQueue:455: "[PTA]:---Thread---281468011931360: device = 1, write_idx = 3220, read_idx = 3219, status = 1, ret = 100000"
+[ERROR] APP(80316,):2026-07-25-03:40:57.916.911 80316 NPUQueue.cpp:MakeSureQueueEmpty:344: "[PTA]:Inner error happened, detail: the current working operator name is aclnnNonzeroV2"
+[ERROR] APP(80316,):2026-07-25-03:40:57.916.919 80316 NPUQueue.cpp:MakeSureQueueEmpty:347: "[PTA]:runtime_error: The Inner error is reported as above. The process exits for this inner error, and the current working operator name is aclnnNonzeroV2.
+Since the operator is called asynchronously, the stacktrace may be inaccurate. If you want to get the accurate stacktrace, please set the environment variable ASCEND_LAUNCH_BLOCKING=1.
+Note: ASCEND_LAUNCH_BLOCKING=1 will force ops to run in synchronous mode, resulting in performance degradation. Please unset ASCEND_LAUNCH_BLOCKING in time after debugging.
+[ERROR] 2026-07-25-03:40:57 (PID:80316, Device:1, RankID:-1) ERR00100 PTA call acl api failed.
+"
+[ERROR] RUNTIME(80316,):2026-07-25-03:40:57.923.858 [api_impl.cc:2062]80316 EventSynchronize:context is abort, status=0x7150026.
+[ERROR] RUNTIME(80316,):2026-07-25-03:40:57.923.885 [api_c.cc:752]80316 rtEventSynchronize:ErrCode=507015, desc=[aicore exception], InnerCode=0x7150026
+[ERROR] RUNTIME(80316,):2026-07-25-03:40:57.923.892 [error_message_manage.cc:65]80316 FuncErrorReason:rtEventSynchronize execution failed, reason=aicore exception
+[ERROR] ASCENDCL(80316,):2026-07-25-03:40:57.924.105 [event.cpp:197]80316 aclrtSynchronizeEventImpl:wait event to be complete failed, runtime result = 507015
+[ERROR] RUNTIME(80316,):2026-07-25-03:40:58.862.968 [api_impl.cc:2095]81121 EventQueryStatus:context is abort, status=0x7150026.
+[ERROR] RUNTIME(80316,):2026-07-25-03:40:58.863.007 [api_c.cc:789]81121 rtEventQueryStatus:ErrCode=507015, desc=[aicore exception], InnerCode=0x7150026
+[ERROR] RUNTIME(80316,):2026-07-25-03:40:58.863.014 [error_message_manage.cc:65]81121 FuncErrorReason:rtEventQueryStatus execution failed, reason=aicore exception
+[ERROR] ASCENDCL(80316,):2026-07-25-03:40:58.863.556 [event.cpp:157]81121 aclrtQueryEventStatusImpl:[Query][Status]query event recorded status failed, runtime result = 507015
+[ERROR] APP(80316,):2026-07-25-03:40:58.866.593 aclAppLog call vsnprintf_s failed
