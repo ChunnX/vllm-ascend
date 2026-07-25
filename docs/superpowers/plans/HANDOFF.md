@@ -204,9 +204,49 @@ args**（`tilingKey=0` + `0xa5a5a5a5` poison = 该 args 缓冲整块没初始化
 `update_graph_params()` 空转（`acl_graph.py:316` 初始化为 `{size: []}`），
 **replay 前没有任何参数刷新** → 与 poison args 的现象吻合。
 
-判决实验：`test_target_only_in_aclgraph_no_spec`（同文件，同一套 `COMMON`，只关投机）。
-过 = 问题锁定在 splitfuse 入图；同样崩 = 是 310P 基础图路径在 TP=4/fp16 下的问题，
-与本期工作无关，应该转给 310P 图模式的 owner。
+### 6.2a 判决实验结果：**spec-off 图模式 PASS**（07-25）
+
+`test_target_only_in_aclgraph_no_spec` **通过**。同一套 `COMMON`（TP=4 / fp16 /
+block_size=128 / FULL_DECODE_ONLY / 同样的模型和机器），唯一变量是关掉投机。
+
+**结论：310P 基础图路径本身是好的，故障是投机专属的。**
+
+捕获路径的分岔已在代码里核实：
+`model_runner_310p.py:638-645` → `_spec_dummy_capture=True` →
+`model_runner_310p.py:196-197` 把 `attn_state` 强制成 `SpecDecoding` →
+`forward_impl` 走 `forward_chunked_prefill_310` → **`_npu_paged_attention_splitfuse_v2`
+进图**。关掉投机则是 `DecodeOnly` → `_npu_paged_attention` 进图。
+**通过与崩溃的两次运行，差别正好就在这一个算子上。**
+
+### 6.2b Add 的 json 查了：只给到 dtype，没给到调用点
+
+`logs/20260725/Add_41dadce325b0f810d03359af2a38990b_high_performance.json`
+
+```
+simplifiedKey: Add/d=0,p=0/9,2/9,2/9,2      (9=int64, 2=ND)
+inputs/outputs: int64, ND, shape [-2]       opMode: dynamic
+coreType: AiCore   kernelList: 43 个 SoC 变体
+```
+
+这是 **CANN 算子库里通用的动态 shape int64 逐元素 Add 二进制**，进程里每一个 int64 加法
+都共用它 —— 所以它**只能告诉我们 dtype 是 int64，认不出是哪一行 Python**。
+
+不过 int64 这一条仍然有用：**排除了模型内部所有 fp16 加法**（residual 之类），
+剩下的全是索引 / 元数据算术。候选集中在三处，都只在投机开启时执行：
+
+- `sample/rejection_sampler.py:1041` `global_idx = start_indices.unsqueeze(1) + copy_indices`
+  （紧挨着崩溃现场那个 NonZero）
+- `_310p/spec_decode/parallel_drafting_inputs.py:121,125,127,136`（我们写的 helper，全 int64）
+- `spec_decode/utils.py:28` `corrected = prev_computed + valid_counts`
+
+**还差最后一步才能定死**：`tilingKey=0` 与 args 里的 `0xa5a5a5a5` poison 说明
+tiling 缓冲整块没写过 —— 而 `exception_info` dump 里有出错时的**实际操作数字节**
+（每个张量 dump 了 32 字节 = 4 个 int64），对上值就能认出调用点。这一步是 `cat`，不用跑：
+
+```bash
+ls -la /vllm-workspace/vllm-ascend/extra-info/data-dump/2/
+xxd /vllm-workspace/vllm-ascend/extra-info/data-dump/2/exception_info.373.19945.20260725080027851 | head -40
+```
 
 ### 6.3 ⚠️ `ASCEND_LAUNCH_BLOCKING=1` 在图模式下用不了
 
@@ -229,16 +269,17 @@ ls -la /vllm-workspace/vllm-ascend/extra-info/data-dump/2/
 那个 `.json` 里有这个核的输入 shape / dtype / 编译签名 —— 对着源码就能认出是哪个 Add，
 不用再猜。`exception_info.373.19945.*` 里是出错时的实际张量数据。
 
-**第 1 步，判决实验**（同文件新加的用例，同一套 `COMMON`，唯一变量是关掉投机）：
+~~第 1 步判决实验~~ **已完成，PASS，见 §6.2a。**
 
-```bash
-VLLM_USE_V2_MODEL_RUNNER=0 pytest -sv \
-  tests/e2e/pull_request/four_card/_310p/test_qwen3_8b_parallel_draft_graph_310p.py::test_target_only_in_aclgraph_no_spec
-```
+**下一步只剩两条，都还没做：**
 
-- 过 → 锁定 §6.2：`_npu_paged_attention_splitfuse_v2` 入图。修复方向是给 310P 的
-  SpecDecoding 路径补上 replay 前的参数刷新，或者干脆禁掉这条路径入图
-- 崩 → 与本期工作无关，是 310P 基础图路径在 TP=4/fp16 下的问题
+1. `exception_info` 的操作数字节（§6.2b 的 `xxd`）→ 认出那一行 Python。**零成本，先做这个**
+2. 拆开"splitfuse 进图"与"图外 eager 投机代码"：目前 spec-off 一次性去掉了
+   splitfuse + drafter + rejection sampler + 投机簿记**四样**，还没分开。
+   候选做法是用一个不走 splitfuse 的投机方法（310P 的 ngram 把
+   `uniform_decode_query_len` 钉成 1 → `DecodeOnly` → paged attention，
+   见 `model_runner_310p.py:106-110`），保留 rejection sampler 与簿记。
+   **先确认那条组合在 310P 上本来是通的**，否则跑出来无法解释
 
 **关于 `VLLM_LOGGING_LEVEL=DEBUG` 日志太多**：§6.1d 的确定性复现已经排掉了地址竞态那
 一族，这条不再值得跑。真要跑就重定向后只看尾巴（断言失败会在最后）：
