@@ -339,6 +339,52 @@ TORCH_DEVICE_BACKEND_AUTOLOAD=0 pytest -q tests/ut/_310p/
 
 ---
 
+## ACLGraph 适配点调查（2026-07-24）
+
+结论：**DSpark drafter 入图被 ADN 的算子 ABI 硬阻塞**，不是 vllm-ascend 侧能绕过的。
+可行的是「target 入图 + drafter 保持 eager」。
+
+### 阻塞一（硬，需 Ascend_Ops 改算子）：长度参数是 `SymInt[]`，不是 tensor
+
+`custom_pta/csrc/registration.cpp:56-57`：
+```
+SymInt[]? actual_seq_lengths_q=None
+SymInt[]? actual_seq_lengths_kv=None
+```
+Python list 在 graph capture 时会被**固化成常量**。而 `actual_seq_lengths_kv` **每个 decode step
+都在变**（KV 在增长）——replay 时会按捕获时的旧长度做 attention，**静默算错**，不是崩。
+
+A2/A3 的 FIA 有 tensor 形态可用（`attention_v1.py:599,806` 的 `actual_seq_kvlen=seq_lens` 传的是
+**张量**，静态地址、内容原地更新），所以它能入图。**ADN 没有 tensor 重载**，
+必须由 Ascend_Ops 侧新增，vllm-ascend 无法绕过。
+
+### 阻塞二（中，需 Ascend_Ops 改算子）：输出每次新分配
+
+`custom_pta/csrc/adn_fused_infer_attention.cpp:26`：
+`at::empty_symint(query.sym_sizes(), query.options())` —— 无 `out=` 变体。
+图捕获要求输出地址静态。计划 §5.3 早就把「加 `out=`」列为 P1，这里变成入图的前置条件。
+
+### 阻塞三（上游决策）：DSpark 自己关掉了图
+
+`dspark_proposer.py:57`：`self.use_cuda_graph = False`，注释写明
+"DSpark runs eager only (Ascend cudagraph unsupported on this path)"。
+**这是上游 vllm-ascend 的决定，不是 310P 特有**——A2/A3 上 DSpark 同样跑 eager。
+
+### 可行退路：target 入图，drafter 保持 eager
+
+`llm_base_proposer.py:208`：`use_cuda_graph = runner._use_aclgraph() and not spec.enforce_eager`，
+DSpark 在 :57 覆盖为 False。两者独立 → **runner（target）可以走 ACLGraph，drafter 留在 eager**。
+这正是 DSpark 在 A2/A3 上的现状。target 是 36 层 8B，drafter 只有 5 层，收益大头在 target。
+
+310P 本身有 ACLGraph 基建（`model_runner_310p.py:70-75` 的 capture/replay），但**所有既有 310P
+E2E 都是 `enforce_eager=True`**，没有先例，需要单独验证 ATB 算子在 capture 下的行为。
+
+### 我这边只需一行
+
+`adn_fused_infer_attention.py:100` 的 `enforce_eager` 检查——上面三条解决前它应该留着。
+
+---
+
 ## Task 4 通过：DSpark 在 310P 端到端正确
 
 **第四次真机**（`_pass_0724_1650`）：**1 passed**。
