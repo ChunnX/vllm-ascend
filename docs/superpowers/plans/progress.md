@@ -340,6 +340,52 @@ TORCH_DEVICE_BACKEND_AUTOLOAD=0 pytest -q tests/ut/_310p/
 
 ---
 
+## compressed mask 升级后的复核（2026-07-24）
+
+升级 torch_npu + ATB 以启用 compressed mask 后的检查结论。
+
+### 诊断成立
+
+`is_compressed_mask_supported()`（`attention_mask.py:28`）是 hasattr 判定：
+`_npu_flash_attention_v3` 且 `_npu_paged_attention_splitfuse_v2`。升级后转 True，路径切到
+compressed 分支。**旧路径确实无法入图**——`get_splitfuse_mask:90-94` 每次调用做两次
+`.to("cpu")` 加 `.tolist()`，是实打实的设备同步；compressed 版用缓存的固定 2048×2048 mask，
+无同步。
+
+### 既有代码已经是 compressed-aware，无需改动
+
+- `get_attention_mask:139` 用 `COMPRESSED_MASK_SEQ_LEN` 而非 `max_seqlen`，prefill 的 mask 尺寸自洽；
+- `_flash_attention` 与 `forward_chunked_prefill_310` 都有完整的双分支。
+
+### 我的 seq_len 修复与 v3 兼容
+
+两个算子共用同一契约：**非投机时 builder 本来就给 CPU 张量**（`attention_v1.py:283-291` 优先
+`_seq_lens_cpu`），所以 host 是既有约定，我的修复只是让投机路径与之一致，不是新引入的要求。
+
+### 实际发现并修的问题：compressed 路径零测试覆盖
+
+`tests/ut/_310p/attention/test_attention_v1_310.py` 里**四处**都把
+`self.impl.support_compressed_mask = False` 钉死，`_npu_flash_attention_v3` 和 `splitfuse_v2`
+**一条测试都没有**——而升级后生产跑的正是这条路径。补了两条：
+
+1. v3 也必须收到 host seq_len（与非 compressed 分支同契约）；
+2. splitfuse 走 v2 + 固定方阵 mask，且**断言 legacy `get_splitfuse_mask` 未被调用**——
+   后者带同步，是入图的直接障碍。
+
+### 图友好性：qlens buffer 的设计正好对上
+
+`_fill_query_lens_cpu:95-99`：非 drafting 用**持久 pinned buffer**（地址稳定，
+`torch.sub(..., out=buffer)` 原地更新）→ 捕获/重放友好；drafting 才 `.clone()`（地址不稳）。
+这与「target 入图 / drafter eager」的分工天然吻合，无需改动。
+
+### 需要留意（未改，但值得知道）
+
+`forward_chunked_prefill_310:283` 的 `seq_lens.to(device=...)`：若 seq_lens 在 CPU 会**每次新建
+device 张量**，地址不稳。investigation 结论是 parallel_drafting 下 seq_lens 本就在 device，
+这里是 no-op，所以当前无影响——但若将来 seq_lens 的来源变了，这是第一个要查的点。
+
+---
+
 ## Task 6：target 入图 + drafter eager（已实现，待真机）
 
 按调查结论实现。**纠正一个前提**：310P 支持的是 **`FULL_DECODE_ONLY`，不是 PIECEWISE**
