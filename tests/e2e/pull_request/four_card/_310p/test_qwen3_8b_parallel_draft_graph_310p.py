@@ -191,3 +191,31 @@ def test_dspark_target_in_aclgraph_drafter_eager():
     )
 
     assert exact >= 1, "no prompt matched the eager baseline exactly; capture/replay may be wrong"
+
+
+@pytest.mark.skipif(_missing(MAIN_MODEL), reason=f"model path not found (MAIN_MODEL={MAIN_MODEL})")
+def test_target_only_in_aclgraph_no_spec():
+    """Same engine config, graph on, speculation OFF -- the one variable that matters.
+
+    Without a drafter the batch is DecodeOnly, so attention takes
+    forward_paged_attention (_npu_paged_attention). With DSpark it is SpecDecoding,
+    which routes to forward_chunked_prefill_310 (_npu_paged_attention_splitfuse_v2).
+    Nothing in this repo has ever captured splitfuse: the passing 310P graph tests
+    (test_dense_model_310p.py: test_qwen3_dense_tp1_w8a8_aclgraph,
+    test_qwen3_5_dense_tp1_fp16_aclgraph) are decode-only, and the only 310P spec
+    test (test_spec_decode_mtp_310p.py) is enforce_eager.
+
+    Passes  -> the 07-25 aicore fault is specific to splitfuse under capture.
+    Crashes -> it is the base 310P graph path at TP=4/fp16, not this work.
+    """
+    with VllmRunner(
+        MAIN_MODEL,
+        compilation_config=CompilationConfig(
+            cudagraph_mode="FULL_DECODE_ONLY",
+            # No drafter => uniform_decode_query_len is 1, so sizes are req counts.
+            cudagraph_capture_sizes=[1, 2, 4, 8],
+        ),
+        **COMMON,
+    ) as llm:
+        out = llm.generate_greedy(PROMPTS, MAX_TOKENS)
+    assert all(len(ids) > 0 for ids, _ in out)
