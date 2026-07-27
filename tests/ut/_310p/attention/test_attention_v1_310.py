@@ -115,6 +115,47 @@ class TestAscendAttentionBackendImpl310(TestBase):
         self.assertIs(kwargs["out"], output)
         self.assertIs(result, output)
 
+    @patch("torch_npu._npu_reshape_and_cache")
+    @patch("torch_npu._npu_flash_attention")
+    @patch("vllm_ascend.ascend_forward_context.get_forward_context")
+    def test_forward_prefill_310_coerces_device_seq_lens_to_host(
+        self, mock_get_forward_context, mock_npu_flash_attention, mock_npu_reshape_and_cache
+    ):
+        """Parallel drafting (DFlash/DSpark) makes the builder hand out a device
+        seq_lens tensor for the A2/A3 FIA path. 310P's prefill feeds seq_len to
+        ATB's SelfAttention encoder, which reads it from host memory and segfaults
+        on a device tensor. The prefill path must coerce it to host."""
+        from types import SimpleNamespace
+
+        query = torch.randn(10, 8, 64)
+        key = torch.randn(10, 8, 64)
+        value = torch.randn(10, 8, 64)
+        output = torch.empty_like(query)
+
+        host_seq_lens = torch.tensor([10])
+        device_seq_lens = MagicMock()
+        device_seq_lens.device = SimpleNamespace(type="npu")
+        device_seq_lens.cpu.return_value = host_seq_lens
+
+        metadata = self.attn_metadata
+        metadata.attn_state = AscendAttentionState.PrefillNoCache
+        metadata.attn_mask = torch.randn(1, 1, 10, 10)
+        metadata.seq_lens = device_seq_lens
+        metadata.actual_seq_lengths_q = [10]
+        metadata.block_tables = torch.zeros(1, 5, dtype=torch.long)
+        metadata.num_actual_tokens = 10
+        metadata.slot_mapping = torch.zeros(10, dtype=torch.long)
+
+        self.impl.support_compressed_mask = False
+        mock_get_forward_context.return_value = MagicMock(capturing=False)
+        mock_npu_flash_attention.return_value = torch.ones(10, 8, 64)
+
+        self.impl.forward_impl(query, key, value, None, metadata, output)
+
+        device_seq_lens.cpu.assert_called_once()
+        _, kwargs = mock_npu_flash_attention.call_args
+        self.assertIs(kwargs["seq_len"], host_seq_lens, "ATB received a device seq_len; it needs host")
+
     @patch("torch_npu.npu_format_cast", return_value=torch.randn((1, 128, 16, 16), dtype=torch.float16))
     @patch("torch_npu._npu_reshape_and_cache")
     @patch("torch_npu._npu_paged_attention_splitfuse")
