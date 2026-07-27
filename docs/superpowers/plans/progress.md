@@ -872,3 +872,57 @@ replay 一个」这类实验；并对非 `1+K` 倍数的尺寸 fail-fast（`[28]
 PR #11765 的 `[28, 32]` 是对的——它是 **PIECEWISE**，`decode_mode()` 不等于 `FULL`，
 改写不触发；且 28 = 4×K 是 **drafter** 的形状，PIECEWISE 下 drafter 也入图。
 FULL_DECODE_ONLY 下 drafter 全程 eager，28 不对应任何形状。整个过程无 warning。
+
+---
+
+## 07-27 二次收敛：故障需要**真实的 descriptor 切换**，不是图的数量
+
+| capture | prompts | 实际 replay 的图 | 结果 |
+| --- | --- | --- | --- |
+| `[8,16,24,32]` | 1 | 只有 `[8]` | **PASS** |
+| `[8,16]` | 2 | `[8]` 和 `[16]` 交替 | **FAULT** |
+
+捕获 4 个图但只 replay 一个 → 不崩。捕获 2 个图并真正交替 replay → 崩。
+
+**H2（event-id / stream 资源）排除**：光是捕获多个图不会触发。
+剩下 **H1：多 descriptor 之间共享的状态在切换时被破坏**（计划 §5.4 / G2 case D）。
+
+最小复现体：`GRAPH_E2E_CAPTURE_SIZES=8,16 GRAPH_E2E_NUM_PROMPTS=2`。
+
+### 故障签名（`logs/20260727/capture_size_8_16+num_prompts_2_error_07271653.log`）
+
+```text
+fault kernel_name=Add_41dadce325b0f810d03359af2a38990b_high_performance_223000000
+errorStr: Illegal instruction, which is usually caused by unaligned UUB addresses
+aic error mask: 0x65000200d00028c
+device(1) stream 375 core 6  task_id=5700
+device(2) stream 314 core 4  task_id=5700
+num_running_reqs=2
+```
+
+与 07-25 同一个 kernel、同一条 errorStr。本次 plog 直接点名 variant `_223000000`
+（此前只能从 JSON 推测该 suffix 存在）。
+
+**新信息：两个 rank 同时在 `task_id=5700` 出错。** 同一 task id 说明故障发生在
+replay 序列的**确定位置**，不是单 rank 的随机时序抖动——这反过来削弱「纯异步竞态」
+的读法，更像第二个 descriptor 本身带着结构性错误。
+
+### 之前那条 `post_target_replay` PASS 作废
+
+它跑在 `[8]` 单图配置上，而该配置现在已知本来就不崩（10/10 PASS）。那次实验没有
+有效的对照，结论不成立。边界推进要在新的最小复现体上重做。
+
+### 一条待查的代码线索
+
+`vllm_ascend/compilation/acl_graph.py:107,187` —— 所有 descriptor 共用一个
+**全局 graph pool**（`current_platform.get_global_graph_pool()`，
+`vllm/platforms/interface.py:1130`）：
+
+```python
+self.graph_pool = current_platform.get_global_graph_pool()
+...
+with torch.npu.graph(aclgraph, pool=self.graph_pool):
+```
+
+这是 CUDA 侧的标准做法，但它的正确性依赖 allocator 对 graph-pool 生命周期的实现。
+「只捕获不切换 → 不崩」与这条线索一致，但**不构成证据**，需要实验判定。
