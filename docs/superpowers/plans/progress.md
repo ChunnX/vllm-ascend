@@ -693,3 +693,57 @@ if not attn_metadata.causal:      # 本地、绝大多数调用为 False
 
 正确做法：回归只跑 `tests/ut/_310p/`；A2 测试在 310P 机器上应以**已知失败基线**对待，
 比对数字是否变化，而不是期待零失败。
+
+---
+
+## G0.5 首轮：post_target_replay 不复现，但**没有 control**，不算 Snapshot A
+
+计划：[2026-07-25-qwen3-8b-dspark-310p-target-aclgraph.md](2026-07-25-qwen3-8b-dspark-310p-target-aclgraph.md)
+代码：`47b0a8cc3`（= 故障基线 `f7c460f6e` + 环境开关保护的 sync seam）
+
+### 已确认
+
+- `tests/ut/_310p/` 全部通过，含新增 `test_debug_sync_310p.py`；
+- 一次真机 instrumented run：
+
+```text
+VLLM_ASCEND_310P_SYNC_STAGE=post_target_replay
+VLLM_USE_V2_MODEL_RUNNER=0
+GRAPH_E2E_NUM_PROMPTS=1
+-> test_qwen3_8b_parallel_draft_graph_310p.py 两个用例都 PASS
+```
+
+### 为什么这不能记成 Snapshot A 通过
+
+计划 §6-G0.5 明确要求「每个边界至少重复两次，并保留无同步的 control」，并规定
+「同步导致故障消失时只能记为 `NOT_REPRODUCED_UNDER_INSTRUMENTATION`，不能记成 PASS」。
+本轮缺三项：**没有 control（sync OFF）**、边界只跑一次、只覆盖五个边界中的第一个。
+
+缺 control 是致命的一项。现在有两种读法，观测上完全一样：
+
+| 读法 | 含义 |
+| --- | --- |
+| A. 同步压住了故障 | 故障是时序相关的竞态，不是确定性坏地址 |
+| B. 故障本来就不再复现 | 环境/算子 cache/镜像漂移，与本次插桩无关 |
+
+在 control 跑出来之前，两者不可分，因此本轮状态记为
+`NOT_REPRODUCED_UNDER_INSTRUMENTATION`，不进任何 PASS 计数。
+
+### 如果 control 仍然崩（即读法 A 成立），意味着什么
+
+replay **之后**加一个同步能压住故障，这条推理链是有分量的：
+
+1. 它**削弱 Path B**。Path B 的故障机制是 replay 时用了固化的旧参数——replay 已经
+   跑完了，事后同步救不回来。
+2. 它**指向 §5.4 第 2 类未知量**：host buffer 的异步生命周期。replay 后同步会把
+   下一轮的 metadata 构建推到本轮完全结束之后，正好消除「round N+1 覆盖 round N
+   仍在消费的共享 pinned buffer」。
+3. 它与「两次复现逐字节相同」**不矛盾**。逐字节相同说明故障一旦触发，状态是确定的；
+   不说明触发本身是确定的。
+
+这三条合起来，主嫌疑从 Path A/B 之争转向计划里早已单列的第三项——
+**G2 case D（host qLens async-overwrite）**。但这一切都以 control 仍然崩为前提。
+
+### 下一步
+
+补齐 §6-G0.5 要求的 control 与重复，见下一节的测试序列。在 control 之前不改任何代码。
