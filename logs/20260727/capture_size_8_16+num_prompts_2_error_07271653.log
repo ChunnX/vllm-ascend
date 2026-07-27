@@ -1,0 +1,869 @@
+[root@bc3eceb41821 vllm-ascend]# GRAPH_E2E_CAPTURE_SIZES=8,16 GRAPH_E2E_NUM_PROMPTS=2 GRAPH_E2E_SKIP_BASELINE=1 VLLM_USE_V2_MODEL_RUNNER=0 pytest -q tests/e2e/pull_request/four_card/_310p/test_qwen3_8b_parallel_draft_graph_310p.py::test_dspark_target_in_aclgraph_drafter_eager
+F                                                                                                                                                                    [100%]
+================================================================================= FAILURES =================================================================================
+_______________________________________________________________ test_dspark_target_in_aclgraph_drafter_eager _______________________________________________________________
+
+    @pytest.mark.skipif(
+        _missing(MAIN_MODEL) or _missing(SPEC_MODEL),
+        reason=f"model path not found (MAIN_MODEL={MAIN_MODEL}, SPEC_MODEL={SPEC_MODEL}); "
+        "set QWEN3_8B_PATH / DSPARK_QWEN3_8B_PATH",
+    )
+    def test_dspark_target_in_aclgraph_drafter_eager():
+        # Eager baseline, recorded for comparison only -- see the note on `exact`
+        # below. Skipping it halves the wall time of a repeat campaign, where the
+        # question is whether the graph run faults at all.
+        baseline_ids: list[tuple[int, ...]] = []
+        if not SKIP_BASELINE:
+            eager_common = dict(COMMON, enforce_eager=True)
+            with VllmRunner(MAIN_MODEL, **eager_common) as llm:
+                baseline = llm.generate_greedy(PROMPTS, MAX_TOKENS)
+            baseline_ids = [tuple(ids) for ids, _ in baseline]
+    
+        with VllmRunner(
+            MAIN_MODEL,
+            speculative_config=SPECULATIVE_CONFIG,
+            compilation_config=_graph_compilation_config(),
+            **COMMON,
+        ) as llm:
+>           graphed = llm.generate_greedy(PROMPTS, MAX_TOKENS)
+
+tests/e2e/pull_request/four_card/_310p/test_qwen3_8b_parallel_draft_graph_310p.py:192: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/e2e/conftest.py:1099: in generate_greedy
+    outputs = self.generate(prompts, greedy_params, images=images, videos=videos, audios=audios, **kwargs)
+tests/e2e/conftest.py:1051: in generate
+    req_outputs = self.model.generate(inputs, sampling_params=sampling_params, **kwargs)
+../vllm/vllm/entrypoints/llm.py:476: in generate
+    return self._run_completion(
+../vllm/vllm/entrypoints/offline_utils.py:349: in _run_completion
+    return self._run_engine(use_tqdm=use_tqdm, output_type=output_type)
+../vllm/vllm/entrypoints/offline_utils.py:595: in _run_engine
+    step_outputs = self.llm_engine.step()
+../vllm/vllm/v1/engine/llm_engine.py:304: in step
+    outputs = self.engine_core.get_output()
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <vllm.v1.engine.core_client.SyncMPClient object at 0xfffbefbd9940>
+
+    def get_output(self) -> EngineCoreOutputs:
+        # If an exception arises in process_outputs_socket task,
+        # it is forwarded to the outputs_queue so we can raise it
+        # from this (run_output_handler) task to shut down the server.
+        outputs = self.outputs_queue.get()
+    
+        if isinstance(outputs, Exception):
+>           raise self._format_exception(outputs) from None
+E           vllm.v1.engine.exceptions.EngineDeadError: EngineCore encountered an issue. See stack trace (above) for the root cause.
+
+../vllm/vllm/v1/engine/core_client.py:856: EngineDeadError
+--------------------------------------------------------------------------- Captured stdout call ---------------------------------------------------------------------------
+INFO 07-27 08:46:56 [__init__.py:112] Registered model loader `<class 'vllm_ascend.model_loader.netloader.netloader.ModelNetLoaderElastic'>` with load format `netloader`
+INFO 07-27 08:46:56 [__init__.py:112] Registered model loader `<class 'vllm_ascend.model_loader.rfork.rfork_loader.RForkModelLoader'>` with load format `rfork`
+INFO 07-27 08:46:56 [api_utils.py:273] non-default args: {'trust_remote_code': True, 'dtype': 'float16', 'max_model_len': 4096, 'distributed_executor_backend': 'mp', 'tensor_parallel_size': 4, 'block_size': 128, 'enable_prefix_caching': False, 'gpu_memory_utilization': 0.8, 'max_num_seqs': 256, 'enable_chunked_prefill': True, 'speculative_config': {'method': 'dspark', 'model': '/opt/foundation_model/dspark_qwen3_8b_block7', 'num_speculative_tokens': 7, 'draft_tensor_parallel_size': 4}, 'compilation_config': {'mode': None, 'debug_dump_path': None, 'cache_dir': '', 'compile_cache_save_format': 'binary', 'backend': 'vllm_ascend.compilation.compiler_interface.AscendCompiler', 'custom_ops': [], 'ir_enable_torch_wrap': None, 'splitting_ops': None, 'compile_mm_encoder': False, 'cudagraph_mm_encoder': False, 'encoder_cudagraph_token_budgets': [], 'encoder_cudagraph_max_vision_items_per_batch': 0, 'encoder_cudagraph_max_frames_per_batch': None, 'compile_sizes': None, 'compile_ranges_endpoints': None, 'inductor_compile_config': {'enable_auto_functionalized_v2': False, 'size_asserts': False, 'alignment_asserts': False, 'scalar_asserts': False, 'combo_kernels': True, 'benchmark_combo_kernel': True}, 'inductor_passes': {}, 'cudagraph_mode': <CUDAGraphMode.FULL_DECODE_ONLY: (2, 0)>, 'cudagraph_num_of_warmups': 0, 'cudagraph_capture_sizes': [8, 16], 'cudagraph_copy_inputs': False, 'cudagraph_specialize_lora': True, 'use_inductor_graph_partition': None, 'pass_config': {}, 'max_cudagraph_capture_size': None, 'dynamic_shapes_config': {'type': <DynamicShapesType.BACKED: 'backed'>, 'evaluate_guards': False, 'assume_32_bit_indexing': False}, 'local_cache_dir': None, 'fast_moe_cold_start': None, 'static_all_moe_layers': []}, 'async_scheduling': True, 'model': '/opt/foundation_model/Qwen3-8B'}
+INFO 07-27 08:46:56 [model.py:619] Resolved architecture: Qwen3ForCausalLM
+WARNING 07-27 08:46:56 [model.py:2114] Casting torch.bfloat16 to torch.float16.
+INFO 07-27 08:46:56 [model.py:1776] Using max model len 4096
+INFO 07-27 08:46:56 [model.py:619] Resolved architecture: Qwen3DSparkModel
+WARNING 07-27 08:46:56 [model.py:2114] Casting torch.bfloat16 to torch.float16.
+INFO 07-27 08:46:56 [model.py:1776] Using max model len 40960
+INFO 07-27 08:46:56 [speculative.py:1040] Overriding draft model max model len from 40960 to 4096
+INFO 07-27 08:46:56 [scheduler.py:252] Chunked prefill is enabled with max_num_batched_tokens=8192.
+INFO 07-27 08:46:56 [vllm.py:1042] Asynchronous scheduling is enabled.
+INFO 07-27 08:46:56 [kernel.py:292] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native'])
+WARNING 07-27 08:46:56 [vllm.py:1648] max_num_scheduled_tokens is set to 6656 based on the speculative decoding settings. This may lead to suboptimal performance. Consider increasing max_num_batched_tokens to accommodate the additional draft token slots, or decrease num_speculative_tokens or max_num_seqs.
+INFO 07-27 08:46:56 [utils.py:174] No quantization signature detected from model files for "/opt/foundation_model/Qwen3-8B". The model will be loaded as float. To force a quantization method, pass "--quantization <method>" explicitly.
+WARNING 07-27 08:46:56 [platform.py:1043] GPU-specific parameter is not supported on Ascend. parameter=disable_cascade_attn, value=True, action: resetting to False.
+WARNING 07-27 08:46:56 [ascend_config.py:536] npugraph_ex is not supported on Ascend 310P. Disabling it.
+INFO 07-27 08:46:56 [ascend_config.py:824] Dynamic EPLB is False
+INFO 07-27 08:46:56 [ascend_config.py:825] The number of redundant experts is 0
+INFO 07-27 08:46:56 [platform.py:770] Set PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
+INFO 07-27 08:46:56 [compilation.py:312] Enabled custom fusions: norm_quant, act_quant
+INFO 07-27 08:47:07 [__init__.py:44] Available plugins for group vllm.platform_plugins:
+INFO 07-27 08:47:07 [__init__.py:46] - ascend -> vllm_ascend:register
+INFO 07-27 08:47:07 [__init__.py:49] All plugins in this group will be loaded. Set `VLLM_PLUGINS` to control which plugins to load.
+INFO 07-27 08:47:07 [__init__.py:237] Platform plugin ascend is activated
+INFO 07-27 08:47:07 [platform.py:61] Breakable cudagraph is force disabled on Ascend because DeepSeek V4 PIECEWISE cudagraph is not supported yet.
+INFO 07-27 08:47:14 [importing.py:88] Triton not installed or not compatible; certain GPU-related functions will not be available.
+(EngineCore pid=117708) INFO 07-27 08:47:17 [__init__.py:112] Registered model loader `<class 'vllm_ascend.model_loader.netloader.netloader.ModelNetLoaderElastic'>` with load format `netloader`
+(EngineCore pid=117708) INFO 07-27 08:47:18 [__init__.py:112] Registered model loader `<class 'vllm_ascend.model_loader.rfork.rfork_loader.RForkModelLoader'>` with load format `rfork`
+(EngineCore pid=117708) INFO 07-27 08:47:18 [core.py:114] Initializing a V1 LLM engine (v0.25.1) with config: model='/opt/foundation_model/Qwen3-8B', speculative_config=SpeculativeConfig(method='dspark', model='/opt/foundation_model/dspark_qwen3_8b_block7', num_spec_tokens=7), tokenizer='/opt/foundation_model/Qwen3-8B', skip_tokenizer_init=False, tokenizer_mode=auto, revision=None, tokenizer_revision=None, trust_remote_code=True, dtype=torch.float16, max_seq_len=4096, download_dir=None, load_format=auto, tensor_parallel_size=4, pipeline_parallel_size=1, data_parallel_size=1, decode_context_parallel_size=1, dcp_comm_backend=ag_rs, disable_custom_all_reduce=True, quantization=None, quantization_config=None, enforce_eager=False, enable_return_routed_experts=False, kv_cache_dtype=auto, device_config=npu, structured_outputs_config=StructuredOutputsConfig(backend='auto', disable_any_whitespace=False, disable_additional_properties=False, reasoning_parser='', reasoning_parser_plugin='', enable_in_reasoning=False), observability_config=ObservabilityConfig(show_hidden_metrics_for_version=None, otlp_traces_endpoint=None, collect_detailed_traces=None, kv_cache_metrics=False, kv_cache_metrics_sample=0.01, cudagraph_metrics=False, enable_layerwise_nvtx_tracing=False, enable_mfu_metrics=False, enable_mm_processor_stats=False, enable_logging_iteration_details=False, jit_monitor_mode='warn', jit_monitor_verbose=False), seed=0, served_model_name=/opt/foundation_model/Qwen3-8B, enable_prefix_caching=False, enable_chunked_prefill=True, pooler_config=None, compilation_config={'mode': <CompilationMode.VLLM_COMPILE: 3>, 'debug_dump_path': None, 'cache_dir': '', 'compile_cache_save_format': 'binary', 'backend': 'vllm_ascend.compilation.compiler_interface.AscendCompiler', 'custom_ops': ['all'], 'ir_enable_torch_wrap': False, 'splitting_ops': [], 'compile_mm_encoder': False, 'cudagraph_mm_encoder': False, 'encoder_cudagraph_token_budgets': [], 'encoder_cudagraph_max_vision_items_per_batch': 0, 'encoder_cudagraph_max_frames_per_batch': None, 'compile_sizes': [], 'compile_ranges_endpoints': [8192], 'inductor_compile_config': {'enable_auto_functionalized_v2': False, 'size_asserts': False, 'alignment_asserts': False, 'scalar_asserts': False, 'combo_kernels': True, 'benchmark_combo_kernel': True}, 'inductor_passes': {}, 'cudagraph_mode': <CUDAGraphMode.FULL_DECODE_ONLY: (2, 0)>, 'cudagraph_num_of_warmups': 1, 'cudagraph_capture_sizes': [8, 16], 'cudagraph_copy_inputs': False, 'cudagraph_specialize_lora': True, 'use_inductor_graph_partition': False, 'pass_config': {'fuse_norm_quant': True, 'fuse_act_quant': True, 'fuse_attn_quant': False, 'enable_sp': False, 'fuse_gemm_comms': False, 'fuse_allreduce_rms': False, 'fuse_rope_kvcache_cat_mla': False, 'fuse_act_padding': False}, 'max_cudagraph_capture_size': 16, 'dynamic_shapes_config': {'type': <DynamicShapesType.BACKED: 'backed'>, 'evaluate_guards': False, 'assume_32_bit_indexing': False}, 'local_cache_dir': None, 'fast_moe_cold_start': False, 'static_all_moe_layers': []}, kernel_config=KernelConfig(ir_op_priority=IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native']), enable_flashinfer_autotune=True, enable_cutedsl_warmup=True, moe_backend='auto', linear_backend='auto')
+(EngineCore pid=117708) WARNING 07-27 08:47:18 [multiproc_executor.py:1067] Reducing Torch parallelism from 96 threads to 1 to avoid unnecessary CPU contention. Set OMP_NUM_THREADS in the external environment to tune this value as needed.
+(EngineCore pid=117708) INFO 07-27 08:47:18 [multiproc_executor.py:140] DP group leader: node_rank=0, node_rank_within_dp=0, master_addr=127.0.0.1, mq_connect_ip=172.17.0.12 (local), world_size=4, local_world_size=4
+INFO 07-27 08:47:25 [__init__.py:44] Available plugins for group vllm.platform_plugins:
+INFO 07-27 08:47:25 [__init__.py:46] - ascend -> vllm_ascend:register
+INFO 07-27 08:47:25 [__init__.py:49] All plugins in this group will be loaded. Set `VLLM_PLUGINS` to control which plugins to load.
+INFO 07-27 08:47:25 [__init__.py:44] Available plugins for group vllm.platform_plugins:
+INFO 07-27 08:47:25 [__init__.py:46] - ascend -> vllm_ascend:register
+INFO 07-27 08:47:25 [__init__.py:49] All plugins in this group will be loaded. Set `VLLM_PLUGINS` to control which plugins to load.
+INFO 07-27 08:47:25 [__init__.py:237] Platform plugin ascend is activated
+INFO 07-27 08:47:25 [platform.py:61] Breakable cudagraph is force disabled on Ascend because DeepSeek V4 PIECEWISE cudagraph is not supported yet.
+INFO 07-27 08:47:25 [__init__.py:237] Platform plugin ascend is activated
+INFO 07-27 08:47:25 [platform.py:61] Breakable cudagraph is force disabled on Ascend because DeepSeek V4 PIECEWISE cudagraph is not supported yet.
+INFO 07-27 08:47:25 [__init__.py:44] Available plugins for group vllm.platform_plugins:
+INFO 07-27 08:47:25 [__init__.py:46] - ascend -> vllm_ascend:register
+INFO 07-27 08:47:25 [__init__.py:49] All plugins in this group will be loaded. Set `VLLM_PLUGINS` to control which plugins to load.
+INFO 07-27 08:47:25 [__init__.py:44] Available plugins for group vllm.platform_plugins:
+INFO 07-27 08:47:25 [__init__.py:46] - ascend -> vllm_ascend:register
+INFO 07-27 08:47:25 [__init__.py:49] All plugins in this group will be loaded. Set `VLLM_PLUGINS` to control which plugins to load.
+INFO 07-27 08:47:25 [__init__.py:237] Platform plugin ascend is activated
+INFO 07-27 08:47:25 [platform.py:61] Breakable cudagraph is force disabled on Ascend because DeepSeek V4 PIECEWISE cudagraph is not supported yet.
+INFO 07-27 08:47:25 [__init__.py:237] Platform plugin ascend is activated
+INFO 07-27 08:47:25 [platform.py:61] Breakable cudagraph is force disabled on Ascend because DeepSeek V4 PIECEWISE cudagraph is not supported yet.
+INFO 07-27 08:47:32 [importing.py:88] Triton not installed or not compatible; certain GPU-related functions will not be available.
+INFO 07-27 08:47:32 [importing.py:88] Triton not installed or not compatible; certain GPU-related functions will not be available.
+INFO 07-27 08:47:32 [importing.py:88] Triton not installed or not compatible; certain GPU-related functions will not be available.
+INFO 07-27 08:47:32 [importing.py:88] Triton not installed or not compatible; certain GPU-related functions will not be available.
+INFO 07-27 08:47:35 [__init__.py:112] Registered model loader `<class 'vllm_ascend.model_loader.netloader.netloader.ModelNetLoaderElastic'>` with load format `netloader`
+INFO 07-27 08:47:35 [__init__.py:112] Registered model loader `<class 'vllm_ascend.model_loader.netloader.netloader.ModelNetLoaderElastic'>` with load format `netloader`
+INFO 07-27 08:47:35 [__init__.py:112] Registered model loader `<class 'vllm_ascend.model_loader.netloader.netloader.ModelNetLoaderElastic'>` with load format `netloader`
+INFO 07-27 08:47:35 [__init__.py:112] Registered model loader `<class 'vllm_ascend.model_loader.rfork.rfork_loader.RForkModelLoader'>` with load format `rfork`
+INFO 07-27 08:47:35 [__init__.py:112] Registered model loader `<class 'vllm_ascend.model_loader.netloader.netloader.ModelNetLoaderElastic'>` with load format `netloader`
+INFO 07-27 08:47:35 [__init__.py:112] Registered model loader `<class 'vllm_ascend.model_loader.rfork.rfork_loader.RForkModelLoader'>` with load format `rfork`
+INFO 07-27 08:47:35 [__init__.py:112] Registered model loader `<class 'vllm_ascend.model_loader.rfork.rfork_loader.RForkModelLoader'>` with load format `rfork`
+INFO 07-27 08:47:36 [__init__.py:112] Registered model loader `<class 'vllm_ascend.model_loader.rfork.rfork_loader.RForkModelLoader'>` with load format `rfork`
+WARNING 07-27 08:47:36 [camem.py:67] Failed to import vllm_ascend_C:No module named 'vllm_ascend.vllm_ascend_C'. Sleep mode will be disabled. 
+INFO 07-27 08:47:36 [ascend_config.py:824] Dynamic EPLB is False
+INFO 07-27 08:47:36 [ascend_config.py:825] The number of redundant experts is 0
+WARNING 07-27 08:47:36 [camem.py:67] Failed to import vllm_ascend_C:No module named 'vllm_ascend.vllm_ascend_C'. Sleep mode will be disabled. 
+WARNING 07-27 08:47:36 [camem.py:67] Failed to import vllm_ascend_C:No module named 'vllm_ascend.vllm_ascend_C'. Sleep mode will be disabled. 
+INFO 07-27 08:47:36 [ascend_config.py:824] Dynamic EPLB is False
+INFO 07-27 08:47:36 [ascend_config.py:825] The number of redundant experts is 0
+INFO 07-27 08:47:36 [ascend_config.py:824] Dynamic EPLB is False
+INFO 07-27 08:47:36 [ascend_config.py:825] The number of redundant experts is 0
+WARNING 07-27 08:47:36 [camem.py:67] Failed to import vllm_ascend_C:No module named 'vllm_ascend.vllm_ascend_C'. Sleep mode will be disabled. 
+INFO 07-27 08:47:37 [ascend_config.py:824] Dynamic EPLB is False
+INFO 07-27 08:47:37 [ascend_config.py:825] The number of redundant experts is 0
+(Worker pid=117965) INFO 07-27 08:47:41 [parallel_state.py:1607] world_size=4 rank=0 local_rank=0 distributed_init_method=tcp://127.0.0.1:55643 backend=hccl
+(Worker pid=117966) INFO 07-27 08:47:43 [parallel_state.py:1607] world_size=4 rank=1 local_rank=1 distributed_init_method=tcp://127.0.0.1:55643 backend=hccl
+(Worker pid=117967) INFO 07-27 08:47:43 [parallel_state.py:1607] world_size=4 rank=2 local_rank=2 distributed_init_method=tcp://127.0.0.1:55643 backend=hccl
+(Worker pid=117968) INFO 07-27 08:47:43 [parallel_state.py:1607] world_size=4 rank=3 local_rank=3 distributed_init_method=tcp://127.0.0.1:55643 backend=hccl
+[Gloo] Rank 1 is connected to 3 peer ranks. Expected number of connected peer ranks is : 3
+[Gloo] Rank 0 is connected to 3 peer ranks. Expected number of connected peer ranks is : 3
+[Gloo] Rank 3 is connected to 3 peer ranks. Expected number of connected peer ranks is : 3
+[Gloo] Rank 2 is connected to 3 peer ranks. Expected number of connected peer ranks is : 3
+[Gloo] Rank 0 is connected to 3 peer ranks. Expected number of connected peer ranks is : 3
+[Gloo] Rank 2 is connected to 3 peer ranks. Expected number of connected peer ranks is : 3
+[Gloo] Rank 1 is connected to 3 peer ranks. Expected number of connected peer ranks is : 3
+[Gloo] Rank 3 is connected to 3 peer ranks. Expected number of connected peer ranks is : 3
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+(Worker pid=117965) INFO 07-27 08:47:43 [parallel_state.py:1942] rank 0 in world size 4 is assigned as DP rank 0, PP rank 0, PCP rank 0, TP rank 0, EP rank N/A, EPLB rank N/A
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[Gloo] Rank 1 is connected to 3 peer ranks. Expected number of connected peer ranks is : 3
+[Gloo] Rank 2 is connected to 3 peer ranks. Expected number of connected peer ranks is : 3
+[Gloo] Rank 0 is connected to 3 peer ranks. Expected number of connected peer ranks is : 3
+[Gloo] Rank 3 is connected to 3 peer ranks. Expected number of connected peer ranks is : 3
+(Worker pid=117965) WARNING 07-27 08:47:43 [__init__.py:204] min_p and logit_bias parameters won't work with speculative decoding.
+(Worker pid=117966) WARNING 07-27 08:47:43 [__init__.py:204] min_p and logit_bias parameters won't work with speculative decoding.
+(Worker pid=117967) WARNING 07-27 08:47:43 [__init__.py:204] min_p and logit_bias parameters won't work with speculative decoding.
+(Worker pid=117968) WARNING 07-27 08:47:43 [__init__.py:204] min_p and logit_bias parameters won't work with speculative decoding.
+(Worker pid=117965) WARNING 07-27 08:47:43 [utils.py:1135] The max_cudagraph_capture_size (16) is smaller than the potential max tokens required for decode (2048). This may lead to suboptimal performance. Consider adjustingmax_cudagraph_capture_size or scheduler_config (max_num_batched_tokens or max_num_seqs)to ensure max_cudagraph_capture_size can accommodate the decode workload. For more details, see the issue #8240(https://github.com/vllm-project/vllm-ascend/issues/8240).
+(Worker pid=117965) WARNING 07-27 08:47:43 [__init__.py:204] min_p and logit_bias parameters won't work with speculative decoding.
+(Worker pid=117966) WARNING 07-27 08:47:43 [__init__.py:204] min_p and logit_bias parameters won't work with speculative decoding.
+(Worker pid=117965) INFO 07-27 08:47:43 [model_runner_310p.py:103] Weight layout uses FRACTAL_NZ.
+(Worker pid=117965) INFO 07-27 08:47:43 [worker_310p.py:40] Using NPUWorker310 and NPUModelRunner310.
+(Worker_TP0 pid=117965) INFO 07-27 08:47:43 [model_runner_v1.py:3762] Starting to load model /opt/foundation_model/Qwen3-8B...
+(Worker pid=117968) WARNING 07-27 08:47:43 [__init__.py:204] min_p and logit_bias parameters won't work with speculative decoding.
+(Worker_TP1 pid=117966) INFO 07-27 08:47:43 [model_runner_v1.py:3762] Starting to load model /opt/foundation_model/Qwen3-8B...
+(Worker_TP3 pid=117968) INFO 07-27 08:47:43 [model_runner_v1.py:3762] Starting to load model /opt/foundation_model/Qwen3-8B...
+(Worker pid=117967) WARNING 07-27 08:47:43 [__init__.py:204] min_p and logit_bias parameters won't work with speculative decoding.
+(Worker_TP2 pid=117967) INFO 07-27 08:47:44 [model_runner_v1.py:3762] Starting to load model /opt/foundation_model/Qwen3-8B...
+(Worker_TP1 pid=117966) INFO 07-27 08:47:44 [compilation.py:1067] Using OOT custom backend for compilation.
+(Worker_TP0 pid=117965) INFO 07-27 08:47:44 [compilation.py:1067] Using OOT custom backend for compilation.
+(Worker_TP3 pid=117968) INFO 07-27 08:47:44 [compilation.py:1067] Using OOT custom backend for compilation.
+(Worker_TP1 pid=117966) INFO 07-27 08:47:44 [compilation.py:1067] Using OOT custom backend for compilation.
+(Worker_TP0 pid=117965) INFO 07-27 08:47:44 [compilation.py:1067] Using OOT custom backend for compilation.
+(Worker_TP3 pid=117968) INFO 07-27 08:47:44 [compilation.py:1067] Using OOT custom backend for compilation.
+(Worker_TP2 pid=117967) INFO 07-27 08:47:44 [compilation.py:1067] Using OOT custom backend for compilation.
+(Worker_TP0 pid=117965) INFO 07-27 08:47:44 [weight_utils.py:849] Filesystem type for checkpoints: EXT4. Checkpoint size: 15.26 GiB. Available RAM: 836.46 GiB.
+(Worker_TP0 pid=117965) INFO 07-27 08:47:44 [weight_utils.py:872] Auto-prefetch is disabled because the filesystem (EXT4) is not a recognized network FS (NFS/Lustre). If you want to force prefetching, start vLLM with --safetensors-load-strategy=prefetch.
+(Worker_TP2 pid=117967) INFO 07-27 08:47:44 [compilation.py:1067] Using OOT custom backend for compilation.
+(Worker_TP0 pid=117965) INFO 07-27 08:47:52 [default_loader.py:430] Loading weights took 7.24 seconds
+(Worker_TP0 pid=117965) INFO 07-27 08:47:52 [model_runner_v1.py:3787] Loading drafter model...
+(Worker_TP0 pid=117965) INFO 07-27 08:47:52 [vllm.py:1042] Asynchronous scheduling is enabled.
+(Worker_TP0 pid=117965) WARNING 07-27 08:47:52 [vllm.py:1066] Disabling cascade attention (not yet compatible with async speculative decoding).
+(Worker_TP0 pid=117965) INFO 07-27 08:47:52 [kernel.py:292] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native'])
+(Worker_TP0 pid=117965) WARNING 07-27 08:47:52 [vllm.py:1648] max_num_scheduled_tokens is set to 6656 based on the speculative decoding settings. This may lead to suboptimal performance. Consider increasing max_num_batched_tokens to accommodate the additional draft token slots, or decrease num_speculative_tokens or max_num_seqs.
+(Worker_TP0 pid=117965) INFO 07-27 08:47:52 [utils.py:174] No quantization signature detected from model files for "/opt/foundation_model/Qwen3-8B". The model will be loaded as float. To force a quantization method, pass "--quantization <method>" explicitly.
+(Worker_TP0 pid=117965) WARNING 07-27 08:47:52 [platform.py:1043] GPU-specific parameter is not supported on Ascend. parameter=disable_cascade_attn, value=True, action: resetting to False.
+(Worker_TP0 pid=117965) INFO 07-27 08:47:52 [ascend_config.py:824] Dynamic EPLB is False
+(Worker_TP0 pid=117965) INFO 07-27 08:47:52 [ascend_config.py:825] The number of redundant experts is 0
+(Worker_TP0 pid=117965) INFO 07-27 08:47:52 [platform.py:770] Set PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
+(Worker_TP0 pid=117965) INFO 07-27 08:47:52 [compilation.py:312] Enabled custom fusions: norm_quant, act_quant
+(Worker_TP0 pid=117965) INFO 07-27 08:47:52 [llm_base_proposer.py:298] [spec_decode/base] Loading draft model: method=dspark, load_format=None, model=/opt/foundation_model/dspark_qwen3_8b_block7
+(Worker_TP1 pid=117966) INFO 07-27 08:47:52 [model_runner_v1.py:3787] Loading drafter model...
+(Worker_TP1 pid=117966) INFO 07-27 08:47:52 [kernel.py:292] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native'])
+(Worker_TP1 pid=117966) INFO 07-27 08:47:52 [utils.py:174] No quantization signature detected from model files for "/opt/foundation_model/Qwen3-8B". The model will be loaded as float. To force a quantization method, pass "--quantization <method>" explicitly.
+(Worker_TP1 pid=117966) WARNING 07-27 08:47:52 [platform.py:1043] GPU-specific parameter is not supported on Ascend. parameter=disable_cascade_attn, value=True, action: resetting to False.
+(Worker_TP1 pid=117966) INFO 07-27 08:47:52 [ascend_config.py:824] Dynamic EPLB is False
+(Worker_TP1 pid=117966) INFO 07-27 08:47:52 [ascend_config.py:825] The number of redundant experts is 0
+(Worker_TP1 pid=117966) INFO 07-27 08:47:52 [platform.py:770] Set PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
+(Worker_TP1 pid=117966) INFO 07-27 08:47:52 [llm_base_proposer.py:298] [spec_decode/base] Loading draft model: method=dspark, load_format=None, model=/opt/foundation_model/dspark_qwen3_8b_block7
+(Worker_TP0 pid=117965) INFO 07-27 08:47:53 [compilation.py:1067] Using OOT custom backend for compilation.
+(Worker_TP0 pid=117965) INFO 07-27 08:47:53 [weight_utils.py:849] Filesystem type for checkpoints: EXT4. Checkpoint size: 4.42 GiB. Available RAM: 835.87 GiB.
+(Worker_TP1 pid=117966) INFO 07-27 08:47:53 [compilation.py:1067] Using OOT custom backend for compilation.
+(Worker_TP3 pid=117968) INFO 07-27 08:47:54 [model_runner_v1.py:3787] Loading drafter model...
+(Worker_TP3 pid=117968) INFO 07-27 08:47:54 [kernel.py:292] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native'])
+(Worker_TP3 pid=117968) INFO 07-27 08:47:54 [utils.py:174] No quantization signature detected from model files for "/opt/foundation_model/Qwen3-8B". The model will be loaded as float. To force a quantization method, pass "--quantization <method>" explicitly.
+(Worker_TP3 pid=117968) WARNING 07-27 08:47:54 [platform.py:1043] GPU-specific parameter is not supported on Ascend. parameter=disable_cascade_attn, value=True, action: resetting to False.
+(Worker_TP3 pid=117968) INFO 07-27 08:47:54 [ascend_config.py:824] Dynamic EPLB is False
+(Worker_TP3 pid=117968) INFO 07-27 08:47:54 [ascend_config.py:825] The number of redundant experts is 0
+(Worker_TP3 pid=117968) INFO 07-27 08:47:54 [platform.py:770] Set PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
+(Worker_TP3 pid=117968) INFO 07-27 08:47:54 [llm_base_proposer.py:298] [spec_decode/base] Loading draft model: method=dspark, load_format=None, model=/opt/foundation_model/dspark_qwen3_8b_block7
+(Worker_TP0 pid=117965) INFO 07-27 08:47:55 [default_loader.py:430] Loading weights took 2.03 seconds
+(Worker_TP0 pid=117965) INFO 07-27 08:47:55 [llm_base_proposer.py:452] [spec_decode/base] Detected DSpark model with distinct embed_tokens weights. Keeping separate embedding weights from the target model.
+(Worker_TP0 pid=117965) INFO 07-27 08:47:55 [llm_base_proposer.py:498] [spec_decode/base] Detected DSpark model with distinct lm_head weights. Keeping separate lm_head weights from the target model.
+(Worker_TP3 pid=117968) INFO 07-27 08:47:55 [compilation.py:1067] Using OOT custom backend for compilation.
+(Worker_TP1 pid=117966) INFO 07-27 08:47:55 [llm_base_proposer.py:452] [spec_decode/base] Detected DSpark model with distinct embed_tokens weights. Keeping separate embedding weights from the target model.
+(Worker_TP1 pid=117966) INFO 07-27 08:47:55 [llm_base_proposer.py:498] [spec_decode/base] Detected DSpark model with distinct lm_head weights. Keeping separate lm_head weights from the target model.
+(Worker_TP0 pid=117965) INFO 07-27 08:47:56 [model_runner_v1.py:3838] Loading model weights took 6.2804 GB
+(Worker_TP0 pid=117965) INFO 07-27 08:47:56 [model_runner_v1.py:3864] Model runner load_model total time: 12.17 seconds
+(Worker_TP1 pid=117966) INFO 07-27 08:47:56 [model_runner_v1.py:3838] Loading model weights took 6.2804 GB
+(Worker_TP1 pid=117966) INFO 07-27 08:47:56 [model_runner_v1.py:3864] Model runner load_model total time: 12.93 seconds
+(Worker_TP3 pid=117968) INFO 07-27 08:47:57 [llm_base_proposer.py:452] [spec_decode/base] Detected DSpark model with distinct embed_tokens weights. Keeping separate embedding weights from the target model.
+(Worker_TP3 pid=117968) INFO 07-27 08:47:57 [llm_base_proposer.py:498] [spec_decode/base] Detected DSpark model with distinct lm_head weights. Keeping separate lm_head weights from the target model.
+(Worker_TP3 pid=117968) INFO 07-27 08:47:58 [model_runner_v1.py:3838] Loading model weights took 6.2804 GB
+(Worker_TP3 pid=117968) INFO 07-27 08:47:58 [model_runner_v1.py:3864] Model runner load_model total time: 14.50 seconds
+(Worker_TP2 pid=117967) INFO 07-27 08:47:58 [model_runner_v1.py:3787] Loading drafter model...
+(Worker_TP2 pid=117967) INFO 07-27 08:47:58 [kernel.py:292] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native'])
+(Worker_TP2 pid=117967) INFO 07-27 08:47:58 [utils.py:174] No quantization signature detected from model files for "/opt/foundation_model/Qwen3-8B". The model will be loaded as float. To force a quantization method, pass "--quantization <method>" explicitly.
+(Worker_TP2 pid=117967) WARNING 07-27 08:47:58 [platform.py:1043] GPU-specific parameter is not supported on Ascend. parameter=disable_cascade_attn, value=True, action: resetting to False.
+(Worker_TP2 pid=117967) INFO 07-27 08:47:58 [ascend_config.py:824] Dynamic EPLB is False
+(Worker_TP2 pid=117967) INFO 07-27 08:47:58 [ascend_config.py:825] The number of redundant experts is 0
+(Worker_TP2 pid=117967) INFO 07-27 08:47:58 [platform.py:770] Set PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
+(Worker_TP2 pid=117967) INFO 07-27 08:47:58 [llm_base_proposer.py:298] [spec_decode/base] Loading draft model: method=dspark, load_format=None, model=/opt/foundation_model/dspark_qwen3_8b_block7
+(Worker_TP2 pid=117967) INFO 07-27 08:47:59 [compilation.py:1067] Using OOT custom backend for compilation.
+(Worker_TP2 pid=117967) INFO 07-27 08:48:03 [llm_base_proposer.py:452] [spec_decode/base] Detected DSpark model with distinct embed_tokens weights. Keeping separate embedding weights from the target model.
+(Worker_TP2 pid=117967) INFO 07-27 08:48:03 [llm_base_proposer.py:498] [spec_decode/base] Detected DSpark model with distinct lm_head weights. Keeping separate lm_head weights from the target model.
+(Worker_TP2 pid=117967) INFO 07-27 08:48:04 [model_runner_v1.py:3838] Loading model weights took 6.2804 GB
+(Worker_TP2 pid=117967) INFO 07-27 08:48:04 [model_runner_v1.py:3864] Model runner load_model total time: 20.27 seconds
+(Worker_TP0 pid=117965) INFO 07-27 08:48:13 [compiler_interface.py:248] AscendCompiler hash factors: {'torch_npu_version': '2.10.0.post1.dev20260613', 'enable_npugraph_ex': False, 'enable_static_kernel': False}
+(Worker_TP0 pid=117965) INFO 07-27 08:48:13 [backends.py:1089] Using cache directory: /root/.cache/vllm/torch_compile_cache/b742997296/rank_0_0/backbone for vLLM's torch.compile
+(Worker_TP0 pid=117965) INFO 07-27 08:48:13 [backends.py:1148] Dynamo bytecode transform time: 8.56 s
+(Worker_TP3 pid=117968) INFO 07-27 08:48:13 [compiler_interface.py:248] AscendCompiler hash factors: {'torch_npu_version': '2.10.0.post1.dev20260613', 'enable_npugraph_ex': False, 'enable_static_kernel': False}
+(Worker_TP1 pid=117966) INFO 07-27 08:48:13 [compiler_interface.py:248] AscendCompiler hash factors: {'torch_npu_version': '2.10.0.post1.dev20260613', 'enable_npugraph_ex': False, 'enable_static_kernel': False}
+(Worker_TP2 pid=117967) INFO 07-27 08:48:13 [compiler_interface.py:248] AscendCompiler hash factors: {'torch_npu_version': '2.10.0.post1.dev20260613', 'enable_npugraph_ex': False, 'enable_static_kernel': False}
+(Worker_TP0 pid=117965) INFO 07-27 08:48:27 [backends.py:393] Compiling a graph for compile range (1, 8192) takes 13.81 s
+(Worker_TP0 pid=117965) WARNING 07-27 08:48:30 [decorators.py:713] unable to save AOT compiled function to /root/.cache/vllm/torch_compile_cache/torch_aot_compile/7a4c24a689f8faef0152deee61058c75636f4e6db1fef2d0121573f8084eab90/rank_0_0/model: cannot pickle 'module' object
+(Worker_TP0 pid=117965) INFO 07-27 08:48:30 [monitor.py:53] torch.compile took 26.04 s in total
+(Worker_TP3 pid=117968) WARNING 07-27 08:48:31 [decorators.py:713] unable to save AOT compiled function to /root/.cache/vllm/torch_compile_cache/torch_aot_compile/7a4c24a689f8faef0152deee61058c75636f4e6db1fef2d0121573f8084eab90/rank_3_0/model: cannot pickle 'module' object
+(Worker_TP2 pid=117967) WARNING 07-27 08:48:31 [decorators.py:713] unable to save AOT compiled function to /root/.cache/vllm/torch_compile_cache/torch_aot_compile/7a4c24a689f8faef0152deee61058c75636f4e6db1fef2d0121573f8084eab90/rank_2_0/model: cannot pickle 'module' object
+(Worker_TP1 pid=117966) WARNING 07-27 08:48:31 [decorators.py:713] unable to save AOT compiled function to /root/.cache/vllm/torch_compile_cache/torch_aot_compile/7a4c24a689f8faef0152deee61058c75636f4e6db1fef2d0121573f8084eab90/rank_1_0/model: cannot pickle 'module' object
+(Worker_TP0 pid=117965) INFO 07-27 08:48:32 [monitor.py:81] Initial profiling/warmup run took 1.66 s
+....(Worker_TP0 pid=117965) INFO 07-27 08:48:35 [compiler_interface.py:248] AscendCompiler hash factors: {'torch_npu_version': '2.10.0.post1.dev20260613', 'enable_npugraph_ex': False, 'enable_static_kernel': False}
+(Worker_TP0 pid=117965) INFO 07-27 08:48:35 [backends.py:1089] Using cache directory: /root/.cache/vllm/torch_compile_cache/b742997296/rank_0_0/eagle_head for vLLM's torch.compile
+(Worker_TP0 pid=117965) INFO 07-27 08:48:35 [backends.py:1148] Dynamo bytecode transform time: 2.58 s
+(Worker_TP3 pid=117968) INFO 07-27 08:48:35 [compiler_interface.py:248] AscendCompiler hash factors: {'torch_npu_version': '2.10.0.post1.dev20260613', 'enable_npugraph_ex': False, 'enable_static_kernel': False}
+(Worker_TP1 pid=117966) INFO 07-27 08:48:35 [compiler_interface.py:248] AscendCompiler hash factors: {'torch_npu_version': '2.10.0.post1.dev20260613', 'enable_npugraph_ex': False, 'enable_static_kernel': False}
+(Worker_TP2 pid=117967) INFO 07-27 08:48:35 [compiler_interface.py:248] AscendCompiler hash factors: {'torch_npu_version': '2.10.0.post1.dev20260613', 'enable_npugraph_ex': False, 'enable_static_kernel': False}
+(Worker_TP0 pid=117965) INFO 07-27 08:48:38 [backends.py:393] Compiling a graph for compile range (1, 8192) takes 3.43 s
+(Worker_TP0 pid=117965) WARNING 07-27 08:48:39 [decorators.py:713] unable to save AOT compiled function to /root/.cache/vllm/torch_compile_cache/torch_aot_compile/c64599465e5bd5911e2fd6eaaa6059285d043ae047a2b541d77ca4c3ccee0be6/rank_0_0/model: cannot pickle 'module' object
+(Worker_TP0 pid=117965) INFO 07-27 08:48:39 [monitor.py:53] torch.compile took 6.58 s in total
+(Worker_TP0 pid=117965) INFO 07-27 08:48:39 [monitor.py:81] Initial profiling/warmup run took 0.02 s
+(Worker_TP3 pid=117968) WARNING 07-27 08:48:39 [decorators.py:713] unable to save AOT compiled function to /root/.cache/vllm/torch_compile_cache/torch_aot_compile/c64599465e5bd5911e2fd6eaaa6059285d043ae047a2b541d77ca4c3ccee0be6/rank_3_0/model: cannot pickle 'module' object
+(Worker_TP1 pid=117966) WARNING 07-27 08:48:39 [decorators.py:713] unable to save AOT compiled function to /root/.cache/vllm/torch_compile_cache/torch_aot_compile/c64599465e5bd5911e2fd6eaaa6059285d043ae047a2b541d77ca4c3ccee0be6/rank_1_0/model: cannot pickle 'module' object
+(Worker_TP2 pid=117967) WARNING 07-27 08:48:39 [decorators.py:713] unable to save AOT compiled function to /root/.cache/vllm/torch_compile_cache/torch_aot_compile/c64599465e5bd5911e2fd6eaaa6059285d043ae047a2b541d77ca4c3ccee0be6/rank_2_0/model: cannot pickle 'module' object
+(Worker_TP0 pid=117965) INFO 07-27 08:48:41 [worker_310p.py:118] Available KV cache memory: 12.71 GiB (halved for workspace)
+(EngineCore pid=117708) INFO 07-27 08:48:41 [kv_cache_utils.py:2146] GPU KV cache size: 324,992 tokens
+(EngineCore pid=117708) INFO 07-27 08:48:41 [kv_cache_utils.py:2147] Maximum concurrency for 4,096 tokens per request: 79.34x
+..(Worker_TP0 pid=117965) INFO 07-27 08:48:46 [gpu_model_runner.py:6707] Graph capturing finished in 4 secs, took 0.21 GiB
+(Worker_TP0 pid=117965) INFO 07-27 08:48:46 [worker.py:751] Free memory on device (41.5/43.24 GiB) on startup. Desired GPU memory utilization is (0.8, 34.59 GiB). Actual usage: 6.28 GiB for weights, 0.63 GiB for peak activation, 0.52 GiB for non-torch memory, 0.21 GiB for NPU graph memory. Replace gpu_memory_utilization with `--kv-cache-memory=28786504089` (26.81 GiB) to fit into requested memory, or `--kv-cache-memory=36200142848` (33.71 GiB) to fully utilize NPU free memory. Current KV cache memory: 12.71 GiB. After warmup: torch reserved memory 19.34 GiB, torch allocated memory 19.26 GiB.
+(Worker_TP0 pid=117965) INFO 07-27 08:48:46 [worker_310p.py:127] Skip warm-up atb ops for 310P device.
+(Worker_TP2 pid=117967) INFO 07-27 08:48:46 [worker.py:751] Free memory on device (42.2/43.24 GiB) on startup. Desired GPU memory utilization is (0.8, 34.59 GiB). Actual usage: 6.28 GiB for weights, 0.63 GiB for peak activation, 0.52 GiB for non-torch memory, 0.21 GiB for NPU graph memory. Replace gpu_memory_utilization with `--kv-cache-memory=28792447385` (26.82 GiB) to fit into requested memory, or `--kv-cache-memory=36960643072` (34.42 GiB) to fully utilize NPU free memory. Current KV cache memory: 13.06 GiB. After warmup: torch reserved memory 19.34 GiB, torch allocated memory 19.26 GiB.
+(Worker_TP1 pid=117966) INFO 07-27 08:48:46 [worker.py:751] Free memory on device (42.08/42.67 GiB) on startup. Desired GPU memory utilization is (0.8, 34.14 GiB). Actual usage: 6.28 GiB for weights, 0.63 GiB for peak activation, 0.52 GiB for non-torch memory, 0.21 GiB for NPU graph memory. Replace gpu_memory_utilization with `--kv-cache-memory=28301089587` (26.36 GiB) to fit into requested memory, or `--kv-cache-memory=36836538368` (34.31 GiB) to fully utilize NPU free memory. Current KV cache memory: 13.06 GiB. After warmup: torch reserved memory 19.34 GiB, torch allocated memory 19.26 GiB.
+(Worker_TP3 pid=117968) INFO 07-27 08:48:46 [worker.py:751] Free memory on device (41.79/42.67 GiB) on startup. Desired GPU memory utilization is (0.8, 34.14 GiB). Actual usage: 6.28 GiB for weights, 0.63 GiB for peak activation, 0.52 GiB for non-torch memory, 0.21 GiB for NPU graph memory. Replace gpu_memory_utilization with `--kv-cache-memory=28300647219` (26.36 GiB) to fit into requested memory, or `--kv-cache-memory=36518299648` (34.01 GiB) to fully utilize NPU free memory. Current KV cache memory: 12.91 GiB. After warmup: torch reserved memory 19.34 GiB, torch allocated memory 19.26 GiB.
+(Worker_TP0 pid=117965) INFO 07-27 08:48:53 [cpu_binding.py:542] [cpu_bind_mode] mode=topo_affinity rank=0 visible_npus=[0, 1, 2, 3, 4, 5, 6, 7]
+(Worker_TP0 pid=117965) WARNING 07-27 08:48:53 [worker.py:763] Bind cpus failed in rank0: CPUs available in 'Cpus_allowed_list' conflict with NUMA affinity. Skip binding cpu.
+(Worker_TP1 pid=117966) INFO 07-27 08:48:54 [cpu_binding.py:542] [cpu_bind_mode] mode=topo_affinity rank=1 visible_npus=[0, 1, 2, 3, 4, 5, 6, 7]
+(Worker_TP1 pid=117966) WARNING 07-27 08:48:54 [worker.py:763] Bind cpus failed in rank1: CPUs available in 'Cpus_allowed_list' conflict with NUMA affinity. Skip binding cpu.
+(Worker_TP2 pid=117967) INFO 07-27 08:48:54 [cpu_binding.py:542] [cpu_bind_mode] mode=topo_affinity rank=2 visible_npus=[0, 1, 2, 3, 4, 5, 6, 7]
+(Worker_TP2 pid=117967) WARNING 07-27 08:48:54 [worker.py:763] Bind cpus failed in rank2: CPUs available in 'Cpus_allowed_list' conflict with NUMA affinity. Skip binding cpu.
+(Worker_TP3 pid=117968) INFO 07-27 08:48:54 [cpu_binding.py:542] [cpu_bind_mode] mode=topo_affinity rank=3 visible_npus=[0, 1, 2, 3, 4, 5, 6, 7]
+(Worker_TP3 pid=117968) WARNING 07-27 08:48:54 [worker.py:763] Bind cpus failed in rank3: CPUs available in 'Cpus_allowed_list' conflict with NUMA affinity. Skip binding cpu.
+(EngineCore pid=117708) INFO 07-27 08:48:54 [core.py:337] init engine (profile, create kv cache, warmup model) took 50.22 s (compilation: 33.25 s)
+(EngineCore pid=117708) INFO 07-27 08:48:56 [vllm.py:1042] Asynchronous scheduling is enabled.
+(EngineCore pid=117708) WARNING 07-27 08:48:56 [vllm.py:1066] Disabling cascade attention (not yet compatible with async speculative decoding).
+(EngineCore pid=117708) INFO 07-27 08:48:56 [kernel.py:292] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native'])
+(EngineCore pid=117708) WARNING 07-27 08:48:56 [vllm.py:1648] max_num_scheduled_tokens is set to 6656 based on the speculative decoding settings. This may lead to suboptimal performance. Consider increasing max_num_batched_tokens to accommodate the additional draft token slots, or decrease num_speculative_tokens or max_num_seqs.
+(EngineCore pid=117708) INFO 07-27 08:48:56 [utils.py:174] No quantization signature detected from model files for "/opt/foundation_model/Qwen3-8B". The model will be loaded as float. To force a quantization method, pass "--quantization <method>" explicitly.
+(EngineCore pid=117708) WARNING 07-27 08:48:56 [platform.py:1043] GPU-specific parameter is not supported on Ascend. parameter=disable_cascade_attn, value=True, action: resetting to False.
+(EngineCore pid=117708) INFO 07-27 08:48:56 [ascend_config.py:824] Dynamic EPLB is False
+(EngineCore pid=117708) INFO 07-27 08:48:56 [ascend_config.py:825] The number of redundant experts is 0
+(EngineCore pid=117708) INFO 07-27 08:48:56 [platform.py:770] Set PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
+(EngineCore pid=117708) INFO 07-27 08:48:56 [compilation.py:312] Enabled custom fusions: norm_quant, act_quant
+(Worker_TP0 pid=117965) WARNING 07-27 08:48:56 [sampler.py:54] [sample/sampler] Triton not available, falling back to vLLM default penalty implementation. Penalty performance may be degraded on NPU. 
+(Worker_TP0 pid=117965) INFO 07-27 08:48:57 [acl_graph.py:252] Replaying aclgraph
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] WorkerProc hit an exception.
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] Traceback (most recent call last):
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm/vllm/v1/executor/multiproc_executor.py", line 996, in worker_busy_loop
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     output = func(*args, **kwargs)
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]              ^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     return func(*args, **kwargs)
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm-ascend/vllm_ascend/worker/worker.py", line 657, in sample_tokens
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     return self.model_runner.sample_tokens(grammar_output)
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     return func(*args, **kwargs)
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm-ascend/vllm_ascend/worker/model_runner_v1.py", line 2477, in sample_tokens
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     sampler_output = self._sample(logits, spec_decode_metadata)
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm-ascend/vllm_ascend/worker/model_runner_v1.py", line 2686, in _sample
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     sampler_output = self.rejection_sampler(
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]                      ^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1776, in _wrapped_call_impl
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     return self._call_impl(*args, **kwargs)
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1787, in _call_impl
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     return forward_call(*args, **kwargs)
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm-ascend/vllm_ascend/_310p/sample/rejection_sampler.py", line 64, in forward
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     output = super().forward(metadata, draft_probs, logits, sampling_metadata)
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm-ascend/vllm_ascend/sample/rejection_sampler.py", line 227, in forward
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     output_token_ids = rejection_sample(
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]                        ^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm-ascend/vllm_ascend/sample/rejection_sampler.py", line 561, in rejection_sample
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     rejection_greedy_sample_pytorch(
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm-ascend/vllm_ascend/sample/rejection_sampler.py", line 1042, in rejection_greedy_sample_pytorch
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     output_token_ids[final_copy_mask] = target_argmax[global_idx[final_copy_mask]].to(output_token_ids.dtype)
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]                                                       ~~~~~~~~~~^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] RuntimeError: The Inner error is reported as above. The process exits for this inner error, and the current working operator name is aclnnNonzeroV2.
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] Since the operator is called asynchronously, the stacktrace may be inaccurate. If you want to get the accurate stacktrace, please set the environment variable ASCEND_LAUNCH_BLOCKING=1.
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] Note: ASCEND_LAUNCH_BLOCKING=1 will force ops to run in synchronous mode, resulting in performance degradation. Please unset ASCEND_LAUNCH_BLOCKING in time after debugging.
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] [ERROR] 2026-07-27-08:48:57 (PID:117966, Device:1, RankID:-1) ERR00100 PTA call acl api failed.
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] 
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] Traceback (most recent call last):
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm/vllm/v1/executor/multiproc_executor.py", line 996, in worker_busy_loop
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     output = func(*args, **kwargs)
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]              ^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     return func(*args, **kwargs)
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm-ascend/vllm_ascend/worker/worker.py", line 657, in sample_tokens
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     return self.model_runner.sample_tokens(grammar_output)
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     return func(*args, **kwargs)
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm-ascend/vllm_ascend/worker/model_runner_v1.py", line 2477, in sample_tokens
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     sampler_output = self._sample(logits, spec_decode_metadata)
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm-ascend/vllm_ascend/worker/model_runner_v1.py", line 2686, in _sample
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     sampler_output = self.rejection_sampler(
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]                      ^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1776, in _wrapped_call_impl
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     return self._call_impl(*args, **kwargs)
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1787, in _call_impl
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     return forward_call(*args, **kwargs)
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm-ascend/vllm_ascend/_310p/sample/rejection_sampler.py", line 64, in forward
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     output = super().forward(metadata, draft_probs, logits, sampling_metadata)
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm-ascend/vllm_ascend/sample/rejection_sampler.py", line 227, in forward
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     output_token_ids = rejection_sample(
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]                        ^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm-ascend/vllm_ascend/sample/rejection_sampler.py", line 561, in rejection_sample
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     rejection_greedy_sample_pytorch(
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm-ascend/vllm_ascend/sample/rejection_sampler.py", line 1042, in rejection_greedy_sample_pytorch
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     output_token_ids[final_copy_mask] = target_argmax[global_idx[final_copy_mask]].to(output_token_ids.dtype)
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]                                                       ~~~~~~~~~~^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] RuntimeError: The Inner error is reported as above. The process exits for this inner error, and the current working operator name is aclnnNonzeroV2.
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] Since the operator is called asynchronously, the stacktrace may be inaccurate. If you want to get the accurate stacktrace, please set the environment variable ASCEND_LAUNCH_BLOCKING=1.
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] Note: ASCEND_LAUNCH_BLOCKING=1 will force ops to run in synchronous mode, resulting in performance degradation. Please unset ASCEND_LAUNCH_BLOCKING in time after debugging.
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] [ERROR] 2026-07-27-08:48:57 (PID:117966, Device:1, RankID:-1) ERR00100 PTA call acl api failed.
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] 
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] 
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] WorkerProc hit an exception.
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] Traceback (most recent call last):
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm/vllm/v1/executor/multiproc_executor.py", line 996, in worker_busy_loop
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     output = func(*args, **kwargs)
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]              ^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     return func(*args, **kwargs)
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm-ascend/vllm_ascend/worker/worker.py", line 657, in sample_tokens
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     return self.model_runner.sample_tokens(grammar_output)
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     return func(*args, **kwargs)
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm-ascend/vllm_ascend/worker/model_runner_v1.py", line 2477, in sample_tokens
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     sampler_output = self._sample(logits, spec_decode_metadata)
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm-ascend/vllm_ascend/worker/model_runner_v1.py", line 2686, in _sample
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     sampler_output = self.rejection_sampler(
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]                      ^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1776, in _wrapped_call_impl
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     return self._call_impl(*args, **kwargs)
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1787, in _call_impl
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     return forward_call(*args, **kwargs)
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm-ascend/vllm_ascend/_310p/sample/rejection_sampler.py", line 64, in forward
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     output = super().forward(metadata, draft_probs, logits, sampling_metadata)
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm-ascend/vllm_ascend/sample/rejection_sampler.py", line 227, in forward
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     output_token_ids = rejection_sample(
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]                        ^^^^^^^^^^^^^^^^^
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm-ascend/vllm_ascend/sample/rejection_sampler.py", line 561, in rejection_sample
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     rejection_greedy_sample_pytorch(
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm-ascend/vllm_ascend/sample/rejection_sampler.py", line 1042, in rejection_greedy_sample_pytorch
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     output_token_ids[final_copy_mask] = target_argmax[global_idx[final_copy_mask]].to(output_token_ids.dtype)
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]                                                       ~~~~~~~~~~^^^^^^^^^^^^^^^^^
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] RuntimeError: The Inner error is reported as above. The process exits for this inner error, and the current working operator name is aclnnNonzeroV2.
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] Since the operator is called asynchronously, the stacktrace may be inaccurate. If you want to get the accurate stacktrace, please set the environment variable ASCEND_LAUNCH_BLOCKING=1.
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] Note: ASCEND_LAUNCH_BLOCKING=1 will force ops to run in synchronous mode, resulting in performance degradation. Please unset ASCEND_LAUNCH_BLOCKING in time after debugging.
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] [ERROR] 2026-07-27-08:48:57 (PID:117967, Device:2, RankID:-1) ERR00100 PTA call acl api failed.
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] 
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] Traceback (most recent call last):
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm/vllm/v1/executor/multiproc_executor.py", line 996, in worker_busy_loop
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     output = func(*args, **kwargs)
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]              ^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     return func(*args, **kwargs)
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm-ascend/vllm_ascend/worker/worker.py", line 657, in sample_tokens
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     return self.model_runner.sample_tokens(grammar_output)
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     return func(*args, **kwargs)
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm-ascend/vllm_ascend/worker/model_runner_v1.py", line 2477, in sample_tokens
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     sampler_output = self._sample(logits, spec_decode_metadata)
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm-ascend/vllm_ascend/worker/model_runner_v1.py", line 2686, in _sample
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     sampler_output = self.rejection_sampler(
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]                      ^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1776, in _wrapped_call_impl
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     return self._call_impl(*args, **kwargs)
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1787, in _call_impl
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     return forward_call(*args, **kwargs)
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm-ascend/vllm_ascend/_310p/sample/rejection_sampler.py", line 64, in forward
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     output = super().forward(metadata, draft_probs, logits, sampling_metadata)
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm-ascend/vllm_ascend/sample/rejection_sampler.py", line 227, in forward
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     output_token_ids = rejection_sample(
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]                        ^^^^^^^^^^^^^^^^^
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm-ascend/vllm_ascend/sample/rejection_sampler.py", line 561, in rejection_sample
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     rejection_greedy_sample_pytorch(
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm-ascend/vllm_ascend/sample/rejection_sampler.py", line 1042, in rejection_greedy_sample_pytorch
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     output_token_ids[final_copy_mask] = target_argmax[global_idx[final_copy_mask]].to(output_token_ids.dtype)
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]                                                       ~~~~~~~~~~^^^^^^^^^^^^^^^^^
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] RuntimeError: The Inner error is reported as above. The process exits for this inner error, and the current working operator name is aclnnNonzeroV2.
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] Since the operator is called asynchronously, the stacktrace may be inaccurate. If you want to get the accurate stacktrace, please set the environment variable ASCEND_LAUNCH_BLOCKING=1.
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] Note: ASCEND_LAUNCH_BLOCKING=1 will force ops to run in synchronous mode, resulting in performance degradation. Please unset ASCEND_LAUNCH_BLOCKING in time after debugging.
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] [ERROR] 2026-07-27-08:48:57 (PID:117967, Device:2, RankID:-1) ERR00100 PTA call acl api failed.
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] 
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] 
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] WorkerProc hit an exception.
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] Traceback (most recent call last):
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm/vllm/v1/executor/multiproc_executor.py", line 996, in worker_busy_loop
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     output = func(*args, **kwargs)
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]              ^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm/vllm/v1/worker/worker_base.py", line 351, in execute_model
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     return self.worker.execute_model(scheduler_output)
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm-ascend/vllm_ascend/worker/worker.py", line 625, in execute_model
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     output = self.model_runner.execute_model(scheduler_output, intermediate_tensors)
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     return func(*args, **kwargs)
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm-ascend/vllm_ascend/worker/model_runner_v1.py", line 2055, in execute_model
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     with self.synchronize_input_prep():
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/usr/local/python3.12.13/lib/python3.12/contextlib.py", line 137, in __enter__
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     return next(self.gen)
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm/vllm/v1/worker/gpu_model_runner.py", line 3777, in synchronize_input_prep
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     self.prepare_inputs_event.synchronize()
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch_npu/npu/streams.py", line 192, in synchronize
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     super(Event, self).synchronize()
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] RuntimeError: synchronize:../torch_npu/csrc/core/npu/NPUEvent.cpp:215 NPU function error: aclrtSynchronizeEvent(event_), error code is 507015
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] [ERROR] 2026-07-27-08:48:57 (PID:117966, Device:1, RankID:-1) ERR00100 PTA call acl api failed
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] [Error]: The aicore execution is abnormal. 
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]         Rectify the fault based on the error information in the ascend log.
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] EE9999: Inner Error!
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] EE9999[PID: 117966] 2026-07-27-08:48:57.546.317 (EE9999):  rtEventSynchronize execution failed, reason=aicore exception[FUNC:FuncErrorReason][FILE:error_message_manage.cc][LINE:65]
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]         TraceBack (most recent call last):
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]        wait event to be complete failed, runtime result = 507015[FUNC:ReportCallError][FILE:log_inner.cpp][LINE:148]
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] 
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] Traceback (most recent call last):
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm/vllm/v1/executor/multiproc_executor.py", line 996, in worker_busy_loop
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     output = func(*args, **kwargs)
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]              ^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm/vllm/v1/worker/worker_base.py", line 351, in execute_model
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     return self.worker.execute_model(scheduler_output)
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm-ascend/vllm_ascend/worker/worker.py", line 625, in execute_model
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     output = self.model_runner.execute_model(scheduler_output, intermediate_tensors)
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     return func(*args, **kwargs)
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm-ascend/vllm_ascend/worker/model_runner_v1.py", line 2055, in execute_model
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     with self.synchronize_input_prep():
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/usr/local/python3.12.13/lib/python3.12/contextlib.py", line 137, in __enter__
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     return next(self.gen)
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm/vllm/v1/worker/gpu_model_runner.py", line 3777, in synchronize_input_prep
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     self.prepare_inputs_event.synchronize()
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch_npu/npu/streams.py", line 192, in synchronize
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     super(Event, self).synchronize()
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] RuntimeError: synchronize:../torch_npu/csrc/core/npu/NPUEvent.cpp:215 NPU function error: aclrtSynchronizeEvent(event_), error code is 507015
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] [ERROR] 2026-07-27-08:48:57 (PID:117966, Device:1, RankID:-1) ERR00100 PTA call acl api failed
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] [Error]: The aicore execution is abnormal. 
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]         Rectify the fault based on the error information in the ascend log.
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] EE9999: Inner Error!
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] EE9999[PID: 117966] 2026-07-27-08:48:57.546.317 (EE9999):  rtEventSynchronize execution failed, reason=aicore exception[FUNC:FuncErrorReason][FILE:error_message_manage.cc][LINE:65]
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]         TraceBack (most recent call last):
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]        wait event to be complete failed, runtime result = 507015[FUNC:ReportCallError][FILE:log_inner.cpp][LINE:148]
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] 
+(Worker_TP1 pid=117966) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] 
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] WorkerProc hit an exception.
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] Traceback (most recent call last):
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm/vllm/v1/executor/multiproc_executor.py", line 996, in worker_busy_loop
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     output = func(*args, **kwargs)
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]              ^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm/vllm/v1/worker/worker_base.py", line 351, in execute_model
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     return self.worker.execute_model(scheduler_output)
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm-ascend/vllm_ascend/worker/worker.py", line 625, in execute_model
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     output = self.model_runner.execute_model(scheduler_output, intermediate_tensors)
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     return func(*args, **kwargs)
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm-ascend/vllm_ascend/worker/model_runner_v1.py", line 2055, in execute_model
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     with self.synchronize_input_prep():
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/usr/local/python3.12.13/lib/python3.12/contextlib.py", line 137, in __enter__
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     return next(self.gen)
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm/vllm/v1/worker/gpu_model_runner.py", line 3777, in synchronize_input_prep
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     self.prepare_inputs_event.synchronize()
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch_npu/npu/streams.py", line 192, in synchronize
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     super(Event, self).synchronize()
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] RuntimeError: synchronize:../torch_npu/csrc/core/npu/NPUEvent.cpp:215 NPU function error: aclrtSynchronizeEvent(event_), error code is 507015
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] [ERROR] 2026-07-27-08:48:57 (PID:117967, Device:2, RankID:-1) ERR00100 PTA call acl api failed
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] [Error]: The aicore execution is abnormal. 
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]         Rectify the fault based on the error information in the ascend log.
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] EE9999: Inner Error!
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] EE9999[PID: 117967] 2026-07-27-08:48:57.549.174 (EE9999):  rtEventSynchronize execution failed, reason=aicore exception[FUNC:FuncErrorReason][FILE:error_message_manage.cc][LINE:65]
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]         TraceBack (most recent call last):
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]        wait event to be complete failed, runtime result = 507015[FUNC:ReportCallError][FILE:log_inner.cpp][LINE:148]
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] 
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] Traceback (most recent call last):
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm/vllm/v1/executor/multiproc_executor.py", line 996, in worker_busy_loop
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     output = func(*args, **kwargs)
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]              ^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm/vllm/v1/worker/worker_base.py", line 351, in execute_model
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     return self.worker.execute_model(scheduler_output)
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm-ascend/vllm_ascend/worker/worker.py", line 625, in execute_model
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     output = self.model_runner.execute_model(scheduler_output, intermediate_tensors)
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     return func(*args, **kwargs)
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm-ascend/vllm_ascend/worker/model_runner_v1.py", line 2055, in execute_model
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     with self.synchronize_input_prep():
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/usr/local/python3.12.13/lib/python3.12/contextlib.py", line 137, in __enter__
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     return next(self.gen)
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm/vllm/v1/worker/gpu_model_runner.py", line 3777, in synchronize_input_prep
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     self.prepare_inputs_event.synchronize()
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]   File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch_npu/npu/streams.py", line 192, in synchronize
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]     super(Event, self).synchronize()
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] RuntimeError: synchronize:../torch_npu/csrc/core/npu/NPUEvent.cpp:215 NPU function error: aclrtSynchronizeEvent(event_), error code is 507015
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] [ERROR] 2026-07-27-08:48:57 (PID:117967, Device:2, RankID:-1) ERR00100 PTA call acl api failed
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] [Error]: The aicore execution is abnormal. 
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]         Rectify the fault based on the error information in the ascend log.
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] EE9999: Inner Error!
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] EE9999[PID: 117967] 2026-07-27-08:48:57.549.174 (EE9999):  rtEventSynchronize execution failed, reason=aicore exception[FUNC:FuncErrorReason][FILE:error_message_manage.cc][LINE:65]
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]         TraceBack (most recent call last):
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004]        wait event to be complete failed, runtime result = 507015[FUNC:ReportCallError][FILE:log_inner.cpp][LINE:148]
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] 
+(Worker_TP2 pid=117967) ERROR 07-27 08:48:57 [multiproc_executor.py:1004] 
+(EngineCore pid=117708) ERROR 07-27 08:49:04 [multiproc_executor.py:284] Worker proc VllmWorker-1 died unexpectedly, shutting down executor.
+(Worker_TP0 pid=117965) INFO 07-27 08:49:04 [multiproc_executor.py:790] Parent process exited, terminating worker queues
+(EngineCore pid=117708) INFO 07-27 08:49:04 [multiproc_executor.py:426] [shutdown] Executor: waiting for worker exit count=3
+(EngineCore pid=117708) WARNING 07-27 08:49:09 [multiproc_executor.py:438] [shutdown] Executor: workers still running after grace period; sending SIGTERM count=2
+(EngineCore pid=117708) WARNING 07-27 08:49:13 [multiproc_executor.py:448] [shutdown] Executor: workers still running after SIGTERM; sending SIGKILL count=2
+(EngineCore pid=117708) ERROR 07-27 08:49:13 [dump_input.py:72] Dumping input data for V1 LLM engine (v0.25.1) with config: model='/opt/foundation_model/Qwen3-8B', speculative_config=SpeculativeConfig(method='dspark', model='/opt/foundation_model/dspark_qwen3_8b_block7', num_spec_tokens=7), tokenizer='/opt/foundation_model/Qwen3-8B', skip_tokenizer_init=False, tokenizer_mode=auto, revision=None, tokenizer_revision=None, trust_remote_code=True, dtype=torch.float16, max_seq_len=4096, download_dir=None, load_format=auto, tensor_parallel_size=4, pipeline_parallel_size=1, data_parallel_size=1, decode_context_parallel_size=1, dcp_comm_backend=ag_rs, disable_custom_all_reduce=True, quantization=None, quantization_config=None, enforce_eager=False, enable_return_routed_experts=False, kv_cache_dtype=auto, device_config=npu, structured_outputs_config=StructuredOutputsConfig(backend='auto', disable_any_whitespace=False, disable_additional_properties=False, reasoning_parser='', reasoning_parser_plugin='', enable_in_reasoning=False), observability_config=ObservabilityConfig(show_hidden_metrics_for_version=None, otlp_traces_endpoint=None, collect_detailed_traces=None, kv_cache_metrics=False, kv_cache_metrics_sample=0.01, cudagraph_metrics=False, enable_layerwise_nvtx_tracing=False, enable_mfu_metrics=False, enable_mm_processor_stats=False, enable_logging_iteration_details=False, jit_monitor_mode='warn', jit_monitor_verbose=False), seed=0, served_model_name=/opt/foundation_model/Qwen3-8B, enable_prefix_caching=False, enable_chunked_prefill=True, pooler_config=None, compilation_config={'mode': <CompilationMode.VLLM_COMPILE: 3>, 'debug_dump_path': None, 'cache_dir': '', 'compile_cache_save_format': 'binary', 'backend': 'vllm_ascend.compilation.compiler_interface.AscendCompiler', 'custom_ops': ['all'], 'ir_enable_torch_wrap': False, 'splitting_ops': [], 'compile_mm_encoder': False, 'cudagraph_mm_encoder': False, 'encoder_cudagraph_token_budgets': [], 'encoder_cudagraph_max_vision_items_per_batch': 0, 'encoder_cudagraph_max_frames_per_batch': None, 'compile_sizes': [], 'compile_ranges_endpoints': [8192], 'inductor_compile_config': {'enable_auto_functionalized_v2': False, 'size_asserts': False, 'alignment_asserts': False, 'scalar_asserts': False, 'combo_kernels': True, 'benchmark_combo_kernel': True}, 'inductor_passes': {}, 'cudagraph_mode': <CUDAGraphMode.FULL_DECODE_ONLY: (2, 0)>, 'cudagraph_num_of_warmups': 1, 'cudagraph_capture_sizes': [8, 16], 'cudagraph_copy_inputs': False, 'cudagraph_specialize_lora': True, 'use_inductor_graph_partition': False, 'pass_config': {'fuse_norm_quant': True, 'fuse_act_quant': True, 'fuse_attn_quant': False, 'enable_sp': False, 'fuse_gemm_comms': False, 'fuse_allreduce_rms': False, 'fuse_rope_kvcache_cat_mla': False, 'fuse_act_padding': False}, 'max_cudagraph_capture_size': 16, 'dynamic_shapes_config': {'type': <DynamicShapesType.BACKED: 'backed'>, 'evaluate_guards': False, 'assume_32_bit_indexing': False}, 'local_cache_dir': None, 'fast_moe_cold_start': False, 'static_all_moe_layers': []}, kernel_config=KernelConfig(ir_op_priority=IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native']), enable_flashinfer_autotune=True, enable_cutedsl_warmup=True, moe_backend='auto', linear_backend='auto'), 
+(EngineCore pid=117708) ERROR 07-27 08:49:13 [dump_input.py:79] Dumping scheduler output for model execution: SchedulerOutput(scheduled_new_reqs=[], scheduled_cached_reqs=CachedRequestData(req_ids=['0-865f474b', '1-abb3e9c8'],resumed_req_ids=set(),new_token_ids_lens=[],all_token_ids_lens={},new_block_ids=[None, None],num_computed_tokens=[13, 5],num_output_tokens=[9, 1]), num_scheduled_tokens={0-865f474b: 8, 1-abb3e9c8: 8}, total_num_scheduled_tokens=16, scheduled_spec_decode_tokens={1-abb3e9c8: [-1, -1, -1, -1, -1, -1, -1], 0-865f474b: [-1, -1, -1, -1, -1, -1, -1]}, scheduled_encoder_inputs={}, num_common_prefix_blocks=[0], finished_req_ids=[], free_encoder_mm_hashes=[], preempted_req_ids=[], has_structured_output_requests=false, pending_structured_output_tokens=false, num_invalid_spec_tokens=null, kv_connector_metadata=null, ec_connector_metadata=null, new_block_ids_to_zero=null, num_spec_tokens_to_schedule=7)
+(EngineCore pid=117708) ERROR 07-27 08:49:13 [dump_input.py:81] Dumping scheduler stats: SchedulerStats(num_running_reqs=2, num_waiting_reqs=0, num_skipped_waiting_reqs=0, step_counter=0, current_wave=0, kv_cache_usage=0.0007880220646178104, prefix_cache_stats=PrefixCacheStats(reset=False, requests=0, queries=0, hits=0, preempted_requests=0, preempted_queries=0, preempted_hits=0), connector_prefix_cache_stats=None, kv_cache_eviction_events=[], spec_decoding_stats=None, kv_connector_stats=None, waiting_lora_adapters={}, running_lora_adapters={}, cudagraph_stats=None, perf_stats=None)
+(EngineCore pid=117708) ERROR 07-27 08:49:13 [core.py:1233] EngineCore encountered a fatal error.
+(EngineCore pid=117708) ERROR 07-27 08:49:13 [core.py:1233] Traceback (most recent call last):
+(EngineCore pid=117708) ERROR 07-27 08:49:13 [core.py:1233]   File "/vllm-workspace/vllm/vllm/v1/engine/core.py", line 1224, in run_engine_core
+(EngineCore pid=117708) ERROR 07-27 08:49:13 [core.py:1233]     engine_core.run_busy_loop()
+(EngineCore pid=117708) ERROR 07-27 08:49:13 [core.py:1233]   File "/vllm-workspace/vllm/vllm/v1/engine/core.py", line 1265, in run_busy_loop
+(EngineCore pid=117708) ERROR 07-27 08:49:13 [core.py:1233]     self._process_engine_step()
+(EngineCore pid=117708) ERROR 07-27 08:49:13 [core.py:1233]   File "/vllm-workspace/vllm/vllm/v1/engine/core.py", line 1304, in _process_engine_step
+(EngineCore pid=117708) ERROR 07-27 08:49:13 [core.py:1233]     outputs, model_executed = self.step_fn()
+(EngineCore pid=117708) ERROR 07-27 08:49:13 [core.py:1233]                               ^^^^^^^^^^^^^^
+(EngineCore pid=117708) ERROR 07-27 08:49:13 [core.py:1233]   File "/vllm-workspace/vllm/vllm/v1/engine/core.py", line 595, in step_with_batch_queue
+(EngineCore pid=117708) ERROR 07-27 08:49:13 [core.py:1233]     model_output = future.result()
+(EngineCore pid=117708) ERROR 07-27 08:49:13 [core.py:1233]                    ^^^^^^^^^^^^^^^
+(EngineCore pid=117708) ERROR 07-27 08:49:13 [core.py:1233]   File "/vllm-workspace/vllm/vllm/v1/executor/multiproc_executor.py", line 91, in result
+(EngineCore pid=117708) ERROR 07-27 08:49:13 [core.py:1233]     return super().result()
+(EngineCore pid=117708) ERROR 07-27 08:49:13 [core.py:1233]            ^^^^^^^^^^^^^^^^
+(EngineCore pid=117708) ERROR 07-27 08:49:13 [core.py:1233]   File "/usr/local/python3.12.13/lib/python3.12/concurrent/futures/_base.py", line 449, in result
+(EngineCore pid=117708) ERROR 07-27 08:49:13 [core.py:1233]     return self.__get_result()
+(EngineCore pid=117708) ERROR 07-27 08:49:13 [core.py:1233]            ^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=117708) ERROR 07-27 08:49:13 [core.py:1233]   File "/usr/local/python3.12.13/lib/python3.12/concurrent/futures/_base.py", line 401, in __get_result
+(EngineCore pid=117708) ERROR 07-27 08:49:13 [core.py:1233]     raise self._exception
+(EngineCore pid=117708) ERROR 07-27 08:49:13 [core.py:1233]   File "/vllm-workspace/vllm/vllm/v1/executor/multiproc_executor.py", line 95, in _wait_for_response
+(EngineCore pid=117708) ERROR 07-27 08:49:13 [core.py:1233]     response = self.aggregate(self.get_response())
+(EngineCore pid=117708) ERROR 07-27 08:49:13 [core.py:1233]                               ^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=117708) ERROR 07-27 08:49:13 [core.py:1233]   File "/vllm-workspace/vllm/vllm/v1/executor/multiproc_executor.py", line 387, in get_response
+(EngineCore pid=117708) ERROR 07-27 08:49:13 [core.py:1233]     status, result = mq.dequeue(timeout=dequeue_timeout)
+(EngineCore pid=117708) ERROR 07-27 08:49:13 [core.py:1233]                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=117708) ERROR 07-27 08:49:13 [core.py:1233]   File "/vllm-workspace/vllm/vllm/distributed/device_communicators/shm_broadcast.py", line 779, in dequeue
+(EngineCore pid=117708) ERROR 07-27 08:49:13 [core.py:1233]     with self.acquire_read(timeout, indefinite) as buf:
+(EngineCore pid=117708) ERROR 07-27 08:49:13 [core.py:1233]          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=117708) ERROR 07-27 08:49:13 [core.py:1233]   File "/usr/local/python3.12.13/lib/python3.12/contextlib.py", line 137, in __enter__
+(EngineCore pid=117708) ERROR 07-27 08:49:13 [core.py:1233]     return next(self.gen)
+(EngineCore pid=117708) ERROR 07-27 08:49:13 [core.py:1233]            ^^^^^^^^^^^^^^
+(EngineCore pid=117708) ERROR 07-27 08:49:13 [core.py:1233]   File "/vllm-workspace/vllm/vllm/distributed/device_communicators/shm_broadcast.py", line 701, in acquire_read
+(EngineCore pid=117708) ERROR 07-27 08:49:13 [core.py:1233]     raise RuntimeError("cancelled")
+(EngineCore pid=117708) ERROR 07-27 08:49:13 [core.py:1233] RuntimeError: cancelled
+(EngineCore pid=117708) WARNING 07-27 08:49:14 [parallel_state.py:2131] torch._C._host_emptyCache() only available in Pytorch >=2.5
+--------------------------------------------------------------------------- Captured stderr call ---------------------------------------------------------------------------
+2026-07-27 08:46:56,050 - 117422 - ServiceProfiler - INFO - VLLM_USE_V1 not set, auto-detected via vLLM 0.25.1+empty: default 1
+[2026-07-27 08:46:56] [INFO] get env VLLM_USE_V2_MODEL_RUNNER = 0
+[2026-07-27 08:47:00] [INFO] get env VLLM_WORKER_MULTIPROC_METHOD = spawn
+[W727 08:47:02.318033950 FunctionLoader.cpp:48] Warning: LD_PRELOAD detected, FunctionLoader prefers RTLD_DEFAULT for symbol resolution. (function operator())
+(EngineCore pid=117708) 2026-07-27 08:47:17,664 - 117708 - ServiceProfiler - INFO - VLLM_USE_V1 not set, auto-detected via vLLM 0.25.1+empty: default 1
+[W727 08:47:20.144975980 FunctionLoader.cpp:48] Warning: LD_PRELOAD detected, FunctionLoader prefers RTLD_DEFAULT for symbol resolution. (function operator())
+[W727 08:47:20.144976080 FunctionLoader.cpp:48] Warning: LD_PRELOAD detected, FunctionLoader prefers RTLD_DEFAULT for symbol resolution. (function operator())
+[W727 08:47:20.147649980 FunctionLoader.cpp:48] Warning: LD_PRELOAD detected, FunctionLoader prefers RTLD_DEFAULT for symbol resolution. (function operator())
+[W727 08:47:20.239127840 FunctionLoader.cpp:48] Warning: LD_PRELOAD detected, FunctionLoader prefers RTLD_DEFAULT for symbol resolution. (function operator())
+2026-07-27 08:47:35,162 - 117965 - ServiceProfiler - INFO - VLLM_USE_V1 not set, auto-detected via vLLM 0.25.1+empty: default 1
+2026-07-27 08:47:35,462 - 117966 - ServiceProfiler - INFO - VLLM_USE_V1 not set, auto-detected via vLLM 0.25.1+empty: default 1
+2026-07-27 08:47:35,503 - 117967 - ServiceProfiler - INFO - VLLM_USE_V1 not set, auto-detected via vLLM 0.25.1+empty: default 1
+2026-07-27 08:47:35,621 - 117968 - ServiceProfiler - INFO - VLLM_USE_V1 not set, auto-detected via vLLM 0.25.1+empty: default 1
+[rank1]:[W727 08:47:43.191372750 NPUCachingAllocator.cpp:202] Warning: The current CANN and HDK(driver) versions require processing for 32 padding size, with memory allocation. (function operator())
+[rank0]:[W727 08:47:43.192445570 NPUCachingAllocator.cpp:202] Warning: The current CANN and HDK(driver) versions require processing for 32 padding size, with memory allocation. (function operator())
+[rank2]:[W727 08:47:43.193458920 NPUCachingAllocator.cpp:202] Warning: The current CANN and HDK(driver) versions require processing for 32 padding size, with memory allocation. (function operator())
+[rank3]:[W727 08:47:43.193524820 NPUCachingAllocator.cpp:202] Warning: The current CANN and HDK(driver) versions require processing for 32 padding size, with memory allocation. (function operator())
+Loading safetensors checkpoint shards:   0% Completed | 0/5 [00:00<?, ?it/s]
+Loading safetensors checkpoint shards:  20% Completed | 1/5 [00:01<00:06,  1.72s/it]
+Loading safetensors checkpoint shards:  40% Completed | 2/5 [00:03<00:05,  1.83s/it]
+Loading safetensors checkpoint shards:  60% Completed | 3/5 [00:05<00:03,  1.89s/it]
+Loading safetensors checkpoint shards:  80% Completed | 4/5 [00:06<00:01,  1.63s/it]
+Loading safetensors checkpoint shards: 100% Completed | 5/5 [00:07<00:00,  1.19s/it]
+Loading safetensors checkpoint shards: 100% Completed | 5/5 [00:07<00:00,  1.45s/it]
+(Worker_TP0 pid=117965) 
+Loading safetensors checkpoint shards:   0% Completed | 0/1 [00:00<?, ?it/s]
+Loading safetensors checkpoint shards: 100% Completed | 1/1 [00:00<00:00, 232.98it/s]
+(Worker_TP0 pid=117965) 
+Capturing CUDA graphs (decode, FULL):   0%|          | 0/2 [00:00<?, ?it/s][rank0]:[W727 08:48:44.598962050 NPUGraph.cpp:241] Warning: Waiting for pending NCCL work to finish before starting graph capture. (function operator())
+[rank1]:[W727 08:48:44.599279450 NPUGraph.cpp:241] Warning: Waiting for pending NCCL work to finish before starting graph capture. (function operator())
+[rank3]:[W727 08:48:44.600487640 NPUGraph.cpp:241] Warning: Waiting for pending NCCL work to finish before starting graph capture. (function operator())
+[rank2]:[W727 08:48:44.600487460 NPUGraph.cpp:241] Warning: Waiting for pending NCCL work to finish before starting graph capture. (function operator())
+Capturing CUDA graphs (decode, FULL): 100%|██████████| 2/2 [00:03<00:00,  1.55s/it]
+Rendering prompts: 100%|██████████| 2/2 [00:00<00:00, 23.70it/s]
+Processed prompts:   0%|          | 0/2 [00:00<?, ?it/s, est. speed input: 0.00 toks/s, output: 0.00 toks/s][rank1]:[E727 08:48:57.926219260 OpParamMaker.cpp:453] operator():../third_party/op-plugin/op_plugin/utils/AdvancedIndex.cpp:82 NPU function error: call aclnnNonzeroV2 failed, error code is 507015
+[ERROR] 2026-07-27-08:48:57 (PID:117966, Device:1, RankID:-1) ERR00100 PTA call acl api failed
+[Error]: The aicore execution is abnormal. 
+        Rectify the fault based on the error information in the ascend log.
+[PID: 117966] 2026-07-27-08:48:57.535.817 AclNN_Runtime_Error(EZ9903): Assert ((aclrtSynchronizeStream(stream)) == 0) failed
+        Solution: In this scenario, collect the plog when the fault occurs and locate the fault based on the plog.
+        TraceBack (most recent call last):
+        Kernel task happen error, retCode=0x26, [aicore exception].[FUNC:PreCheckTaskErr][FILE:davinci_kernel_task.cc][LINE:1516]
+        The error from device(1), serial number is 23, there is an error of aicore, core id is 6, error code = 0x10, dump info: pc start: 0x80012c18ba03f68, current: 0x12c18ba03f80, vec error info: 0x17f5f0fe, mte error info: 0x85, ifu error info: 0xaffc7fffcf80, ccu error info: 0x3adfb460003fdfda, cube error info: 0x46, biu error info: 0, aic error mask: 0x65000200d00028c, para base: 0x12c200491000, errorStr: Illegal instruction, which is usually caused by unaligned UUB addresses.[FUNC:PrintCoreErrorInfo][FILE:device_error_core_proc.cc][LINE:227]
+        The extend info from device(1), serial number is 23, there is aicore error, core id is 6, aicore int: 0x10, aicore error2: 0, axi clamp ctrl: 0, axi clamp state: 0x1717, biu status0: 0x101d14000000000, biu status1: 0x80000201020000, clk gate mask: 0, dbg addr: 0, ecc en: 0, mte ccu ecc 1bit error: 0x3f80000000000000, vector cube ecc 1bit error: 0, run stall: 0x1, dbg data0: 0, dbg data1: 0, dbg data2: 0, dbg data3: 0, dfx data: 0xff[FUNC:PrintCoreErrorInfo][FILE:device_error_core_proc.cc][LINE:258]
+        The device(1), core list[0-0], error code is:[FUNC:PrintCoreInfoErrMsg][FILE:device_error_core_proc.cc][LINE:286]
+        coreId( 0):            0x10    [FUNC:PrintCoreInfoErrMsg][FILE:device_error_core_proc.cc][LINE:300]
+        [AIC_INFO] after execute:args print end[FUNC:GetError][FILE:stream.cc][LINE:1659]
+        [DFX_INFO]Aicore kernel execute failed, device_id=1, stream_id=375, report_stream_id=375, task_id=5700, flip_num=0, fault kernel_name=Add_41dadce325b0f810d03359af2a38990b_high_performance_223000000, fault kernel info ext=none, program id=240, hash=98398437960715668.[FUNC:GetError][FILE:stream.cc][LINE:1659]
+        rtStreamSynchronize execution failed, reason=aicore exception[FUNC:FuncErrorReason][FILE:error_message_manage.cc][LINE:65]
+        synchronize stream failed, runtime result = 507015[FUNC:ReportCallError][FILE:log_inner.cpp][LINE:148]
+        Assert ((aclrtSynchronizeStream(stream)) == 0) failed
+        Assert ((extInfoHandle_->UpdateOutputShapeFromExtInfo(outputs_, stream)) == OK) failed
+        launch failed for NonZero, errno:361001.
+
+
+DEVICE[1] PID[117966]: 
+EXCEPTION STREAM:
+  Exception info:TGID=301539, model id=65535, stream id=375, stream phase=SCHEDULE
+  Message info[0]:RTS_HWTS: Aicore exception, slot_id=23, stream_id=375
+    Other info[0]:time=2026-07-27-16:48:56.710.206, function=process_hwts_error_exception, line=646, error code=0x26
+Exception raised from operator() at ../third_party/op-plugin/op_plugin/utils/AdvancedIndex.cpp:82 (most recent call first):
+frame #0: c10::Error::Error(c10::SourceLocation, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >) + 0xc8 (0xffff7dcf5978 in /usr/local/python3.12.13/lib/python3.12/site-packages/torch/lib/libc10.so)
+frame #1: c10::detail::torchCheckFail(char const*, char const*, unsigned int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&) + 0xc4 (0xffff7dc99adc in /usr/local/python3.12.13/lib/python3.12/site-packages/torch/lib/libc10.so)
+frame #2: <unknown function> + 0x4820400 (0xffff6daa0400 in /usr/local/python3.12.13/lib/python3.12/site-packages/torch_npu/lib/libtorch_npu.so)
+frame #3: <unknown function> + 0x4a75208 (0xffff6dcf5208 in /usr/local/python3.12.13/lib/python3.12/site-packages/torch_npu/lib/libtorch_npu.so)
+frame #4: <unknown function> + 0x190d5a0 (0xffff6ab8d5a0 in /usr/local/python3.12.13/lib/python3.12/site-packages/torch_npu/lib/libtorch_npu.so)
+frame #5: <unknown function> + 0x190e63c (0xffff6ab8e63c in /usr/local/python3.12.13/lib/python3.12/site-packages/torch_npu/lib/libtorch_npu.so)
+frame #6: <unknown function> + 0x190c068 (0xffff6ab8c068 in /usr/local/python3.12.13/lib/python3.12/site-packages/torch_npu/lib/libtorch_npu.so)
+frame #7: <unknown function> + 0xd43cc (0xffff8bcf43cc in /lib64/libstdc++.so.6)
+frame #8: <unknown function> + 0x7f874 (0xffff8bedf874 in /lib64/libc.so.6)
+frame #9: <unknown function> + 0xe7c8c (0xffff8bf47c8c in /lib64/libc.so.6)
+
+[rank2]:[E727 08:48:57.928559690 OpParamMaker.cpp:453] operator():../third_party/op-plugin/op_plugin/utils/AdvancedIndex.cpp:82 NPU function error: call aclnnNonzeroV2 failed, error code is 507015
+[ERROR] 2026-07-27-08:48:57 (PID:117967, Device:2, RankID:-1) ERR00100 PTA call acl api failed
+[Error]: The aicore execution is abnormal. 
+        Rectify the fault based on the error information in the ascend log.
+[PID: 117967] 2026-07-27-08:48:57.537.398 AclNN_Runtime_Error(EZ9903): Assert ((aclrtSynchronizeStream(stream)) == 0) failed
+        Solution: In this scenario, collect the plog when the fault occurs and locate the fault based on the plog.
+        TraceBack (most recent call last):
+        Kernel task happen error, retCode=0x26, [aicore exception].[FUNC:PreCheckTaskErr][FILE:davinci_kernel_task.cc][LINE:1516]
+        The error from device(2), serial number is 24, there is an error of aicore, core id is 4, error code = 0x10, dump info: pc start: 0x80012c18ba03f68, current: 0x12c18ba03f80, vec error info: 0x1fa16ae8, mte error info: 0x37, ifu error info: 0x1f7ceaff9ee80, ccu error info: 0xa8c6b83f003f6cda, cube error info: 0x46, biu error info: 0, aic error mask: 0x65000200d00028c, para base: 0x12c200491000, errorStr: Illegal instruction, which is usually caused by unaligned UUB addresses.[FUNC:PrintCoreErrorInfo][FILE:device_error_core_proc.cc][LINE:227]
+        The extend info from device(2), serial number is 24, there is aicore error, core id is 4, aicore int: 0x10, aicore error2: 0, axi clamp ctrl: 0, axi clamp state: 0x1717, biu status0: 0x101d14000000000, biu status1: 0x80000201020000, clk gate mask: 0, dbg addr: 0, ecc en: 0, mte ccu ecc 1bit error: 0x1480000000000000, vector cube ecc 1bit error: 0, run stall: 0x1, dbg data0: 0, dbg data1: 0, dbg data2: 0, dbg data3: 0, dfx data: 0x9d[FUNC:PrintCoreErrorInfo][FILE:device_error_core_proc.cc][LINE:258]
+        The device(2), core list[0-0], error code is:[FUNC:PrintCoreInfoErrMsg][FILE:device_error_core_proc.cc][LINE:286]
+        coreId( 0):            0x10    [FUNC:PrintCoreInfoErrMsg][FILE:device_error_core_proc.cc][LINE:300]
+        [AIC_INFO] after execute:args print end[FUNC:GetError][FILE:stream.cc][LINE:1659]
+        [DFX_INFO]Aicore kernel execute failed, device_id=2, stream_id=314, report_stream_id=314, task_id=5700, flip_num=0, fault kernel_name=Add_41dadce325b0f810d03359af2a38990b_high_performance_223000000, fault kernel info ext=none, program id=240, hash=98398437960715668.[FUNC:GetError][FILE:stream.cc][LINE:1659]
+        rtStreamSynchronize execution failed, reason=aicore exception[FUNC:FuncErrorReason][FILE:error_message_manage.cc][LINE:65]
+        synchronize stream failed, runtime result = 507015[FUNC:ReportCallError][FILE:log_inner.cpp][LINE:148]
+        Assert ((aclrtSynchronizeStream(stream)) == 0) failed
+        Assert ((extInfoHandle_->UpdateOutputShapeFromExtInfo(outputs_, stream)) == OK) failed
+        launch failed for NonZero, errno:361001.
+
+
+DEVICE[2] PID[117967]: 
+EXCEPTION STREAM:
+  Exception info:TGID=301540, model id=65535, stream id=314, stream phase=SCHEDULE
+  Message info[0]:RTS_HWTS: Aicore exception, slot_id=12, stream_id=314
+    Other info[0]:time=2026-07-27-16:48:57.449.843, function=process_hwts_error_exception, line=646, error code=0x26
+Exception raised from operator() at ../third_party/op-plugin/op_plugin/utils/AdvancedIndex.cpp:82 (most recent call first):
+frame #0: c10::Error::Error(c10::SourceLocation, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >) + 0xc8 (0xffff7b925978 in /usr/local/python3.12.13/lib/python3.12/site-packages/torch/lib/libc10.so)
+frame #1: c10::detail::torchCheckFail(char const*, char const*, unsigned int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&) + 0xc4 (0xffff7b8c9adc in /usr/local/python3.12.13/lib/python3.12/site-packages/torch/lib/libc10.so)
+frame #2: <unknown function> + 0x4820400 (0xffff6b6d0400 in /usr/local/python3.12.13/lib/python3.12/site-packages/torch_npu/lib/libtorch_npu.so)
+frame #3: <unknown function> + 0x4a75208 (0xffff6b925208 in /usr/local/python3.12.13/lib/python3.12/site-packages/torch_npu/lib/libtorch_npu.so)
+frame #4: <unknown function> + 0x190d5a0 (0xffff687bd5a0 in /usr/local/python3.12.13/lib/python3.12/site-packages/torch_npu/lib/libtorch_npu.so)
+frame #5: <unknown function> + 0x190e63c (0xffff687be63c in /usr/local/python3.12.13/lib/python3.12/site-packages/torch_npu/lib/libtorch_npu.so)
+frame #6: <unknown function> + 0x190c068 (0xffff687bc068 in /usr/local/python3.12.13/lib/python3.12/site-packages/torch_npu/lib/libtorch_npu.so)
+frame #7: <unknown function> + 0xd43cc (0xffff899443cc in /lib64/libstdc++.so.6)
+frame #8: <unknown function> + 0x7f874 (0xffff89b2f874 in /lib64/libc.so.6)
+frame #9: <unknown function> + 0xe7c8c (0xffff89b97c8c in /lib64/libc.so.6)
+
+[rank1]:[W727 08:48:57.034595880 Logger.cpp:75] Warning: Failed to generate log message. (function operator())
+[rank1]:[E727 08:48:57.034731750 ProcessGroupHCCL.cpp:1952] [Rank 1] HCCL watchdog thread terminated with exception: 
+[ERROR] 2026-07-27-08:48:57 (PID:117966, Device:1, RankID:-1) ERR02005 DIST internal error
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  [Rank 1] HCCL watchdog thread terminated with exception: 
+[ERROR] 2026-07-27-08:48:57 (PID:117966, Device:1, RankID:-1) ERR02005 DIST internal error
+[rank2]:[W727 08:48:57.035440230 Logger.cpp:75] Warning: Failed to generate log message. (function operator())
+[rank2]:[E727 08:48:57.035557690 ProcessGroupHCCL.cpp:1952] [Rank 2] HCCL watchdog thread terminated with exception: 
+[ERROR] 2026-07-27-08:48:57 (PID:117967, Device:2, RankID:-1) ERR02005 DIST internal error
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  [Rank 2] HCCL watchdog thread terminated with exception: 
+[ERROR] 2026-07-27-08:48:57 (PID:117967, Device:2, RankID:-1) ERR02005 DIST internal error
+[ERROR] TBE Subprocess[task_distribute] raise error[], main process disappeared!
+[ERROR] TBE Subprocess[task_distribute] raise error[], main process disappeared!
+[ERROR] TBE Subprocess[task_distribute] raise error[], main process disappeared!
+[ERROR] TBE Subprocess[task_distribute] raise error[], main process disappeared!
+[ERROR] TBE Subprocess[task_distribute] raise error[], main process disappeared!
+[ERROR] TBE Subprocess[task_distribute] raise error[], main process disappeared!
+[ERROR] TBE Subprocess[task_distribute] raise error[], main process disappeared!
+[ERROR] TBE Subprocess[task_distribute] raise error[], main process disappeared!
+[ERROR] TBE Subprocess[task_distribute] raise error[], main process disappeared!
+[ERROR] TBE Subprocess[task_distribute] raise error[], main process disappeared!
+[ERROR] TBE Subprocess[task_distribute] raise error[], main process disappeared!
+[ERROR] TBE Subprocess[task_distribute] raise error[], main process disappeared!
+[ERROR] TBE Subprocess[task_distribute] raise error[], main process disappeared!
+[ERROR] TBE Subprocess[task_distribute] raise error[], main process disappeared!
+[ERROR] TBE Subprocess[task_distribute] raise error[], main process disappeared!
+[ERROR] TBE Subprocess[task_distribute] raise error[], main process disappeared!
+(EngineCore pid=117708) Process EngineCore:
+(EngineCore pid=117708) Traceback (most recent call last):
+(EngineCore pid=117708)   File "/usr/local/python3.12.13/lib/python3.12/multiprocessing/process.py", line 314, in _bootstrap
+(EngineCore pid=117708)     self.run()
+(EngineCore pid=117708)   File "/usr/local/python3.12.13/lib/python3.12/multiprocessing/process.py", line 108, in run
+(EngineCore pid=117708)     self._target(*self._args, **self._kwargs)
+(EngineCore pid=117708)   File "/vllm-workspace/vllm-ascend/vllm_ascend/patch/platform/patch_balance_schedule.py", line 896, in _balance_run_engine_core
+(EngineCore pid=117708)     return _OriginalRunEngineCore(*args, dp_rank=dp_rank, local_dp_rank=local_dp_rank, **kwargs)
+(EngineCore pid=117708)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=117708)   File "/vllm-workspace/vllm/vllm/v1/engine/core.py", line 1235, in run_engine_core
+(EngineCore pid=117708)     raise e
+(EngineCore pid=117708)   File "/vllm-workspace/vllm/vllm/v1/engine/core.py", line 1224, in run_engine_core
+(EngineCore pid=117708)     engine_core.run_busy_loop()
+(EngineCore pid=117708)   File "/vllm-workspace/vllm/vllm/v1/engine/core.py", line 1265, in run_busy_loop
+(EngineCore pid=117708)     self._process_engine_step()
+(EngineCore pid=117708)   File "/vllm-workspace/vllm/vllm/v1/engine/core.py", line 1304, in _process_engine_step
+(EngineCore pid=117708)     outputs, model_executed = self.step_fn()
+(EngineCore pid=117708)                               ^^^^^^^^^^^^^^
+(EngineCore pid=117708)   File "/vllm-workspace/vllm/vllm/v1/engine/core.py", line 595, in step_with_batch_queue
+(EngineCore pid=117708)     model_output = future.result()
+(EngineCore pid=117708)                    ^^^^^^^^^^^^^^^
+(EngineCore pid=117708)   File "/vllm-workspace/vllm/vllm/v1/executor/multiproc_executor.py", line 91, in result
+(EngineCore pid=117708)     return super().result()
+(EngineCore pid=117708)            ^^^^^^^^^^^^^^^^
+(EngineCore pid=117708)   File "/usr/local/python3.12.13/lib/python3.12/concurrent/futures/_base.py", line 449, in result
+(EngineCore pid=117708)     return self.__get_result()
+(EngineCore pid=117708)            ^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=117708)   File "/usr/local/python3.12.13/lib/python3.12/concurrent/futures/_base.py", line 401, in __get_result
+(EngineCore pid=117708)     raise self._exception
+(EngineCore pid=117708)   File "/vllm-workspace/vllm/vllm/v1/executor/multiproc_executor.py", line 95, in _wait_for_response
+(EngineCore pid=117708)     response = self.aggregate(self.get_response())
+(EngineCore pid=117708)                               ^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=117708)   File "/vllm-workspace/vllm/vllm/v1/executor/multiproc_executor.py", line 387, in get_response
+(EngineCore pid=117708)     status, result = mq.dequeue(timeout=dequeue_timeout)
+(EngineCore pid=117708)                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=117708)   File "/vllm-workspace/vllm/vllm/distributed/device_communicators/shm_broadcast.py", line 779, in dequeue
+(EngineCore pid=117708)     with self.acquire_read(timeout, indefinite) as buf:
+(EngineCore pid=117708)          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=117708)   File "/usr/local/python3.12.13/lib/python3.12/contextlib.py", line 137, in __enter__
+(EngineCore pid=117708)     return next(self.gen)
+(EngineCore pid=117708)            ^^^^^^^^^^^^^^
+(EngineCore pid=117708)   File "/vllm-workspace/vllm/vllm/distributed/device_communicators/shm_broadcast.py", line 701, in acquire_read
+(EngineCore pid=117708)     raise RuntimeError("cancelled")
+(EngineCore pid=117708) RuntimeError: cancelled
+[ERROR] TBE Subprocess[task_distribute] raise error[], main process disappeared!
+[ERROR] TBE Subprocess[task_distribute] raise error[], main process disappeared!
+[ERROR] TBE Subprocess[task_distribute] raise error[], main process disappeared!
+[ERROR] TBE Subprocess[task_distribute] raise error[], main process disappeared!
+[ERROR] TBE Subprocess[task_distribute] raise error[], main process disappeared!
+[ERROR] TBE Subprocess[task_distribute] raise error[], main process disappeared!
+[ERROR] TBE Subprocess[task_distribute] raise error[], main process disappeared!
+[ERROR] TBE Subprocess[task_distribute] raise error[], main process disappeared!
+---------------------------------------------------------------------------- Captured log call -----------------------------------------------------------------------------
+INFO     torch_npu.env:patch_getenv.py:15 get env VLLM_USE_V2_MODEL_RUNNER = 0
+INFO     torch_npu.env:patch_getenv.py:15 get env VLLM_WORKER_MULTIPROC_METHOD = spawn
+------------------------------------------------------------------------- Captured stdout teardown -------------------------------------------------------------------------
+[INFO] Model cache cleared
+------------------------------------------------------------------------- Captured stderr teardown -------------------------------------------------------------------------
+[ERROR] TBE Subprocess[task_distribute] raise error[], main process disappeared!
+[ERROR] TBE Subprocess[task_distribute] raise error[], main process disappeared!
+[ERROR] TBE Subprocess[task_distribute] raise error[], main process disappeared!
+[ERROR] TBE Subprocess[task_distribute] raise error[], main process disappeared!
+[ERROR] TBE Subprocess[task_distribute] raise error[], main process disappeared!
+[ERROR] TBE Subprocess[task_distribute] raise error[], main process disappeared!
+[ERROR] TBE Subprocess[task_distribute] raise error[], main process disappeared!
+[ERROR] TBE Subprocess[task_distribute] raise error[], main process disappeared!
+============================================================================= warnings summary =============================================================================
+../../usr/local/python3.12.13/lib/python3.12/site-packages/torch/jit/_script.py:362: 14 warnings
+  /usr/local/python3.12.13/lib/python3.12/site-packages/torch/jit/_script.py:362: DeprecationWarning: `torch.jit.script_method` is deprecated. Please switch to `torch.compile` or `torch.export`.
+    warnings.warn(
+
+tests/e2e/pull_request/four_card/_310p/test_qwen3_8b_parallel_draft_graph_310p.py::test_dspark_target_in_aclgraph_drafter_eager
+  /vllm-workspace/vllm-ascend/tests/e2e/conftest.py:974: DeprecationWarning: The 'swap_space' parameter is deprecated and ignored. It will be removed in a future version.
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+========================================================================= short test summary info ==========================================================================
+FAILED tests/e2e/pull_request/four_card/_310p/test_qwen3_8b_parallel_draft_graph_310p.py::test_dspark_target_in_aclgraph_drafter_eager - vllm.v1.engine.exceptions.EngineDeadError: EngineCore encountered an issue. See stack trace (above) for the root cause.
+1 failed, 15 warnings in 142.32s (0:02:22)
