@@ -309,6 +309,13 @@ class AscendDSparkProposer(AscendDflashProposer):
         cad.attn_mask = None
         cad.attn_state = AscendAttentionState.ChunkedPrefill
 
+        if is_310p():
+            # G0.5 boundary, imported here so the _310p package stays out of the
+            # shared import graph. No-op unless the stage is armed.
+            from vllm_ascend._310p.debug_sync import sync_stage
+
+            sync_stage("post_expansion")
+
         return num_query_total, token_indices_to_sample, cad, None
 
     @torch.inference_mode()

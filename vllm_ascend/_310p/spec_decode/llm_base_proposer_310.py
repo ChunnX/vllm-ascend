@@ -20,6 +20,7 @@ from typing import Any
 import torch
 from vllm.v1.attention.backends.utils import CommonAttentionMetadata
 
+from vllm_ascend._310p.debug_sync import sync_stage
 from vllm_ascend._310p.ops.rotary_embedding import AscendRotaryEmbedding310
 from vllm_ascend.spec_decode.llm_base_proposer import AscendSpecDecodeBaseProposer
 
@@ -55,6 +56,7 @@ class AscendSpecDecodeBaseProposer310(AscendSpecDecodeBaseProposer):
             )
         finally:
             AscendRotaryEmbedding310.set_rope_position_flag_310p(False)
+        sync_stage("post_draft")
         return result
 
     def set_inputs_first_pass(

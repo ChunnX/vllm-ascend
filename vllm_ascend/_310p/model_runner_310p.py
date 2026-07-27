@@ -46,6 +46,7 @@ from vllm.v1.spec_decode.metadata import SpecDecodeMetadata
 from vllm.v1.worker.cp_utils import get_total_cp_world_size
 
 from vllm_ascend._310p.block_table import MultiGroupBlockTable as MultiGroupBlockTable310
+from vllm_ascend._310p.debug_sync import sync_stage, validate_sync_stage_env
 from vllm_ascend._310p.kv_block_zeroer import AscendKVBlockZeroer310
 from vllm_ascend._310p.npu_input_batch import NPUInputBatch310 as NPUInputBatch
 from vllm_ascend._310p.ops.rotary_embedding import prepare_mrope_cos_sin_slices_from_runner
@@ -100,6 +101,9 @@ class NPUModelRunner310(NPUModelRunner):
         )
         self._acl_format = ACL_FORMAT_FRACTAL_NZ
         logger.info_once("Weight layout uses FRACTAL_NZ.")
+        # Reject a mistyped stage here rather than at the first boundary, where
+        # it would arm nothing and let the run "prove" an uninstrumented stage.
+        validate_sync_stage_env()
         self.sampler = AscendSampler310()
         if getattr(self, "rejection_sampler", None) is not None:
             self.rejection_sampler = AscendRejectionSampler310(self.sampler)
@@ -712,6 +716,8 @@ class NPUModelRunner310(NPUModelRunner):
                 num_tokens_padded,
                 positions,
             )
+
+        sync_stage("post_target_replay")
 
         if forward_context.flash_comm_v1_enabled and not isinstance(hidden_states, IntermediateTensors):
             hidden_states = self._all_gather_hidden_states_and_aux(hidden_states)

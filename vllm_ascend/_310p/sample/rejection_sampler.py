@@ -23,6 +23,7 @@ from vllm.v1.sample.metadata import SamplingMetadata
 from vllm.v1.spec_decode.metadata import SpecDecodeMetadata
 
 import vllm_ascend.sample.rejection_sampler as rejection_sampler_module
+from vllm_ascend._310p.debug_sync import sync_stage
 from vllm_ascend._310p.sample.sampler import fill_exponential_310p
 from vllm_ascend.sample.rejection_sampler import (
     AscendRejectionSampler,
@@ -51,8 +52,18 @@ class AscendRejectionSampler310(AscendRejectionSampler):
         logits: torch.Tensor,
         sampling_metadata: SamplingMetadata,
     ) -> SamplerOutput:
+        # G0.5 boundary. `post_logits` sits at the sampler entry rather than
+        # literally after `self.model.compute_logits(...)`: that call lives in
+        # the shared runner, and on the P0 config (greedy, PP=1) nothing runs in
+        # between -- `_get_spec_decode_draft_probs` needs PP > 1 and
+        # `prepare_sampling` needs top_k with enable_reduce_sample. If either is
+        # ever enabled here, this boundary stops meaning "immediately after
+        # logits" and has to move into the runner.
+        sync_stage("post_logits")
         with _bind_sample_recovered_tokens(self.sample_recovered_tokens):
-            return super().forward(metadata, draft_probs, logits, sampling_metadata)
+            output = super().forward(metadata, draft_probs, logits, sampling_metadata)
+        sync_stage("post_sampler")
+        return output
 
     def sample_recovered_tokens(
         self,
