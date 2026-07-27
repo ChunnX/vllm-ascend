@@ -805,3 +805,70 @@ HCCL 不保证 AllReduce 确定性，borderline argmax 会翻。
 - 07-25 之后是否动过 torch_npu / CANN / ATB / OPP / 镜像，需要按 §6-G0 的清单取证。
 
 在确定 fault 是「低概率间歇」还是「已被环境漂移掩盖」之前，边界推进没有可定位的对象。
+
+---
+
+## 07-27 决定性结果：故障需要**多个 captured graph**
+
+| capture sizes | prompts | 结果 |
+| --- | --- | --- |
+| `[8]` | 1 | PASS ×10 |
+| `[32]` | 4 并发 serve | PASS |
+| `[8, 16, 24, 32]` | 4 并发 serve | **FAULT** |
+
+单图配置全过，多图配置崩。这一条把范围收得比之前任何一次都紧。
+
+### 它同时暴露了计划 P0 的一个设计缺陷
+
+计划 §5.1 把 P0 钉死为单个 `[8]` descriptor，理由正是「先排除 graph size 切换、
+多 descriptor 共享 host metadata、event-id 资源膨胀」。现在的证据表明**故障恰好就住在
+被排除掉的那一组条件里**——P0 配置在构造上无法复现它。§5.1 需要改：单 descriptor
+是收敛后的验收配置，不能同时充当根因定位配置。
+
+### 两个候选机制（都已在计划里点名）
+
+- **H1 多 descriptor 共享 host metadata**（§5.4 / G2 case D）。
+  `_query_lens_cpu_buffer` 是 builder 终生持有的**同一块 pinned base**，各 descriptor
+  只是它不同长度的 view（`[:num_reqs]`）。单图时不可见；多图时 graph A 冻结的 host
+  指针可能在另一个 num_reqs 的写入之后被读到。
+- **H2 event-id / stream 资源**。310P 教程明确警告 TP>1 时可捕获图数量受硬件 event-id
+  限制且随模型深度增长；这里是 36 层 × 4 图 × TP4。
+
+### 环境不是变量
+
+| | 07-24 | 07-27 |
+| --- | --- | --- |
+| torch_npu | `2.10.0.post2` | `2.10.0.post1.dev20260613` |
+| CANN / OPP | `9.1.0-beta.1` / `20260509` | 同 |
+| ATB | （无基线） | `9.1.0.B110` |
+
+torch_npu 的更换发生在 **07-24→07-25 之间**（为支持 compressed mask），因此 07-25
+崩溃与 07-27 复现用的是同一套栈。之前「环境漂移」的怀疑排除。
+
+### 遗留异常
+
+HANDOFF §6.1d 记录 07-25 单 prompt `[8]` 崩过，而 07-27 同配置 10 次全过。最省事的
+解释是**故障是概率性的，多图显著提高概率**：若单图崩溃率约 10%，「崩 1 次后连过 10 次」
+并不反常（0.9¹⁰ ≈ 35%）。暂记为未解释，不阻塞——多图配置已经是稳定复现体。
+
+### 工具改动
+
+`GRAPH_E2E_CAPTURE_SIZES` 把 capture 列表与 prompt 数解耦，用于「捕获 N 个图但只
+replay 一个」这类实验；并对非 `1+K` 倍数的尺寸 fail-fast（`[28]` 会被 vLLM 静默改写成
+`[8]`，见下）。
+
+### 附带发现：`[28]` 陷阱
+
+`vllm/config/compilation.py::adjust_cudagraph_sizes_for_spec_decode` 在
+**MRV1 + decode_mode()==FULL + K>0** 三条同时成立时把 capture 列表向上取整到 `1+K`
+的倍数，并丢弃超过 `max_cudagraph_capture_size` 的项；全被丢弃时兜底为 `[1+K]`。
+
+```text
+[28]            -> [8]      # 兜底分支，max 也降到 8，16/24/32 全部回落 eager
+[28, 32]        -> [32]
+[8, 16, 24, 32] -> 原样
+```
+
+PR #11765 的 `[28, 32]` 是对的——它是 **PIECEWISE**，`decode_mode()` 不等于 `FULL`，
+改写不触发；且 28 = 4×K 是 **drafter** 的形状，PIECEWISE 下 drafter 也入图。
+FULL_DECODE_ONLY 下 drafter 全程 eager，28 不对应任何形状。整个过程无 warning。

@@ -104,7 +104,35 @@ SPECULATIVE_CONFIG = {
 # DSpark's drafter forward is exactly K tokens per request. Here the drafter stays
 # eager, so only the target's K+1 shape matters.
 UNIFORM_DECODE_QUERY_LEN = 1 + NUM_SPECULATIVE_TOKENS
-CAPTURE_SIZES = [UNIFORM_DECODE_QUERY_LEN * n for n in range(1, len(PROMPTS) + 1)]
+
+# GRAPH_E2E_CAPTURE_SIZES decouples the capture list from the prompt count, which
+# the 07-27 result made necessary: [8] alone passes 10/10 and [32] alone passes,
+# but [8,16,24,32] faults. Capturing *more* sizes than the batch will ever
+# dispatch is the discriminator -- with one prompt only the 8-token graph replays,
+# so a fault under a four-size capture list means the graph count matters, and no
+# fault means an actual descriptor switch is required.
+#
+# Only ever widen the list this way. Narrowing it below what the batch dispatches
+# is what GRAPH_E2E_NUM_PROMPTS is for: shrinking the capture list alone makes the
+# batch fall back to eager and proves nothing.
+_CAPTURE_SIZES_ENV = os.environ.get("GRAPH_E2E_CAPTURE_SIZES", "")
+if _CAPTURE_SIZES_ENV:
+    CAPTURE_SIZES = [int(s) for s in _CAPTURE_SIZES_ENV.replace(" ", "").split(",") if s]
+else:
+    CAPTURE_SIZES = [UNIFORM_DECODE_QUERY_LEN * n for n in range(1, len(PROMPTS) + 1)]
+
+# vLLM rewrites a non-multiple silently (config/compilation.py:
+# adjust_cudagraph_sizes_for_spec_decode), and the fallback branch can collapse a
+# whole list to [uniform_decode_query_len] -- [28] becomes [8], which then makes
+# every multi-request batch fall back to eager. Refuse it here instead of
+# discovering it from a suspiciously green run.
+_bad = [s for s in CAPTURE_SIZES if s % UNIFORM_DECODE_QUERY_LEN or s <= 0]
+if _bad:
+    raise ValueError(
+        f"capture sizes {_bad} are not positive multiples of "
+        f"uniform_decode_query_len={UNIFORM_DECODE_QUERY_LEN} (1 + K); vLLM would "
+        f"silently rewrite them. Use multiples of {UNIFORM_DECODE_QUERY_LEN}."
+    )
 
 
 def _graph_compilation_config():
