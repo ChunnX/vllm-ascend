@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 from typing import Any
 
 import torch
@@ -60,6 +61,31 @@ class AscendDflashProposer(AscendEagleProposer):
         )
 
         self.parallel_drafting_hidden_state_tensor = None
+
+    @contextmanager
+    def _profile_rope_context(self):
+        """Keep the 310P drafting RoPE flag on for the whole profile branch.
+
+        dummy_run(is_profile=True) calls precompute_and_store_context_kv and then
+        model(...) directly, bypassing _run_merged_draft, which is what normally
+        turns this flag on. Without it neither forward refreshes the global cos/sin
+        slice, so both silently reuse whatever the target's dummy run left behind
+        -- and the two need different positions anyway (context_positions vs query
+        positions, different lengths).
+
+        Shared with AscendDSparkProposer, which inherits it.
+        """
+        if not is_310p():
+            yield
+            return
+
+        from vllm_ascend._310p.ops.rotary_embedding import AscendRotaryEmbedding310
+
+        AscendRotaryEmbedding310.set_rope_position_flag_310p(True)
+        try:
+            yield
+        finally:
+            AscendRotaryEmbedding310.set_rope_position_flag_310p(False)
 
     def _expand_drafting_inputs(
         self,
@@ -321,12 +347,16 @@ class AscendDflashProposer(AscendEagleProposer):
             draft_attn_metadatas=multi_steps_attn_metadata,
         ):
             if is_profile:
-                self.model.precompute_and_store_context_kv(context_states, context_positions)
-                self.model(
-                    input_ids=self.input_ids[:num_query_total],
-                    positions=self._get_positions(num_query_total),
-                    inputs_embeds=None,
-                )
+                # Both forwards must run with the 310P drafting RoPE flag on: they
+                # use different positions (context vs query, different lengths) and
+                # neither refreshes the global cos/sin slice on its own here.
+                with self._profile_rope_context():
+                    self.model.precompute_and_store_context_kv(context_states, context_positions)
+                    self.model(
+                        input_ids=self.input_ids[:num_query_total],
+                        positions=self._get_positions(num_query_total),
+                        inputs_embeds=None,
+                    )
 
             else:
                 self._dflash_num_context = num_input_tokens
