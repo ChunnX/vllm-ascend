@@ -2,6 +2,12 @@
 
 > 新会话从这里开始。详细过程见 [progress.md](progress.md)，原始设计见
 > [2026-07-22-dflash-dspark-310p-qwen3-8b.md](2026-07-22-dflash-dspark-310p-qwen3-8b.md)。
+>
+> **2026-07-25 更新：** eager 阶段已经完成。ACLGraph 阶段的最终范围、设计门禁、
+> 实施顺序和验收标准见
+> [2026-07-25-qwen3-8b-dspark-310p-target-aclgraph.md](2026-07-25-qwen3-8b-dspark-310p-target-aclgraph.md)。
+> 本文 §6 和 §8 保留为历史复现记录；其中对根因和下一步的判断若与新计划冲突，
+> 以新计划为准。
 
 | | |
 | --- | --- |
