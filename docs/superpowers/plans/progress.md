@@ -747,3 +747,61 @@ replay **之后**加一个同步能压住故障，这条推理链是有分量的
 ### 下一步
 
 补齐 §6-G0.5 要求的 control 与重复，见下一节的测试序列。在 control 之前不改任何代码。
+
+---
+
+## G0.5 Snapshot A control：**07-25 的 AICore fault 两次都没有复现**
+
+日志：`logs/20260727/snapshotA_S0_1_07271451.log`（PASSED）、
+`logs/20260727/snapshotA_S0_2_07271451.log`（FAILED）
+代码：`47b0a8cc3`，sync seam 未武装（S0 = control）
+
+### 「第二次崩了」不是崩
+
+两次运行都跑完了完整的 64 token 生成。fault 标记计数：
+
+| 日志 | `aicore` / `Illegal instruction` 出现次数 |
+| --- | --- |
+| `logs/20260725/plog-133119_…`（07-25 单 prompt 崩溃） | 37 |
+| `snapshotA_S0_1_07271451.log` | **0** |
+| `snapshotA_S0_2_07271451.log` | **0** |
+
+第二次的 FAILED 来自测试断言：
+
+```text
+assert exact >= 1, "no prompt matched the eager baseline exactly; ..."
+AssertionError: assert 0 >= 1
+```
+
+### 关键观测：漂移的是 eager baseline，不是 graph
+
+两次运行的 acceptance 指标**逐位相同**：
+
+```text
+num_drafts=22 total_accepted=43
+acceptance_per_pos=[0.8181…, 0.5, 0.3181…, 0.1818…, 0.04545…, 0.04545…, 0.04545…]
+```
+
+draft/accept 模式完全一致 ⇒ graph 侧两次吐出同一串 token。但一次
+`exact 1/1`，另一次 `0/1` 且 `prompt 0: diverges at index 6 (11 vs 13)`。
+所以动的是**每轮各自重新生成的 eager baseline**：TP=4 greedy 解码跨进程不可复现，
+HCCL 不保证 AllReduce 确定性，borderline argmax 会翻。
+
+这独立证实了计划 §9.1 的判断，而且比预期更严重——参照系本身在漂。
+
+### 处置
+
+1. 删掉 `assert exact >= 1`，改为只记录（计划 §9.1 已明令它不能单独作 oracle）。
+   在这个复现活动里它还有第二重危害：**红了无法与 aicore fault 区分**。
+2. 加 `GRAPH_E2E_SKIP_BASELINE=1`，复现活动里跳过 eager baseline，单次从 ~4.3 min
+   降到 ~2 min。
+3. 本轮 Snapshot A 记为 `NOT_REPRODUCED`（2/2 未复现）。**不进 G1**：计划 §6-G0.5
+   规定「Snapshot A 在同一 pinned 环境不能复现：先判环境/算子 cache 漂移」。
+
+### 与 07-25 的差异候选（待排查）
+
+- 07-25 的单 prompt 跑也是 capture `[8]`（HANDOFF §6.1d），所以**不是 capture size**；
+- 本轮每格用了全新的 `VLLM_CACHE_ROOT`（cold compile cache），07-25 是热 cache；
+- 07-25 之后是否动过 torch_npu / CANN / ATB / OPP / 镜像，需要按 §6-G0 的清单取证。
+
+在确定 fault 是「低概率间歇」还是「已被环境漂移掩盖」之前，边界推进没有可定位的对象。

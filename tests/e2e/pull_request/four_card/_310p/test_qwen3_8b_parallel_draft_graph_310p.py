@@ -65,6 +65,10 @@ PROMPTS = [
 MAX_TOKENS = 64
 # Separates "graph-size switch" from "async spec-decode batch-change bookkeeping".
 ASYNC_SCHEDULING = os.environ.get("GRAPH_E2E_ASYNC_SCHEDULING", "1") == "1"
+# For repeat campaigns: the eager baseline doubles the wall time and is only used
+# for a recorded comparison, so it can be dropped when the question is whether
+# the graph run faults.
+SKIP_BASELINE = os.environ.get("GRAPH_E2E_SKIP_BASELINE", "0") == "1"
 
 # Same as the eager E2E except enforce_eager is off. fp16 is required by ADN and
 # block_size must be 128 (the default 16 breaks 310P kernel block selection).
@@ -141,12 +145,15 @@ def _missing(path):
     "set QWEN3_8B_PATH / DSPARK_QWEN3_8B_PATH",
 )
 def test_dspark_target_in_aclgraph_drafter_eager():
-    # Eager baseline for reference. Its own correctness is covered by the eager
-    # E2E; here it is the comparison point for the captured run.
-    eager_common = dict(COMMON, enforce_eager=True)
-    with VllmRunner(MAIN_MODEL, **eager_common) as llm:
-        baseline = llm.generate_greedy(PROMPTS, MAX_TOKENS)
-    baseline_ids = [tuple(ids) for ids, _ in baseline]
+    # Eager baseline, recorded for comparison only -- see the note on `exact`
+    # below. Skipping it halves the wall time of a repeat campaign, where the
+    # question is whether the graph run faults at all.
+    baseline_ids: list[tuple[int, ...]] = []
+    if not SKIP_BASELINE:
+        eager_common = dict(COMMON, enforce_eager=True)
+        with VllmRunner(MAIN_MODEL, **eager_common) as llm:
+            baseline = llm.generate_greedy(PROMPTS, MAX_TOKENS)
+        baseline_ids = [tuple(ids) for ids, _ in baseline]
 
     with VllmRunner(
         MAIN_MODEL,
@@ -163,6 +170,17 @@ def test_dspark_target_in_aclgraph_drafter_eager():
     print(f"num_drafts={num_drafts} total_accepted={total_accepted}")
     print(f"acceptance_per_pos={per_pos_rate}")
 
+    # Recorded, never asserted. Two 07-27 control runs produced byte-identical
+    # acceptance (22 drafts / 43 accepted / same seven per-position rates), so the
+    # graph run emitted the same tokens both times -- yet one matched the eager
+    # baseline exactly and the other diverged at index 6. What moved is the
+    # baseline: greedy decode at TP=4 is not reproducible across processes,
+    # because HCCL does not guarantee a deterministic AllReduce and a borderline
+    # argmax flips. An oracle whose reference drifts cannot fail a run for the
+    # thing under test, and a red here would be indistinguishable from the aicore
+    # fault this file is being used to reproduce. The plan replaces it with a
+    # frozen-manifest logits oracle (section 9.2); until that exists this is a
+    # record, not a gate.
     exact = sum(1 for b, g in zip(baseline_ids, graph_ids) if b == g)
     for i, (b, g) in enumerate(zip(baseline_ids, graph_ids)):
         if b != g:
@@ -190,7 +208,6 @@ def test_dspark_target_in_aclgraph_drafter_eager():
         f"may have been affected by graph mode"
     )
 
-    assert exact >= 1, "no prompt matched the eager baseline exactly; capture/replay may be wrong"
 
 
 @pytest.mark.skipif(_missing(MAIN_MODEL), reason=f"model path not found (MAIN_MODEL={MAIN_MODEL})")
