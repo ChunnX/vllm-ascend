@@ -1,0 +1,267 @@
+#
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# This file is a part of the vllm-ascend project.
+
+import torch
+import torch_npu
+
+from vllm_ascend._310p.attention.metadata_builder import get_query_lens_cpu
+from vllm_ascend.utils import ACL_FORMAT_FRACTAL_NZ
+
+# The configuration this path covers. TP is deliberately not pinned: it slices
+# the head dimension and every rank runs the same attention on its own shard, so
+# it does not change the numerics. What matters is the per-rank head layout, and
+# that is constrained structurally below (GQA legality + the kernel's NZ
+# alignment) rather than by hardcoding a head count, since the drafter's exact
+# head layout comes from its checkpoint. head_dim is bounded to <= 128 by the
+# fixed 128-token block through the kernel's head_dim * block_size <= 16384 rule.
+FIA_BLOCK_SIZE = 128
+FIA_MAX_HEAD_DIM = 256  # the kernel's own ceiling
+FIA_MAX_HEAD_DIM_X_BLOCK = 16384  # the kernel's own ceiling; with block=128 this caps head_dim at 128
+FIA_SUPPORTED_METHODS = {"dflash": 8, "dspark": 7}  # method -> num_speculative_tokens
+# These are the architecture strings in the checkpoint's config.json (the vLLM
+# registry keys), NOT the model class names. hf_config.architectures holds the
+# former: the registry maps "DFlashDraftModel" -> DFlashQwen3ForCausalLM and
+# "Qwen3DSparkModel" -> Qwen3DSparkForCausalLM. Matching against the class names
+# never fires.
+FIA_SUPPORTED_ARCHITECTURES = {"DFlashDraftModel", "Qwen3DSparkModel"}
+
+
+def expected_queries_per_request(method):
+    """Queries each request issues per draft step.
+
+    DFlash prepends an anchor to the K mask tokens, DSpark does not.
+    """
+    num_spec = FIA_SUPPORTED_METHODS[method]
+    return num_spec + 1 if method == "dflash" else num_spec
+
+
+def _fia_op():
+    """Resolve the in-tree custom FIA op, or explain what is missing.
+
+    The kernel ships in this repo's ``csrc`` and is registered under
+    ``torch.ops._C_ascend`` by ``vllm_ascend.vllm_ascend_C``. It is built only
+    for the ascend310 SOC branch, so a wheel produced for another target will
+    import fine and simply not carry the symbol.
+    """
+    op = getattr(torch.ops._C_ascend, "npu_custom_fused_infer_attention_out", None)
+    if op is None:
+        raise RuntimeError(
+            "DFlash/DSpark non-causal draft attention on 310P needs "
+            "torch.ops._C_ascend.npu_custom_fused_infer_attention_out, which is not "
+            "registered. Reinstall vllm-ascend built for a 310P SOC "
+            "(SOC_VERSION=ascend310p) so csrc/attention/custom_fused_infer_attention "
+            "is compiled in. There is no fallback: sending this path to the causal "
+            "split-fuse kernel would return plausible but wrong numbers, so this "
+            "fails instead."
+        )
+    return op
+
+
+def validate_fia_scope(*, vllm_config, query, key_cache, value_cache, num_heads, num_kv_heads, head_size):
+    """Check every startup invariant once, before the first custom FIA call."""
+    spec_config = vllm_config.speculative_config
+    method = getattr(spec_config, "method", None)
+    if spec_config is None or method not in FIA_SUPPORTED_METHODS:
+        raise RuntimeError(
+            f"custom FIA draft attention only covers {sorted(FIA_SUPPORTED_METHODS)}, got {method}"
+        )
+    expected_k = FIA_SUPPORTED_METHODS[method]
+    if spec_config.num_speculative_tokens != expected_k:
+        raise RuntimeError(
+            f"{method} is only validated at num_speculative_tokens={expected_k}, got "
+            f"{spec_config.num_speculative_tokens}"
+        )
+
+    architectures = getattr(spec_config.draft_model_config.hf_config, "architectures", None) or []
+    arch = architectures[0] if architectures else None
+    if arch not in FIA_SUPPORTED_ARCHITECTURES:
+        raise RuntimeError(
+            f"draft architecture {arch} is outside this scope "
+            f"({sorted(FIA_SUPPORTED_ARCHITECTURES)})"
+        )
+
+    if not vllm_config.model_config.enforce_eager:
+        raise RuntimeError("this scope is eager-only; ACLGraph is validated separately")
+
+    # Per-rank head layout, constrained structurally rather than by a fixed count.
+    # TP is not checked: it only shards these heads across ranks and does not
+    # change the numerics, so any TP whose resulting layout satisfies the rules
+    # below is fine (e.g. Qwen3-8B is 32Q/8KV -> 16/4 at TP=2, 8/2 at TP=4).
+    if not 0 < head_size <= FIA_MAX_HEAD_DIM:
+        raise RuntimeError(f"custom FIA requires 0 < head_dim <= {FIA_MAX_HEAD_DIM}, got {head_size}")
+    if head_size * FIA_BLOCK_SIZE > FIA_MAX_HEAD_DIM_X_BLOCK:
+        # With the fixed 128-token block this caps head_dim at 128.
+        raise RuntimeError(
+            f"head_dim * block_size = {head_size * FIA_BLOCK_SIZE} exceeds the kernel's "
+            f"{FIA_MAX_HEAD_DIM_X_BLOCK}"
+        )
+    if num_kv_heads <= 0 or num_heads % num_kv_heads != 0:
+        raise RuntimeError(f"invalid GQA layout: {num_heads} query heads / {num_kv_heads} KV heads")
+    if (num_kv_heads * head_size) % 16 != 0:
+        raise RuntimeError(
+            f"NZ alignment: num_kv_heads * head_dim = {num_kv_heads * head_size} must be a "
+            f"multiple of 16"
+        )
+
+    for name, tensor in (("query", query), ("key_cache", key_cache), ("value_cache", value_cache)):
+        if tensor.dtype != torch.float16:
+            raise RuntimeError(
+                f"custom FIA on 310P only supports float16 in this scope, but {name} is "
+                f"{tensor.dtype}. Start the engine with dtype=float16."
+            )
+
+    if key_cache.ndim != 4 or value_cache.ndim != 4:
+        raise RuntimeError(f"custom FIA needs rank-4 NZ K/V caches, got {key_cache.ndim}/{value_cache.ndim}")
+    if key_cache.shape != value_cache.shape:
+        raise RuntimeError(f"K/V cache shapes differ: {key_cache.shape} vs {value_cache.shape}")
+    if key_cache.device != value_cache.device:
+        raise RuntimeError(f"K/V caches are on different devices: {key_cache.device} vs {value_cache.device}")
+
+    for name, cache in (("key_cache", key_cache), ("value_cache", value_cache)):
+        fmt = int(torch_npu.get_npu_format(cache))
+        if fmt != ACL_FORMAT_FRACTAL_NZ:
+            raise RuntimeError(
+                f"{name} is in acl format {fmt}, expected ACL_FORMAT_FRACTAL_NZ "
+                f"({ACL_FORMAT_FRACTAL_NZ}); the kernel reads the NZ layout directly"
+            )
+
+    if key_cache.shape[-1] != 16:
+        raise RuntimeError(f"NZ cache last dim must be 16, got {key_cache.shape[-1]}")
+    # Compared against the scope constant, not against a value derived from the
+    # cache itself -- the latter would be tautological.
+    if key_cache.shape[-2] != FIA_BLOCK_SIZE:
+        raise RuntimeError(
+            f"cache physical block size is {key_cache.shape[-2]}, this scope only covers "
+            f"{FIA_BLOCK_SIZE}"
+        )
+    expected_dim1 = num_kv_heads * head_size // 16
+    if key_cache.shape[1] != expected_dim1:
+        raise RuntimeError(
+            f"NZ cache dim1 is {key_cache.shape[1]}, expected num_kv_heads*head_size/16 = {expected_dim1}"
+        )
+
+
+def forward_parallel_draft_fia(self, query, attn_metadata, output):
+    """Non-causal parallel-draft attention via the in-tree custom FIA op.
+
+    ``attn_mask=None`` is what makes the kernel non-causal: its host tiling maps an empty
+    mask to NO_MASK and the kernel neither loads nor applies one, so every query row
+    sees the full ``[0, actual_seq_lengths_kv[b])`` range -- context plus this
+    round's entire query block. Never pass the 310P compressed split-fuse mask here,
+    and never synthesize an all-zero causal mask to imitate it.
+    """
+    fia_out = _fia_op()
+
+    num_tokens = int(attn_metadata.num_actual_tokens)
+    query_slice = query[:num_tokens]
+    output_slice = output[:num_tokens]
+
+    # Raw per-request q-lens come from the 310P builder, which diffed the CPU
+    # endpoints outside the forward. The tensor is host/pinned, so .tolist() costs
+    # no device sync. Never rebuild these from the base metadata's
+    # actual_seq_lengths_q (cumulative endpoints) or from max_query_len.
+    raw_q_lens = get_query_lens_cpu(attn_metadata)
+    if raw_q_lens is None:
+        raise RuntimeError(
+            "310P parallel draft attention needs raw per-request query lengths on "
+            "attn_metadata, but query_lens_cpu is missing. It is set by "
+            "AscendAttentionMetadataBuilder310.build() for ChunkedPrefill/SpecDecoding; "
+            "check that the draft metadata went through that builder."
+        )
+    q_lens = raw_q_lens.tolist()
+    kv_lens = attn_metadata.seq_lens_list
+
+    method = getattr(self.vllm_config.speculative_config, "method", None)
+    if method not in FIA_SUPPORTED_METHODS:
+        raise RuntimeError(f"custom FIA draft attention reached with unsupported method {method}")
+    expected_q = expected_queries_per_request(method)
+    if any(q != expected_q for q in q_lens):
+        raise RuntimeError(
+            f"{method} expects every request to query {expected_q} positions, got {q_lens}. "
+            f"A cumulative-endpoint tensor was most likely passed instead of raw "
+            f"per-request lengths."
+        )
+    if sum(q_lens) != num_tokens or query_slice.shape[0] != num_tokens:
+        raise RuntimeError(
+            f"sum(q_lens)={sum(q_lens)}, num_actual_tokens={num_tokens}, query rows="
+            f"{query_slice.shape[0]} must all agree"
+        )
+
+    block_table = attn_metadata.block_tables[: len(q_lens)]
+    if len(kv_lens) != len(q_lens) or block_table.shape[0] != len(q_lens):
+        raise RuntimeError(
+            f"batch size disagreement: {len(q_lens)} q-lens, {len(kv_lens)} kv-lens, "
+            f"{block_table.shape[0]} block-table rows"
+        )
+    if block_table.ndim != 2 or block_table.dtype != torch.int32:
+        raise RuntimeError(
+            f"block table must be a rank-2 int32 tensor, got ndim={block_table.ndim} "
+            f"dtype={block_table.dtype}"
+        )
+
+    # Fixed by scope rather than read back from the cache; validate_fia_scope
+    # checks the cache's physical block size against this same constant.
+    capacity = block_table.shape[1] * FIA_BLOCK_SIZE
+    for b, (q_len, kv_len) in enumerate(zip(q_lens, kv_lens)):
+        if not 0 < q_len <= kv_len:
+            raise RuntimeError(f"request {b}: need 0 < q_len({q_len}) <= kv_len({kv_len})")
+        if kv_len > capacity:
+            raise RuntimeError(
+                f"request {b}: kv_len {kv_len} exceeds what its block table can address "
+                f"({block_table.shape[1]} pages x {FIA_BLOCK_SIZE})"
+            )
+
+    key_cache = self.key_cache
+    value_cache = self.value_cache
+    query_tnd = query_slice.reshape(num_tokens, self.num_heads, self.head_size)
+
+    if not self._fia_scope_validated:
+        validate_fia_scope(
+            vllm_config=self.vllm_config,
+            query=query_tnd,
+            key_cache=key_cache,
+            value_cache=value_cache,
+            num_heads=self.num_heads,
+            num_kv_heads=self.num_kv_heads,
+            head_size=self.head_size,
+        )
+        self._fia_scope_validated = True
+
+    # The op writes straight into the caller's buffer, so it needs the output as a
+    # TND view of the same storage. `view` raises rather than silently copying if
+    # the slice is not contiguous, which is what we want -- a copy here would be
+    # written to and then discarded.
+    output_tnd = output_slice.view(num_tokens, self.num_heads, self.head_size)
+
+    # The `_out` overload asserts output shape/dtype/device against query on the
+    # C++ side, so there is nothing left to re-check here.
+    fia_out(
+        query_tnd,
+        [key_cache],
+        [value_cache],
+        output_tnd,
+        attn_mask=None,
+        actual_seq_lengths_q=q_lens,
+        actual_seq_lengths_kv=kv_lens,
+        block_table=block_table,
+        num_heads=self.num_heads,
+        num_key_value_heads=self.num_kv_heads,
+        block_size=FIA_BLOCK_SIZE,
+        input_layout="TND",
+        scale_value=self.scale,
+        inner_precise=2,
+    )
+    return output

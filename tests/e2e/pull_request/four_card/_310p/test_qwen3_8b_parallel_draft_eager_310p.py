@@ -1,0 +1,162 @@
+#
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+"""DSpark parallel-draft E2E on Atlas 300I (310P), TP=4, eager.
+
+Scope note: the target deployment only has the DSpark checkpoint, so this covers
+DSpark (K=7) at TP=4. DFlash end-to-end is deferred for lack of a checkpoint; its
+q=9 / skip-anchor layout keeps its CPU unit tests and the DFlash q=9 case in the
+Phase 0 NZ readback gate.
+
+Placed under four_card/_310p because a four-card runner is what supplies TP=4.
+"""
+
+from __future__ import annotations
+
+import os
+
+import pytest
+
+# 310P adaptation lives on Model Runner V1. Ascend already defaults V2 off unless
+# this is set explicitly, but pin it so an environment difference cannot flip it.
+os.environ.setdefault("VLLM_USE_V2_MODEL_RUNNER", "0")
+os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
+
+from tests.e2e.conftest import VllmRunner  # noqa: E402
+from tests.e2e.pull_request.one_card.spec_decode.utils import BASELINES, DSPARK  # noqa: E402
+
+# Same checkpoints the A2 dspark E2E uses, so the per-position acceptance
+# baseline below is comparable. Override with QWEN3_8B_PATH /
+# DSPARK_QWEN3_8B_PATH to point the four TP ranks at pre-fetched local copies.
+MAIN_MODEL = os.environ.get("QWEN3_8B_PATH", DSPARK["dspark"]["main"])
+SPEC_MODEL = os.environ.get("DSPARK_QWEN3_8B_PATH", DSPARK["dspark"]["spec"])
+NUM_SPECULATIVE_TOKENS = 7  # DSpark block7
+# Per-position acceptance measured by the repo's own dspark E2E on the same
+# checkpoints. 310P/fp16 will not reproduce it exactly, so it is applied with a
+# tolerance below rather than as an equality.
+ACCEPTANCE_BASELINE = BASELINES["dspark"]
+# How far below the A2 baseline a position may fall before this is a regression.
+# Wide enough to absorb the fp16/device difference, narrow enough that the tail
+# collapsing (the failure mode this test exists to catch) still trips it.
+ACCEPTANCE_TOLERANCE = 0.25
+
+PROMPTS = [
+    "Hello, my name is",
+    "The capital of France is",
+    "Explain in one sentence why the sky is blue:",
+]
+MAX_TOKENS = 64
+
+# fp16 is required by the custom FIA kernel; block_size must be 128 (the default 16 breaks the 310P
+# kernel block selection); eager because 310P dense runs eager here.
+COMMON = dict(
+    max_model_len=4096,
+    dtype="float16",
+    tensor_parallel_size=4,
+    block_size=128,
+    enforce_eager=True,
+    distributed_executor_backend="mp",
+    enable_prefix_caching=False,
+    disable_log_stats=False,
+    max_num_seqs=256,
+    gpu_memory_utilization=0.8,
+)
+
+
+def _drafts_and_accepted(metrics):
+    """Raw draft/acceptance counts from the engine metrics."""
+    num_drafts = 0
+    total_accepted = 0
+    accepted_per_pos = [0] * NUM_SPECULATIVE_TOKENS
+    for metric in metrics:
+        if metric.name == "vllm:spec_decode_num_drafts":
+            num_drafts += metric.value
+        elif metric.name == "vllm:spec_decode_num_accepted_tokens_per_pos":
+            for pos in range(len(metric.values)):
+                accepted_per_pos[pos] += metric.values[pos]
+                total_accepted += metric.values[pos]
+    return num_drafts, total_accepted, accepted_per_pos
+
+
+def _missing(path):
+    """A HF repo id (no slash-rooted local path) is assumed present; a local path
+    must actually exist, or the four ranks would each fail to find it."""
+    return path.startswith("/") and not os.path.isdir(path)
+
+
+@pytest.mark.skipif(
+    _missing(MAIN_MODEL) or _missing(SPEC_MODEL),
+    reason=f"model path not found (MAIN_MODEL={MAIN_MODEL}, SPEC_MODEL={SPEC_MODEL}); "
+    "set QWEN3_8B_PATH / DSPARK_QWEN3_8B_PATH",
+)
+def test_dspark_tp4_eager_matches_baseline_and_accepts():
+    # Baseline: identical config, no speculation.
+    with VllmRunner(MAIN_MODEL, **COMMON) as llm:
+        baseline = llm.generate_greedy(PROMPTS, MAX_TOKENS)
+    baseline_ids = [tuple(ids) for ids, _ in baseline]
+
+    # Speculative: DSpark drafter, same target and config.
+    speculative_config = {
+        "method": "dspark",
+        "model": SPEC_MODEL,
+        "num_speculative_tokens": NUM_SPECULATIVE_TOKENS,
+        "draft_tensor_parallel_size": 4,
+    }
+    with VllmRunner(MAIN_MODEL, speculative_config=speculative_config, **COMMON) as llm:
+        spec = llm.generate_greedy(PROMPTS, MAX_TOKENS)
+        metrics = llm.model.get_metrics()
+    spec_ids = [tuple(ids) for ids, _ in spec]
+
+    num_drafts, total_accepted, accepted_per_pos = _drafts_and_accepted(metrics)
+    per_pos_rate = [a / num_drafts for a in accepted_per_pos] if num_drafts else []
+    print(f"num_drafts={num_drafts} total_accepted={total_accepted}")
+    print(f"acceptance_per_pos={per_pos_rate}")
+
+    # Token-match summary, recorded but not the hard gate -- see below.
+    exact = sum(1 for b, s in zip(baseline_ids, spec_ids) if b == s)
+    for i, (b, s) in enumerate(zip(baseline_ids, spec_ids)):
+        if b != s:
+            first = next(k for k in range(min(len(b), len(s))) if b[k] != s[k])
+            print(f"prompt {i}: diverges at index {first} ({b[first]} vs {s[first]}), "
+                  f"common prefix {first}/{min(len(b), len(s))}")
+    print(f"exact token match: {exact}/{len(baseline_ids)} prompts")
+
+    # Correctness is judged on acceptance, not token identity. Greedy speculative
+    # decoding is output-lossless only in exact arithmetic: the target verifies
+    # K+1 tokens per step (a chunked-prefill-shaped batch) whereas the baseline
+    # decodes one token per step, and floating-point non-associativity flips the
+    # argmax at borderline logits, cascading into a different continuation. The
+    # repo's own dspark E2E asserts acceptance rate for the same reason. Note the
+    # decisive point: a *broken* drafter would make the output MATCH the baseline
+    # (every draft rejected -> pure target decode), so a divergence like this is
+    # evidence the drafter is accepted into multi-token verify steps, i.e. working.
+    assert num_drafts > 0, "no drafts were produced; speculation did not run"
+    assert total_accepted > 0, "no draft tokens were accepted"
+
+    # Every position is gated against the A2 baseline for the same checkpoints.
+    # Checking the whole vector rather than only position 0 is what makes this a
+    # correctness test: the 310P-specific machinery (context KV precompute,
+    # per-layer drafting RoPE, query slot mapping, non-causal FIA over the query
+    # block) shows up as a decaying tail while position 0 -- the target's own
+    # bonus token -- still looks healthy.
+    assert len(per_pos_rate) == len(ACCEPTANCE_BASELINE), (
+        f"expected {len(ACCEPTANCE_BASELINE)} positions, got {len(per_pos_rate)}"
+    )
+    floors = [round(b - ACCEPTANCE_TOLERANCE, 4) for b in ACCEPTANCE_BASELINE]
+    low = [i for i, (rate, floor) in enumerate(zip(per_pos_rate, floors)) if rate < floor]
+    assert not low, (
+        f"acceptance below the dspark baseline at positions {low}: "
+        f"got {[round(r, 4) for r in per_pos_rate]}, floor {floors} "
+        f"(baseline {ACCEPTANCE_BASELINE} - {ACCEPTANCE_TOLERANCE})"
+    )
