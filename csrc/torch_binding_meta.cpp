@@ -303,28 +303,6 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> npu_sparse_flash_attention_meta(
     return std::tuple<at::Tensor, at::Tensor, at::Tensor>(output, softmax_max, softmax_sum);
 }
 
-at::Tensor npu_sparse_attention_score_meta(
-    const at::Tensor &query, const at::Tensor &key, const at::Tensor &value,
-    const at::Tensor &select_idx, const at::Tensor &block_table,
-    const c10::optional<at::Tensor> &select_num_idx,
-    const c10::optional<at::Tensor> &q_dequant_scale,
-    const c10::optional<at::Tensor> &k_dequant_scale,
-    const c10::optional<at::Tensor> &v_dequant_scale,
-    const c10::optional<at::Tensor> &actual_seq_lengths,
-    const c10::optional<at::Tensor> &actual_seq_lengths_kv,
-    c10::string_view q_input_layout, c10::string_view kv_input_layout,
-    int64_t num_key_value_heads, double scale_value, int64_t block_size,
-    int64_t top_k, int64_t inner_precise)
-{
-    TORCH_CHECK(std::string(q_input_layout) == "TND",
-                "npu_sparse_attention_score only supports query TND layout");
-    at::ScalarType out_dtype = (query.scalar_type() == at::kFloat8_e4m3fn)
-                                   ? at::kHalf
-                                   : query.scalar_type();
-    return at::empty_symint(query.sym_sizes(),
-                            query.options().dtype(out_dtype).device(c10::kMeta));
-}
-
 std::tuple<at::Tensor, at::Tensor, at::Tensor> npu_kv_quant_sparse_flash_attention_meta(
     const at::Tensor &query,
     const at::Tensor &key,
@@ -580,6 +558,43 @@ at::Tensor npu_causal_conv1d_310_meta(
 {
 
     at::Tensor output = at::empty_symint(x.sym_sizes(), x.options());
+    return output;
+}
+
+at::Tensor npu_custom_fused_infer_attention_meta(
+    const at::Tensor& query,
+    at::TensorList key,
+    at::TensorList value,
+    const c10::optional<at::Tensor>& attn_mask,
+    c10::OptionalArrayRef<c10::SymInt> actual_seq_lengths_q,
+    c10::OptionalArrayRef<c10::SymInt> actual_seq_lengths_kv,
+    const c10::optional<at::Tensor>& block_table,
+    int64_t num_heads,
+    double scale_value,
+    c10::string_view input_layout,
+    int64_t num_key_value_heads,
+    int64_t block_size,
+    int64_t inner_precise)
+{
+    return at::empty_symint(query.sym_sizes(), query.options());
+}
+
+at::Tensor npu_custom_fused_infer_attention_out_meta(
+    const at::Tensor& query,
+    at::TensorList key,
+    at::TensorList value,
+    at::Tensor& output,
+    const c10::optional<at::Tensor>& attn_mask,
+    c10::OptionalArrayRef<c10::SymInt> actual_seq_lengths_q,
+    c10::OptionalArrayRef<c10::SymInt> actual_seq_lengths_kv,
+    const c10::optional<at::Tensor>& block_table,
+    int64_t num_heads,
+    double scale_value,
+    c10::string_view input_layout,
+    int64_t num_key_value_heads,
+    int64_t block_size,
+    int64_t inner_precise)
+{
     return output;
 }
 
@@ -1549,6 +1564,9 @@ namespace {
 TORCH_LIBRARY_IMPL_EXPAND(CONCAT(_C, _ascend), Meta, ops) {
     // causal_conv1d_310
     ops.impl("npu_causal_conv1d_310", &vllm_ascend::meta::npu_causal_conv1d_310_meta);
+    // Custom FIA paged attention
+    ops.impl("npu_custom_fused_infer_attention", &vllm_ascend::meta::npu_custom_fused_infer_attention_meta);
+    ops.impl("npu_custom_fused_infer_attention_out", &vllm_ascend::meta::npu_custom_fused_infer_attention_out_meta);
     // npu_recurrent_gated_delta_rule_310
     ops.impl("npu_recurrent_gated_delta_rule_310", &vllm_ascend::meta::npu_recurrent_gated_delta_rule_310_meta);
     // chunk_gated_delta_rule_fwd_h
@@ -1592,7 +1610,6 @@ TORCH_LIBRARY_IMPL_EXPAND(CONCAT(_C, _ascend), Meta, ops) {
     ops.impl("npu_lightning_indexer", &vllm_ascend::meta::npu_lightning_indexer_meta);
     // Sparse flash attention
     ops.impl("npu_sparse_flash_attention", &vllm_ascend::meta::npu_sparse_flash_attention_meta);
-    ops.impl("npu_sparse_attention_score", &vllm_ascend::meta::npu_sparse_attention_score_meta);
     ops.impl("npu_kv_quant_sparse_flash_attention",
              &vllm_ascend::meta::npu_kv_quant_sparse_flash_attention_meta);
     // MoE dispatch-ffn-combine

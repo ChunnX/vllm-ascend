@@ -83,6 +83,7 @@ if [[ "$SOC_VERSION" =~ ^ascend310 ]]; then
 
     CUSTOM_OPS_ARRAY=(
         "causal_conv1d_v310"
+        "custom_fused_infer_attention"
         "recurrent_gated_delta_rule_v310"
         "chunk_fwd_o"
         "chunk_gated_delta_rule_fwd_h"
@@ -105,6 +106,7 @@ elif [[ "$SOC_VERSION" =~ ^ascend910b ]]; then
         "moe_gating_top_k"
         "moe_gating_top_k_hash"
         "add_rms_norm_bias"
+        "apply_top_k_top_p_custom"
         "transpose_kv_cache_by_block"
         "copy_and_expand_eagle_inputs"
         "causal_conv1d"
@@ -130,7 +132,6 @@ elif [[ "$SOC_VERSION" =~ ^ascend910b ]]; then
         "chunk_gated_delta_rule_fwd_h"
         "store_kv_block"
         "store_kv_block_metadata"
-        "sparse_attention_score"
     )
 
     CUSTOM_OPS=$(IFS=';'; echo "${CUSTOM_OPS_ARRAY[*]}")
@@ -153,6 +154,7 @@ elif [[ "$SOC_VERSION" =~ ^ascend910_93 ]]; then
         "moe_gating_top_k"
         "moe_gating_top_k_hash"
         "add_rms_norm_bias"
+        "apply_top_k_top_p_custom"
         "transpose_kv_cache_by_block"
         "copy_and_expand_eagle_inputs"
         "causal_conv1d"
@@ -179,7 +181,6 @@ elif [[ "$SOC_VERSION" =~ ^ascend910_93 ]]; then
         "chunk_gated_delta_rule_fwd_h"
         "store_kv_block"
         "store_kv_block_metadata"
-        "sparse_attention_score"
     )
     CUSTOM_OPS=$(IFS=';'; echo "${CUSTOM_OPS_ARRAY[*]}")
     SOC_ARG="ascend910_93"
@@ -213,7 +214,6 @@ elif [[ "$SOC_VERSION" =~ ^ascend950 ]]; then
         "chunk_gated_delta_rule_fwd_h"
         "store_kv_block"
         "store_kv_block_metadata"
-        "sparse_attention_score"
     )
 
     CUSTOM_OPS=$(IFS=';'; echo "${CUSTOM_OPS_ARRAY[*]}")
