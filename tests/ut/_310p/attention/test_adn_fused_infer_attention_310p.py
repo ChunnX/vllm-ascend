@@ -83,17 +83,17 @@ def make_metadata(*, q_lens=None, kv_lens=None, block_cols=4, block_dtype=torch.
 
 
 class _FakeAdn:
-    """Stands in for adn_custom_ops, which is not installed on CI hosts."""
+    """Stands in for the NPU-only _C_ascend out operator on CPU CI hosts."""
 
     def __init__(self, out_builder=None):
         self.calls = []
         self._out_builder = out_builder
 
-    def adn_fused_infer_attention(self, **kwargs):
+    def __call__(self, **kwargs):
         self.calls.append(kwargs)
         if self._out_builder is not None:
             return self._out_builder(kwargs)
-        return torch.zeros_like(kwargs["query"])
+        return kwargs["output"]
 
 
 def run_forward(impl=None, md=None, adn=None, num_tokens=None):
@@ -107,7 +107,7 @@ def run_forward(impl=None, md=None, adn=None, num_tokens=None):
     query = torch.zeros(n, width, dtype=torch.float16)
     output = torch.zeros(n, width, dtype=torch.float16)
     with (
-        mock_patch(f"{ADN_MOD}.load_adn", return_value=adn),
+        mock_patch(f"{ADN_MOD}._call_adn_fused_infer_attention_out", side_effect=adn),
         mock_patch(f"{ADN_MOD}.torch_npu.get_npu_format", return_value=ACL_FORMAT_FRACTAL_NZ),
     ):
         result = adn_mod.forward_parallel_draft_adn(impl, query, md, output)
@@ -119,13 +119,14 @@ class TestAdnCallContract(TestBase):
         _, adn, _ = run_forward()
         self.assertIsNone(adn.calls[0]["attn_mask"])
 
-    def test_precision_layout_and_force_call_flags(self):
+    def test_precision_layout_and_out_contract(self):
         _, adn, _ = run_forward()
         kwargs = adn.calls[0]
         self.assertEqual(kwargs["inner_precise"], 2)
-        self.assertIs(kwargs["force_call"], False)
+        self.assertNotIn("force_call", kwargs)
         self.assertEqual(kwargs["input_layout"], "TND")
         self.assertEqual(kwargs["block_size"], BLOCK_SIZE)
+        self.assertEqual(tuple(kwargs["output"].shape), tuple(kwargs["query"].shape))
 
     def test_q_lens_are_raw_not_cumulative(self):
         md = make_metadata()
@@ -158,14 +159,20 @@ class TestAdnCallContract(TestBase):
         _, adn, _ = run_forward()
         self.assertEqual(tuple(adn.calls[0]["query"].shape), (BATCH * DFLASH_Q, NUM_HEADS, HEAD_DIM))
 
-    def test_result_is_copied_into_the_caller_buffer(self):
+    def test_result_is_written_into_the_caller_buffer(self):
         marker = 0.5
+        padded_rows = 5
 
         def build_out(kwargs):
-            return torch.full_like(kwargs["query"], marker)
+            kwargs["output"].fill_(marker)
+            return kwargs["output"]
 
-        result, _, output = run_forward(adn=_FakeAdn(build_out))
+        result, _, output = run_forward(
+            adn=_FakeAdn(build_out),
+            num_tokens=BATCH * DFLASH_Q + padded_rows,
+        )
         self.assertTrue(bool((output[: BATCH * DFLASH_Q] == marker).all()))
+        self.assertTrue(bool((output[BATCH * DFLASH_Q :] == 0).all()))
         self.assertIs(result, output, "adapter must return the caller's output buffer")
 
     def test_dspark_expects_k_queries_not_k_plus_one(self):
@@ -304,7 +311,7 @@ class TestAdnScopeValidation(TestBase):
         query = torch.zeros(md.num_actual_tokens, NUM_HEADS * HEAD_DIM, dtype=torch.float16)
         output = torch.zeros_like(query)
         with (
-            mock_patch(f"{ADN_MOD}.load_adn", return_value=_FakeAdn()),
+            mock_patch(f"{ADN_MOD}._call_adn_fused_infer_attention_out", side_effect=_FakeAdn()),
             mock_patch(f"{ADN_MOD}.torch_npu.get_npu_format", return_value=2),
         ):
             with self.assertRaisesRegex(RuntimeError, "expected ACL_FORMAT_FRACTAL_NZ"):
@@ -315,7 +322,7 @@ class TestAdnScopeValidation(TestBase):
         adn = _FakeAdn()
         with mock_patch(f"{ADN_MOD}.validate_adn_scope") as validator:
             with (
-                mock_patch(f"{ADN_MOD}.load_adn", return_value=adn),
+                mock_patch(f"{ADN_MOD}._call_adn_fused_infer_attention_out", side_effect=adn),
                 mock_patch(f"{ADN_MOD}.torch_npu.get_npu_format", return_value=ACL_FORMAT_FRACTAL_NZ),
             ):
                 for _ in range(3):
@@ -326,12 +333,79 @@ class TestAdnScopeValidation(TestBase):
         self.assertEqual(len(adn.calls), 3)
 
 
-class TestAdnLoader(TestBase):
-    def test_missing_package_fails_loud_without_fallback(self):
-        with mock_patch.dict("sys.modules", {"adn_custom_ops": None}):
-            with mock_patch(f"{ADN_MOD}._adn_module", None):
-                with self.assertRaisesRegex(RuntimeError, "no fallback"):
-                    adn_mod.load_adn()
+class TestAdnBinding(TestBase):
+    def test_success_path_wraps_caches_and_forwards_keywords(self):
+        calls = []
+        query = torch.zeros(1, NUM_HEADS, HEAD_DIM, dtype=torch.float16)
+        key = make_cache()
+        value = make_cache()
+        output = torch.empty_like(query)
+        block_table = torch.zeros(1, 1, dtype=torch.int32)
+
+        def fake_out_op(query_arg, key_arg, value_arg, output_arg, **kwargs):
+            calls.append((query_arg, key_arg, value_arg, output_arg, kwargs))
+            return output_arg
+
+        fake_ops = SimpleNamespace(
+            _C_ascend=SimpleNamespace(
+                npu_adn_fused_infer_attention_out=fake_out_op,
+            )
+        )
+        with (
+            mock_patch(f"{ADN_MOD}.enable_custom_op", return_value=True),
+            mock_patch.object(adn_mod.torch, "ops", fake_ops),
+        ):
+            result = adn_mod._call_adn_fused_infer_attention_out(
+                query=query,
+                key=key,
+                value=value,
+                output=output,
+                attn_mask=None,
+                actual_seq_lengths_q=[1],
+                actual_seq_lengths_kv=[1],
+                block_table=block_table,
+                num_heads=NUM_HEADS,
+                scale_value=HEAD_DIM**-0.5,
+                input_layout="TND",
+                num_key_value_heads=NUM_KV_HEADS,
+                block_size=BLOCK_SIZE,
+                inner_precise=2,
+            )
+
+        self.assertIs(result, output)
+        self.assertEqual(len(calls), 1)
+        query_arg, key_arg, value_arg, output_arg, kwargs = calls[0]
+        self.assertIs(query_arg, query)
+        self.assertEqual(len(key_arg), 1)
+        self.assertEqual(len(value_arg), 1)
+        self.assertIs(key_arg[0], key)
+        self.assertIs(value_arg[0], value)
+        self.assertIs(output_arg, output)
+        self.assertIsNone(kwargs["attn_mask"])
+        self.assertEqual(kwargs["actual_seq_lengths_q"], [1])
+        self.assertEqual(kwargs["actual_seq_lengths_kv"], [1])
+        self.assertIs(kwargs["block_table"], block_table)
+        self.assertEqual(kwargs["inner_precise"], 2)
+
+    def test_disabled_custom_ops_fail_loud_without_fallback(self):
+        with mock_patch(f"{ADN_MOD}.enable_custom_op", return_value=False):
+            with self.assertRaisesRegex(RuntimeError, "There is no causal fallback"):
+                adn_mod._call_adn_fused_infer_attention_out(
+                    query=torch.zeros(1, NUM_HEADS, HEAD_DIM, dtype=torch.float16),
+                    key=make_cache(),
+                    value=make_cache(),
+                    output=torch.zeros(1, NUM_HEADS, HEAD_DIM, dtype=torch.float16),
+                    attn_mask=None,
+                    actual_seq_lengths_q=[1],
+                    actual_seq_lengths_kv=[1],
+                    block_table=torch.zeros(1, 1, dtype=torch.int32),
+                    num_heads=NUM_HEADS,
+                    scale_value=HEAD_DIM**-0.5,
+                    input_layout="TND",
+                    num_key_value_heads=NUM_KV_HEADS,
+                    block_size=BLOCK_SIZE,
+                    inner_precise=2,
+                )
 
 
 class TestAdnReturnShape(TestBase):

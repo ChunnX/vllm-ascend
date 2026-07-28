@@ -20,7 +20,7 @@ from vllm.forward_context import is_forward_context_available
 
 from vllm_ascend._310p.attention.metadata_builder import get_query_lens_cpu
 from vllm_ascend.ascend_forward_context import _EXTRA_CTX
-from vllm_ascend.utils import ACL_FORMAT_FRACTAL_NZ
+from vllm_ascend.utils import ACL_FORMAT_FRACTAL_NZ, enable_custom_op
 
 # The configuration this path covers. TP is deliberately not pinned: it slices
 # the head dimension and every rank runs the same attention on its own shard, so
@@ -50,30 +50,62 @@ def expected_queries_per_request(method):
     num_spec = ADN_SUPPORTED_METHODS[method]
     return num_spec + 1 if method == "dflash" else num_spec
 
-_adn_module = None
 
+def _call_adn_fused_infer_attention_out(
+    *,
+    query,
+    key,
+    value,
+    output,
+    attn_mask,
+    actual_seq_lengths_q,
+    actual_seq_lengths_kv,
+    block_table,
+    num_heads,
+    scale_value,
+    input_layout,
+    num_key_value_heads,
+    block_size,
+    inner_precise,
+):
+    """Call the vllm-ascend-owned ACLNN binding.
 
-def load_adn():
-    """Import adn_custom_ops on first real use and cache it.
-
-    Its package __init__ imports torchair at module scope, so importing eagerly
-    would make torchair a hard dependency of every 310P run.
+    The CANN operator keeps dynamic K/V inputs, so the Torch facade passes
+    one-element TensorLists while presenting the rest of the vLLM adapter with
+    ordinary cache tensors. The out variant writes directly into vLLM's caller
+    buffer and avoids the old PTA allocation plus copy.
     """
-    global _adn_module
-    if _adn_module is not None:
-        return _adn_module
-    try:
-        import adn_custom_ops
-    except Exception as exc:  # ImportError, or OSError from the .so, or ABI mismatch
+    if not enable_custom_op():
         raise RuntimeError(
-            "DFlash/DSpark non-causal draft attention on 310P requires the ADN custom "
-            "op package (adn_custom_ops + adn_custom_ops_lib + torchair). Install the "
-            "Ascend_Ops custom_opp and PTA wheels for this device. There is no "
-            "fallback: sending this path to the causal split-fuse kernel would return "
-            "plausible but wrong numbers, so startup fails instead."
+            "DFlash/DSpark non-causal draft attention on 310P requires the "
+            "vllm-ascend ADN custom op, but custom ops could not be loaded. Rebuild "
+            "and install vllm-ascend for ascend310p. There is no causal fallback."
+        )
+    try:
+        op = torch.ops._C_ascend.npu_adn_fused_infer_attention_out
+    except AttributeError as exc:
+        raise RuntimeError(
+            "The loaded vllm-ascend extension does not contain "
+            "_C_ascend.npu_adn_fused_infer_attention_out. Rebuild the extension and "
+            "its bundled 310P custom OPP; the installed wheel is likely stale."
         ) from exc
-    _adn_module = adn_custom_ops
-    return _adn_module
+
+    return op(
+        query,
+        [key],
+        [value],
+        output,
+        attn_mask=attn_mask,
+        actual_seq_lengths_q=actual_seq_lengths_q,
+        actual_seq_lengths_kv=actual_seq_lengths_kv,
+        block_table=block_table,
+        num_heads=num_heads,
+        scale_value=scale_value,
+        input_layout=input_layout,
+        num_key_value_heads=num_key_value_heads,
+        block_size=block_size,
+        inner_precise=inner_precise,
+    )
 
 
 def validate_adn_scope(*, vllm_config, query, key_cache, value_cache, num_heads, num_kv_heads, head_size):
@@ -175,13 +207,13 @@ def forward_parallel_draft_adn(self, query, attn_metadata, output):
     and never synthesize an all-zero causal mask to imitate it.
     """
     # ADN must never be captured into an ACLGraph. Its schema declares the
-    # lengths as SymInt[] (registration.cpp: actual_seq_lengths_q/kv), so the
+    # lengths as SymInt[] (the _C_ascend schema's actual_seq_lengths_q/kv), so the
     # Python lists would be frozen as constants at capture time -- and
     # actual_seq_lengths_kv grows every decode step, so replay would attend over
-    # stale ranges and be silently wrong. It also allocates its output per call
-    # with no out= variant, which capture cannot accept. A2/A3's FIA avoids both
-    # by taking the lengths as a tensor whose contents are updated in place; ADN
-    # has no such overload yet.
+    # stale ranges and be silently wrong. The bundled out variant removes the
+    # old per-call output allocation, but it does not make Python/SymInt lengths
+    # replay-safe. A2/A3's FIA avoids this by taking lengths as a tensor whose
+    # contents are updated in place; ADN has no such overload yet.
     #
     # The target running in ACLGraph is fine and expected: the drafter keeps
     # use_cuda_graph=False, so this path stays eager. Verify that per call rather
@@ -191,11 +223,9 @@ def forward_parallel_draft_adn(self, query, attn_metadata, output):
         raise RuntimeError(
             "ADN draft attention was reached during ACLGraph capture. It cannot be "
             "captured: its sequence lengths are SymInt[] (frozen as constants at "
-            "capture, while KV length grows every step) and it allocates its output "
-            "per call. Keep the drafter eager -- the target may still be captured."
+            "capture, while KV length grows every step). Keep the drafter eager -- "
+            "the target may still be captured."
         )
-
-    adn = load_adn()
 
     num_tokens = int(attn_metadata.num_actual_tokens)
     query_slice = query[:num_tokens]
@@ -259,6 +289,9 @@ def forward_parallel_draft_adn(self, query, attn_metadata, output):
     key_cache = self.key_cache
     value_cache = self.value_cache
     query_tnd = query_slice.reshape(num_tokens, self.num_heads, self.head_size)
+    # `view` is deliberate: unlike reshape, it cannot silently allocate a copy.
+    # The out operator must alias vLLM's caller-provided output buffer.
+    output_tnd = output_slice.view(num_tokens, self.num_heads, self.head_size)
 
     if not self._adn_scope_validated:
         validate_adn_scope(
@@ -272,10 +305,11 @@ def forward_parallel_draft_adn(self, query, attn_metadata, output):
         )
         self._adn_scope_validated = True
 
-    adn_out = adn.adn_fused_infer_attention(
+    adn_out = _call_adn_fused_infer_attention_out(
         query=query_tnd,
         key=key_cache,
         value=value_cache,
+        output=output_tnd,
         attn_mask=None,
         actual_seq_lengths_q=q_lens,
         actual_seq_lengths_kv=kv_lens,
@@ -286,7 +320,6 @@ def forward_parallel_draft_adn(self, query, attn_metadata, output):
         input_layout="TND",
         scale_value=self.scale,
         inner_precise=2,
-        force_call=False,
     )
 
     # ADN's contract is "output has the same shape as query". Check that, not just
@@ -303,7 +336,4 @@ def forward_parallel_draft_adn(self, query, attn_metadata, output):
             f"{output_slice.numel()}"
         )
 
-    # ADN allocates its own output and has no `out=`, so the MVP eats one copy.
-    # Do not change the operator ABI before correctness closes.
-    output_slice.copy_(adn_out.reshape(output_slice.shape))
     return output

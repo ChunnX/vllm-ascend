@@ -20,8 +20,8 @@ cache vLLM already allocated and wrote, with no gather, no NZ->ND conversion and
 no second copy. This script is what makes that assumption a fact. If it fails,
 the adapter needs rewriting, so run it before anything downstream.
 
-Deliberately not a pytest test: it needs real 310P hardware plus the ADN custom
-OPP and PTA wheels, which CI hosts do not have. Run it by hand:
+Deliberately not a pytest test: it needs real 310P hardware plus a vllm-ascend
+build containing the bundled ADN OPP, which CI hosts do not have. Run it by hand:
 
     python tests/e2e/_310p/adn/smoke_adn_nz_readback.py
 
@@ -57,14 +57,16 @@ def require_env():
     except ImportError:
         sys.exit("torch_npu is unavailable: this script must run on the 310P host.")
     try:
-        import adn_custom_ops  # noqa: F401
+        from vllm_ascend.utils import enable_custom_op
+
+        if not enable_custom_op():
+            raise RuntimeError("enable_custom_op() returned False")
+        getattr(torch.ops._C_ascend, "npu_adn_fused_infer_attention_out")
     except Exception as exc:
         sys.exit(
-            f"adn_custom_ops could not be imported ({exc}).\n"
-            "If the failure names torchair: this scope never uses it, but "
-            "adn_custom_ops/__init__.py imports it at module scope, so it has to be "
-            "importable regardless. Otherwise build and install the Ascend_Ops "
-            "custom_opp and PTA wheels; see Ascend_Ops/AGENTS.md.\n"
+            f"The bundled _C_ascend ADN op could not be loaded ({exc}).\n"
+            "Build and install vllm-ascend for ascend310p so its C++ extension and "
+            "custom OPP are installed together.\n"
             "This gate cannot be skipped -- the adapter has no fallback path."
         )
 
@@ -175,8 +177,6 @@ def golden(query, key_nd, value_nd, q_lens, kv_lens, num_heads, num_kv_heads, *,
 
 def run_case(name, q_lens, kv_lens, *, value_builder=None, assert_accuracy=True,
              num_heads=NUM_HEADS, num_kv_heads=NUM_KV_HEADS):
-    import adn_custom_ops
-
     batch = len(q_lens)
     max_kv = max(kv_lens)
     pages_per_req = (max_kv + BLOCK_SIZE - 1) // BLOCK_SIZE
@@ -200,10 +200,13 @@ def run_case(name, q_lens, kv_lens, *, value_builder=None, assert_accuracy=True,
     key_cache, value_cache = allocate_production_caches(num_blocks, num_kv_heads)
     write_cache(key_cache, value_cache, key_nd.to(DEVICE), value_nd.to(DEVICE), kv_lens, block_table_cpu)
 
-    out = adn_custom_ops.adn_fused_infer_attention(
-        query=query.to(DEVICE),
-        key=key_cache,
-        value=value_cache,
+    query_npu = query.to(DEVICE)
+    out = torch.empty_like(query_npu)
+    returned = torch.ops._C_ascend.npu_adn_fused_infer_attention_out(
+        query_npu,
+        [key_cache],
+        [value_cache],
+        out,
         attn_mask=None,
         actual_seq_lengths_q=list(q_lens),
         actual_seq_lengths_kv=list(kv_lens),
@@ -214,8 +217,8 @@ def run_case(name, q_lens, kv_lens, *, value_builder=None, assert_accuracy=True,
         input_layout="TND",
         scale_value=SCALE,
         inner_precise=2,
-        force_call=False,
     )
+    assert returned.data_ptr() == out.data_ptr(), "out operator did not alias the caller buffer"
 
     reference = golden(query, key_nd, value_nd, q_lens, kv_lens, num_heads, num_kv_heads)
     actual = out.cpu().float()

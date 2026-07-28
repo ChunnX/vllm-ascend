@@ -45,6 +45,9 @@
 #include "attention/lightning_indexer_quant/lightning_indexer_quant_torch_adpt.h"
 #include "attention/ngram_spec_decode/ngram_spec_decode_torch_adpt.h"
 #include "moe/causal_conv1d_v310/causal_conv1d_310_torch_adpt.h"
+#ifdef ASCEND_PLATFORM_310P
+#include "attention/adn_fused_infer_attention/adn_fused_infer_attention_torch_adpt.h"
+#endif
 #include "attention/recurrent_gated_delta_rule/recurrent_gated_delta_rule_torch_adpt.h"
 #include "attention/recurrent_gated_delta_rule_v310/recurrent_gated_delta_rule_310_torch_adpt.h"
 #include "attention/store_kv_block/store_kv_block_torch_adpt.h"
@@ -2070,6 +2073,38 @@ TORCH_LIBRARY_EXPAND(CONCAT(_C, _ascend), ops)
         "                         int pad_slot_id, "
         "                         int run_mode) -> (Tensor output)");
     ops.impl("npu_causal_conv1d_310", torch::kPrivateUse1, &vllm_ascend::npu_causal_conv1d_310);
+
+    ops.def(
+        "npu_adn_fused_infer_attention("
+        "    Tensor query, Tensor[] key, Tensor[] value, *, "
+        "    Tensor? attn_mask=None, "
+        "    SymInt[]? actual_seq_lengths_q=None, "
+        "    SymInt[]? actual_seq_lengths_kv=None, "
+        "    Tensor? block_table=None, "
+        "    int num_heads=1, float scale_value=1.0, "
+        "    str input_layout='BSH', int num_key_value_heads=0, "
+        "    int block_size=0, int inner_precise=1"
+        ") -> Tensor");
+    ops.impl(
+        "npu_adn_fused_infer_attention",
+        torch::kPrivateUse1,
+        &vllm_ascend::npu_adn_fused_infer_attention);
+
+    ops.def(
+        "npu_adn_fused_infer_attention_out("
+        "    Tensor query, Tensor[] key, Tensor[] value, Tensor(a!) output, *, "
+        "    Tensor? attn_mask=None, "
+        "    SymInt[]? actual_seq_lengths_q=None, "
+        "    SymInt[]? actual_seq_lengths_kv=None, "
+        "    Tensor? block_table=None, "
+        "    int num_heads=1, float scale_value=1.0, "
+        "    str input_layout='BSH', int num_key_value_heads=0, "
+        "    int block_size=0, int inner_precise=1"
+        ") -> Tensor(a!)");
+    ops.impl(
+        "npu_adn_fused_infer_attention_out",
+        torch::kPrivateUse1,
+        &vllm_ascend::npu_adn_fused_infer_attention_out);
 
     ops.def(
         "npu_recurrent_gated_delta_rule_310(Tensor query, "

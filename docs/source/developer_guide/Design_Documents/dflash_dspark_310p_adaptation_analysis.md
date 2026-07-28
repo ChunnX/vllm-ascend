@@ -12,7 +12,7 @@
 > - vLLM 基线：`9459fc647105f10f754697b3bf136d194564d603`
 > - vLLM Ascend 基线：`c0d41984a9b13eb531916a4e0533f4088e312d0d`
 > - Ascend_Ops/ADN 基线：`914fa8d9d18e87d2b26031292537a136150eb413`
-> - 当前产物：广义背景分析与 Qwen3-8B 最终实施计划；尚未提交功能代码
+> - 当前产物：广义背景分析、Qwen3-8B 适配，以及内置于 vllm-ascend `csrc` 的 310P ADN OPP
 
 ## 1. 结论摘要
 
@@ -29,8 +29,8 @@ attention 侧结论收敛为：
    `value_cache` 分别是 ADN 要求的 rank-4 NZ cache，首选方案是直接传入，不做 gather 或 dense materialize；但
    vLLM 的 NZ 分配描述符与
    `_npu_reshape_and_cache` 写入结果仍需一次 ADN 端到端真机 smoke test，才能把“可直读”正式闭环。
-3. **ADN 的 Python ABI 已明确。** 它返回单个新分配 Tensor，没有 `out=` 参数；必须显式传 `inner_precise=2`，并保持
-   `force_call=False`。
+3. **ADN 已纳入 vllm-ascend 的 `_C_ascend` ABI。** functional 接口返回 query 同形 Tensor；生产路径使用
+   caller-provided-output 接口，避免旧 PTA 的临时分配与 Python `copy_`。两者都必须显式传 `inner_precise=2`。
 4. **最大的数据协议陷阱是 q-len。** 910 FIA 常用 cumulative query endpoint，而 ADN 要每个 request 的原始 query
    长度。对 ragged batch，误传不会只是精度偏差，而会直接造成 batch/token 划分错误。
 5. **ADN 本身没有 910 FIA 的 `q_len <= 16` 限制。** 它按 `head_dim` 使用 16 或 32 的 query step，较长 query 会继续
@@ -160,51 +160,50 @@ Ascend_Ops 已定义四个 no-mask ATK case：
 这些文件证明已有测试覆盖设计，但仓库没有保存本次硬件运行结果。因此本文只声称“源码实现和 ATK case 已覆盖”，不声称
 “当前环境已经真机通过”。
 
-### 4.2 精确 Python ABI
+### 4.2 vllm-ascend 内置 Torch ABI
 
-公开 wrapper 位于：
+Ascend_Ops 的 OPP kernel、OpDef、shape/type inference 和 tiling 已迁入：
 
 ```text
-Ascend_Ops/custom_pta/adn_custom_ops/adn_fused_infer_attention.py
+vllm-ascend/csrc/attention/adn_fused_infer_attention/
 ```
 
-核心签名为：
+由 vllm-ascend 自己的扩展提供两个接口：
 
 ```python
-adn_fused_infer_attention(
+torch.ops._C_ascend.npu_adn_fused_infer_attention(
     query,
-    key,
-    value,
+    [key_cache],
+    [value_cache],
     attn_mask=None,
     actual_seq_lengths_q=None,
     actual_seq_lengths_kv=None,
-    dequant_scale1=None,
-    quant_scale1=None,
-    dequant_scale2=None,
-    quant_scale2=None,
-    quant_offset2=None,
-    antiquant_scale=None,
-    antiquant_offset=None,
     block_table=None,
-    kv_padding_size=None,
     num_heads=1,
     scale_value=1.0,
     input_layout="BSH",
     num_key_value_heads=0,
     block_size=0,
     inner_precise=1,
-    force_call=False,
+)
+
+torch.ops._C_ascend.npu_adn_fused_infer_attention_out(
+    query,
+    [key_cache],
+    [value_cache],
+    output,
+    # 其余 keyword 参数同上
 )
 ```
 
 310P active path 的注意事项：
 
-- Python wrapper 的 `key`、`value` 参数是单 Tensor；wrapper 内部才包装为 `[key]`、`[value]`。
+- CANN OpDef 的 K/V 是 dynamic inputs，Torch ABI 因此显式接收长度为 1 的 `[key]`、`[value]`。
 - 底层 schema 的 lengths 是 `SymInt[]?`，应传 Python `list[int]`，不是 NPU Tensor。
-- 返回值是单个 Tensor，shape 与 query 相同；不是 `(attention_out, softmax_lse)` tuple。
-- PTA 会新分配 output；当前接口没有 `out=`。
+- functional 返回单个 query 同形 Tensor；`out` 版本返回并修改调用者提供的同形 buffer。
+- DFlash/DSpark 热路径使用 `out` 版本，不再产生旧 PTA output 分配和后续 `copy_`。
 - 必须显式传 `inner_precise=2`，否则不会进入当前 310P custom path。
-- `force_call=True` 会绕回 `torch_npu.npu_incre_flash_attention`，310P adapter 必须保持 `False`。
+- 新 ABI 没有 `force_call`；也不会绕回语义不同的 causal attention。
 - API 没有 `causal` 或 `sparse_mode` 参数；因果语义由 mask 是否为空决定。
 - 必须显式传真实的 `num_key_value_heads`；默认 0 会破坏 Qwen GQA 的 cache 寻址。
 
@@ -215,14 +214,14 @@ adn_fused_infer_attention(
 | query | FP16 TND `[sum(q_lens), Nq, D]` | `query[:num_actual_tokens]` reshape 为 TND |
 | key | FP16 NZ `[P, Nkv*D/16, Bs, 16]` | `self.key_cache` 直接传入 |
 | value | 与 key 相同 | `self.value_cache` 直接传入 |
-| output | 与 query shape/dtype 相同 | copy 到 vLLM 预分配 output slice |
+| output | 与 query shape/dtype 相同 | `_out` 接口直接写 vLLM 预分配 output slice |
 | attn_mask | `None` | 固定 `None`，表示 non-causal |
 | q lengths | `list[int]`，每请求 raw q-len | 310P `query_lens_cpu` |
 | KV lengths | `list[int]`，每请求总 KV-len | `attn_metadata.seq_lens_list` |
 | block_table | NPU INT32 `[B, max_blocks]` | draft KV group 的 `block_tables` |
 | num_heads | local query head 数 | `self.num_heads` |
 | num_key_value_heads | local KV head 数 | `self.num_kv_heads` |
-| block_size | cache 物理 page token 数 | `self.key_cache.shape[-2]` |
+| block_size | cache 物理 page token 数 | 固定传 128，并校验 `self.key_cache.shape[-2]` 一致 |
 | scale_value | attention scale | `self.scale` |
 | input_layout | `"TND"` | 固定 `"TND"` |
 | inner_precise | `2` | 固定 `2` |
@@ -355,25 +354,24 @@ D != 256: q_step = 32
 本期常见的 DFlash K=8 和 DSpark K=7 不会触发该断言。若要支持更大的 checkpoint block，应在 310P builder 中解耦该
 FIA 限制，同时回归 batch classification；不能只删除 assert。
 
-### 4.8 后续图能力背景与当前 package 依赖
+### 4.8 后续图能力背景与当前内置 OPP
 
-ADN 已实现：
+内置 `_C_ascend` 接口已实现：
 
-- `@torch._dynamo.allow_in_graph`；
-- Meta implementation；
-- TorchAir FX -> GE converter；
-- `torch.compile`/TorchAir 示例。
+- PrivateUse1 implementation；
+- functional 与 caller-provided-output 两个 ABI；
+- 对应的 Meta implementation；
+- OPP 与 vllm-ascend wheel 的统一构建和安装。
 
 但这些不能证明 vLLM MRV1 的 ACLGraph capture/replay 已可用：
 
-- converter 会把 Python length list 转成 GE Const；
-- PTA 每次动态分配 output；
+- Python/SymInt length list 在 capture 时会固化为常量；
 - 尚无 `torch.npu.NPUGraph` 下动态 batch/length replay 的结果；
-- 当前 Ascend_Ops 示例只覆盖 TorchAir 图构建，不等价于 vLLM drafter graph。
+- KV length 每步增长，因此用旧长度 replay 会静默算错。
 
-另外，`adn_custom_ops/__init__.py` 顶层直接导入 `torchair`。即使只跑 eager，目标镜像也必须能同时导入
-`adn_custom_ops_lib` 和 `torchair`。因此 ADN 应 lazy import，但 feature 被启用时必须 fail fast，不能静默回退到 causal
-split-fuse attention。
+迁移后 eager 路径不再依赖 `adn_custom_ops`、`adn_custom_ops_lib` 或 TorchAir。运行前由
+`enable_custom_op()` 加载 vllm-ascend 扩展与随 wheel 安装的 custom OPP；加载失败时必须 fail fast，不能静默回退到
+causal split-fuse attention。
 
 ## 5. 310P 当前缺口与适配设计
 
@@ -461,8 +459,6 @@ vllm_ascend/_310p/attention/adn_fused_infer_attention.py
 
 ```python
 def forward_parallel_draft_adn(self, query, attn_metadata, output):
-    import adn_custom_ops
-
     num_tokens = int(attn_metadata.num_actual_tokens)
     query_tnd = query[:num_tokens].reshape(
         num_tokens,
@@ -479,11 +475,13 @@ def forward_parallel_draft_adn(self, query, attn_metadata, output):
     key_cache = self.key_cache
     value_cache = self.value_cache
     block_size = key_cache.shape[-2]
+    output_tnd = output[:num_tokens].view_as(query_tnd)
 
-    adn_out = adn_custom_ops.adn_fused_infer_attention(
-        query=query_tnd,
-        key=key_cache,
-        value=value_cache,
+    torch.ops._C_ascend.npu_adn_fused_infer_attention_out(
+        query_tnd,
+        [key_cache],
+        [value_cache],
+        output_tnd,
         attn_mask=None,
         actual_seq_lengths_q=q_lens,
         actual_seq_lengths_kv=kv_lens,
@@ -494,11 +492,7 @@ def forward_parallel_draft_adn(self, query, attn_metadata, output):
         input_layout="TND",
         scale_value=self.scale,
         inner_precise=2,
-        force_call=False,
     )
-
-    output_slice = output[:num_tokens]
-    output_slice.copy_(adn_out.reshape_as(output_slice))
     return output
 ```
 
@@ -515,8 +509,8 @@ adapter 调用前必须校验：
 
 最后一项全量检查不应放在每层热路径，可在 debug/test 模式执行。
 
-ADN 暂无 `out=`，MVP 必然多一次 output copy。若 profiling 证明该 copy 明显影响收益，再考虑给 PTA 增加 out/in-place ABI；
-这不是首轮 correctness 的前置条件。
+内置 `_out` ABI 直接复用调用者 buffer，因此不再需要旧 PTA 分配或 output copy。该优化不改变 graph 约束：长度仍是
+Python/SymInt list，drafter 仍必须保持 eager。
 
 ### 5.4 metadata 与 mask
 
@@ -671,7 +665,8 @@ DSpark attention 与 DFlash 共用 non-causal backbone，但额外依赖：
 | P0 | `_310p/spec_decode/parallel_drafting_inputs.py` | 新增无 Triton DFlash/DSpark 输入展开 |
 | P0 | `spec_decode/dflash_proposer.py` | 按设备 dispatch input helper，310P 不调用 Triton |
 | P0 | `spec_decode/dspark_proposer.py` | 同上，并保留 DSpark sampling-index 语义 |
-| P0 | `_310p/attention/adn_fused_infer_attention.py` | lazy import、ABI/shape guard、ADN 调用与 output copy |
+| P0 | `_310p/attention/adn_fused_infer_attention.py` | ABI/shape guard、raw lengths、直接 `_C_ascend` out 调用 |
+| P0 | `csrc/attention/adn_fused_infer_attention/` | 内置 OPP kernel/host/tiling 和 Torch ACLNN adapter |
 | P0 | `_310p/attention/attention_v1.py` | non-causal draft 在 split-fuse 前路由 ADN |
 | 当前 P0（复用现状） | `_310p/attention/metadata_builder.py` | 直接复用现有 `query_lens_cpu`；当前无需修改 |
 | P0 | `patch/worker/__init__.py` | 310P 加载 Qwen3 DFlash/DSpark patch |
@@ -679,10 +674,9 @@ DSpark attention 与 DFlash 共用 non-causal backbone，但额外依赖：
 | Future | `worker/model_runner_v1.py` | Qwen3.6/多 group 时再传完整 per-group block sizes |
 | Future | `spec_decode/llm_base_proposer.py` | 通用 block-size plumbing；当前 Qwen3-8B 固定 128 |
 | P0 | draft model/capability validation | 精确限制指定 checkpoint、MRV1/eager、FP16、TP=2、D128/B128 |
-| Phase 0 证据 | 310P build/Docker | 记录版本矩阵；当前计划不要求修改构建文件 |
-| P0 | capability validation | FP16、TND、rank-4 NZ、local heads 16/4、B128、ADN package、无 Triton |
+| Phase 0 证据 | 310P build/Docker | 记录版本矩阵并验证 bundled OPP 构建/安装 |
+| P0 | capability validation | FP16、TND、rank-4 NZ、local heads 16/4、B128、内置 ADN、无 Triton |
 | Future | ACLGraph 相关模块 | 动态 lengths、output 地址和 replay 验证 |
-| Future | ADN PTA | profiling 后评估增加 `out=`，消除一次 copy |
 | Future | 310P builder | 支持其他 speculative K，并回归 batch classification |
 
 设备差异应尽量收敛到 `_310p`；通用 proposer 只增加小型 dispatch seam，避免改变已工作的 A2/A3 路径。
@@ -711,7 +705,7 @@ ADN 算子的能力上限不等于本仓库当前承诺的支持范围。当前 
 | sampling | greedy；`temperature=0`；prefix caching 关闭 |
 | Triton | 允许未安装；任何 DFlash/DSpark 路径不得触达 Triton |
 | qknorm+RoPE fusion | 无 Triton时关闭 |
-| ADN package | OPP、PTA、torchair 都可加载，且小型 smoke test 成功 |
+| ADN custom op | `_C_ascend` 与随 wheel 安装的 310P OPP 可加载，且小型 smoke test 成功 |
 
 若任一 attention capability 不满足，应拒绝启动 DFlash/DSpark；绝不能回退到 310P causal split-fuse，因为那会产生静默错误。
 Qwen3.6、其他 checkpoint/K、D256/B64、通用 GQA envelope 和 graph gate 需要另立计划后才能开放。
@@ -737,15 +731,15 @@ Qwen3.6、其他 checkpoint/K、D256/B64、通用 GQA envelope 和 graph gate �
 
 #### ADN adapter mock
 
-mock `adn_custom_ops.adn_fused_infer_attention`，精确断言：
+mock `_call_adn_fused_infer_attention_out`，精确断言：
 
 - `attn_mask is None`；
-- `inner_precise == 2` 且 `force_call is False`；
-- q-len 使用 raw `[2, 3, 1]`，不是 cumulative `[2, 5, 6]`；
+- `inner_precise == 2`，并且不存在旧 `force_call` 参数；
+- DSpark q-len 使用 raw `[7, 7, 7]`，不是 cumulative `[7, 14, 21]`；
 - KV-len 包含本轮 query；
 - K/V cache 对象直接传入，没有 clone/gather；
 - `num_key_value_heads`、scale、block size 和 draft group block table 正确；
-- 单 Tensor 返回值按 output shape copy；
+- 直接传入 query 同形的 caller output buffer；
 - causal prefill/decode、MTP 和 target attention 不调用 ADN。
 
 #### 当前 patch 与 RoPE
@@ -811,11 +805,11 @@ MHA/MQA、D256/B64 和跨 q-step 属于算子广义回归，不是当前仓库 M
 correctness 通过后记录：
 
 - target-only 与 DFlash/DSpark 的吞吐、TPOT、平均 accepted tokens；
-- no-Triton input prep、context KV precompute、ADN、output copy、Markov head 分段耗时；
-- target cache、draft cache、hidden-state buffer、ADN workspace/临时 output 的内存；
+- no-Triton input prep、context KV precompute、ADN、Markov head 分段耗时；
+- target cache、draft cache、hidden-state buffer、ADN workspace 的内存；
 - 不同 batch、context length 和 K 下的收益拐点。
 
-若 output copy 成为主要瓶颈，再扩展 ADN PTA `out=`；不要在精度闭环前改算子 ABI。
+内置 `_out` ABI 已消除旧 PTA 的 output copy；性能阶段仍需确认 ACLNN workspace 与 kernel 本身的占比。
 
 ## 9. 路线图关系
 
@@ -837,7 +831,7 @@ correctness 通过后记录：
 ### Future 2：MRV1 ACLGraph
 
 - 验证 ADN capture/replay；
-- 处理 Python length const、output 动态分配和静态地址；
+- 处理 Python length const 与 graph replay 的动态长度；`_out` 地址由调用者管理；
 - 为 K/K+1、batch bucket 建立 graph key；
 - 对比 eager 数值与性能。
 
@@ -848,7 +842,7 @@ correctness 通过后记录：
 | 状态 | 风险/问题 | 结论或措施 |
 | --- | --- | --- |
 | 已闭环 | `None` 是否 non-causal | 是；host/kernel/ATK 三层源码确认 |
-| 已闭环 | ADN Python signature | 已确认，返回单 Tensor、无 `out=` |
+| 已闭环 | ADN Torch signature | `_C_ascend` functional 与 caller-provided-output ABI 已接入 |
 | 结构闭环 | 310P NZ cache shape/address | 与 ADN 合同一致，首选直接传入 |
 | 已闭环 | ADN 是否限制 q<=16 | 不限制；按 16/32 q-step 分块 |
 | 待真机 | vLLM NZ descriptor/writer 与 ADN 端到端读取 | `_npu_reshape_and_cache` page/slot 定向测试 |
@@ -856,9 +850,8 @@ correctness 通过后记录：
 | 待实现 | 310P 五层/profile RoPE | 逐层接返回值；profile flag 覆盖 context/query 两次 forward |
 | Future | Qwen3.6 draft KV group | 另立计划后再处理 per-group size 和真实 block size |
 | Future | Qwen3.6 draft dtype 继承 | 另立计划后再决定 FP16/BF16 策略 |
-| 待环境 | ADN OPP/PTA/torchair 版本 | 镜像固定并启动 smoke test |
+| 待环境 | bundled ADN OPP/CANN/torch-npu 版本 | 镜像固定并启动 smoke test |
 | Future | MRV1 ACLGraph | 另立计划后验证 capture/replay |
-| Future | ADN output copy 开销 | correctness 闭环后 profiling，再决定是否扩 PTA ABI |
 | 待验证 | 目标 checkpoint dtype/head/block | 启动 feature gate，不按模型名猜测 |
 | 待验证 | DSpark reduced vocab/Markov sampling | 单测与 E2E 覆盖 |
 
@@ -877,7 +870,7 @@ correctness 通过后记录：
 - ADN TND no-mask 真机精度与 future-token dominance 测试通过；
 - Qwen3-8B DFlash K=8 和 DSpark K=7 eager E2E 与 baseline token-identical；
 - 两种方法都产生 drafts 和 accepted tokens，并通过校准后的 310P eager acceptance baseline；
-- 镜像固定了可复现的 vLLM/ADN/CANN/torch-npu/torchair 版本。
+- 镜像固定了可复现的 vLLM Ascend/CANN/torch-npu 版本。
 
 Qwen3.6、ACLGraph、MRV2、随机采样、D256/B64、通用多 group 和性能优化不属于当前 MVP，
 不得作为隐藏验收项；需要时另立计划。
@@ -905,6 +898,10 @@ Qwen3.6、ACLGraph、MRV2、随机采样、D256/B64、通用多 group 和性能�
 
 ### 12.2 vLLM Ascend
 
+- `csrc/attention/adn_fused_infer_attention/`
+- `csrc/attention/adn_fused_infer_attention/adn_fused_infer_attention_torch_adpt.h`
+- `csrc/torch_binding.cpp`
+- `csrc/torch_binding_meta.cpp`
 - `vllm_ascend/spec_decode/dflash_proposer.py`
 - `vllm_ascend/spec_decode/dspark_proposer.py`
 - `vllm_ascend/spec_decode/llm_base_proposer.py`
