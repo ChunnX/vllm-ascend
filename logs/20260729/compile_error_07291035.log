@@ -1,0 +1,740 @@
+[root@36ec83f85b6d vllm-ascend]# SOC_VERSION=ascend310p1 pip install -e . --no-build-isolation
+Obtaining file:///opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend
+  Checking if build backend supports build_editable ... done
+  Preparing editable metadata (pyproject.toml) ... done
+Requirement already satisfied: cmake>=3.26 in /usr/local/python3.12.13/lib/python3.12/site-packages (from vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (4.4.0)
+Requirement already satisfied: decorator in /usr/local/python3.12.13/lib/python3.12/site-packages (from vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (5.1.1)
+Requirement already satisfied: einops in /usr/local/python3.12.13/lib/python3.12/site-packages (from vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (0.8.2)
+Requirement already satisfied: numpy in /usr/local/python3.12.13/lib/python3.12/site-packages (from vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (1.26.4)
+Requirement already satisfied: packaging in /usr/local/python3.12.13/lib/python3.12/site-packages (from vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (26.2)
+Requirement already satisfied: pip in /usr/local/python3.12.13/lib/python3.12/site-packages (from vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (26.1.1)
+Requirement already satisfied: pybind11 in /usr/local/python3.12.13/lib/python3.12/site-packages (from vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (3.0.4)
+Requirement already satisfied: pyyaml in /usr/local/python3.12.13/lib/python3.12/site-packages (from vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (6.0.3)
+Requirement already satisfied: regex in /usr/local/python3.12.13/lib/python3.12/site-packages (from vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (2026.7.19)
+Requirement already satisfied: scipy in /usr/local/python3.12.13/lib/python3.12/site-packages (from vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (1.13.1)
+Requirement already satisfied: pandas in /usr/local/python3.12.13/lib/python3.12/site-packages (from vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (3.0.3)
+Requirement already satisfied: psutil in /usr/local/python3.12.13/lib/python3.12/site-packages (from vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (6.0.0)
+Requirement already satisfied: setuptools>=64 in /usr/local/python3.12.13/lib/python3.12/site-packages (from vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (80.10.2)
+Requirement already satisfied: setuptools-scm>=8 in /usr/local/python3.12.13/lib/python3.12/site-packages (from vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (10.2.1)
+Requirement already satisfied: torch==2.10.0 in /usr/local/python3.12.13/lib/python3.12/site-packages (from vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (2.10.0+cpu)
+Requirement already satisfied: torch-npu==2.10.0.post2 in /usr/local/python3.12.13/lib/python3.12/site-packages (from vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (2.10.0.post2)
+Requirement already satisfied: torchvision==0.25.0 in /usr/local/python3.12.13/lib/python3.12/site-packages (from vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (0.25.0+cpu)
+Requirement already satisfied: torchaudio==2.10.0 in /usr/local/python3.12.13/lib/python3.12/site-packages (from vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (2.10.0+cpu)
+Requirement already satisfied: wheel in /usr/local/python3.12.13/lib/python3.12/site-packages (from vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (0.47.0)
+Requirement already satisfied: xgrammar>=0.1.30 in /usr/local/python3.12.13/lib/python3.12/site-packages (from vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (0.2.3)
+Requirement already satisfied: pandas-stubs in /usr/local/python3.12.13/lib/python3.12/site-packages (from vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (3.0.3.260530)
+Requirement already satisfied: compressed_tensors>=0.11.0 in /usr/local/python3.12.13/lib/python3.12/site-packages (from vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (0.17.0)
+Requirement already satisfied: msgpack in /usr/local/python3.12.13/lib/python3.12/site-packages (from vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (1.2.0)
+Requirement already satisfied: quart in /usr/local/python3.12.13/lib/python3.12/site-packages (from vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (0.20.0)
+Requirement already satisfied: numba in /usr/local/python3.12.13/lib/python3.12/site-packages (from vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (0.66.0)
+Requirement already satisfied: memfabric_hybrid in /usr/local/python3.12.13/lib/python3.12/site-packages (from vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (1.1.3)
+Requirement already satisfied: memcache_hybrid in /usr/local/python3.12.13/lib/python3.12/site-packages (from vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (1.1.3)
+Requirement already satisfied: arctic-inference==0.1.1 in /usr/local/python3.12.13/lib/python3.12/site-packages (from vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (0.1.1)
+Requirement already satisfied: transformers==5.14.1 in /usr/local/python3.12.13/lib/python3.12/site-packages (from vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (5.14.1)
+Requirement already satisfied: fastapi<0.124.0 in /usr/local/python3.12.13/lib/python3.12/site-packages (from vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (0.123.10)
+Requirement already satisfied: filelock in /usr/local/python3.12.13/lib/python3.12/site-packages (from torch==2.10.0->vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (3.29.4)
+Requirement already satisfied: typing-extensions>=4.10.0 in /usr/local/python3.12.13/lib/python3.12/site-packages (from torch==2.10.0->vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (4.15.0)
+Requirement already satisfied: sympy>=1.13.3 in /usr/local/python3.12.13/lib/python3.12/site-packages (from torch==2.10.0->vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (1.14.0)
+Requirement already satisfied: networkx>=2.5.1 in /usr/local/python3.12.13/lib/python3.12/site-packages (from torch==2.10.0->vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (3.6.1)
+Requirement already satisfied: jinja2 in /usr/local/python3.12.13/lib/python3.12/site-packages (from torch==2.10.0->vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (3.1.6)
+Requirement already satisfied: fsspec>=0.8.5 in /usr/local/python3.12.13/lib/python3.12/site-packages (from torch==2.10.0->vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (2026.6.0)
+Requirement already satisfied: pillow!=8.3.*,>=5.3.0 in /usr/local/python3.12.13/lib/python3.12/site-packages (from torchvision==0.25.0->vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (12.3.0)
+Requirement already satisfied: huggingface-hub<2.0,>=1.5.0 in /usr/local/python3.12.13/lib/python3.12/site-packages (from transformers==5.14.1->vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (1.24.0)
+Requirement already satisfied: tokenizers<=0.23.0,>=0.22.0 in /usr/local/python3.12.13/lib/python3.12/site-packages (from transformers==5.14.1->vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (0.22.2)
+Requirement already satisfied: typer in /usr/local/python3.12.13/lib/python3.12/site-packages (from transformers==5.14.1->vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (0.27.0)
+Requirement already satisfied: safetensors>=0.8.0 in /usr/local/python3.12.13/lib/python3.12/site-packages (from transformers==5.14.1->vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (0.8.0)
+Requirement already satisfied: tqdm>=4.60 in /usr/local/python3.12.13/lib/python3.12/site-packages (from transformers==5.14.1->vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (4.68.2)
+Requirement already satisfied: starlette<0.51.0,>=0.40.0 in /usr/local/python3.12.13/lib/python3.12/site-packages (from fastapi<0.124.0->vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (0.50.0)
+Requirement already satisfied: pydantic!=1.8,!=1.8.1,!=2.0.0,!=2.0.1,!=2.1.0,<3.0.0,>=1.7.4 in /usr/local/python3.12.13/lib/python3.12/site-packages (from fastapi<0.124.0->vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (2.13.4)
+Requirement already satisfied: annotated-doc>=0.0.2 in /usr/local/python3.12.13/lib/python3.12/site-packages (from fastapi<0.124.0->vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (0.0.4)
+Requirement already satisfied: click<9.0.0,>=8.4.2 in /usr/local/python3.12.13/lib/python3.12/site-packages (from huggingface-hub<2.0,>=1.5.0->transformers==5.14.1->vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (8.4.2)
+Requirement already satisfied: hf-xet<2.0.0,>=1.5.1 in /usr/local/python3.12.13/lib/python3.12/site-packages (from huggingface-hub<2.0,>=1.5.0->transformers==5.14.1->vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (1.5.2)
+Requirement already satisfied: httpx<1,>=0.23.0 in /usr/local/python3.12.13/lib/python3.12/site-packages (from huggingface-hub<2.0,>=1.5.0->transformers==5.14.1->vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (0.28.1)
+Requirement already satisfied: anyio in /usr/local/python3.12.13/lib/python3.12/site-packages (from httpx<1,>=0.23.0->huggingface-hub<2.0,>=1.5.0->transformers==5.14.1->vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (4.14.2)
+Requirement already satisfied: certifi in /usr/local/python3.12.13/lib/python3.12/site-packages (from httpx<1,>=0.23.0->huggingface-hub<2.0,>=1.5.0->transformers==5.14.1->vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (2026.5.20)
+Requirement already satisfied: httpcore==1.* in /usr/local/python3.12.13/lib/python3.12/site-packages (from httpx<1,>=0.23.0->huggingface-hub<2.0,>=1.5.0->transformers==5.14.1->vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (1.0.9)
+Requirement already satisfied: idna in /usr/local/python3.12.13/lib/python3.12/site-packages (from httpx<1,>=0.23.0->huggingface-hub<2.0,>=1.5.0->transformers==5.14.1->vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (3.16)
+Requirement already satisfied: h11>=0.16 in /usr/local/python3.12.13/lib/python3.12/site-packages (from httpcore==1.*->httpx<1,>=0.23.0->huggingface-hub<2.0,>=1.5.0->transformers==5.14.1->vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (0.16.0)
+Requirement already satisfied: annotated-types>=0.6.0 in /usr/local/python3.12.13/lib/python3.12/site-packages (from pydantic!=1.8,!=1.8.1,!=2.0.0,!=2.0.1,!=2.1.0,<3.0.0,>=1.7.4->fastapi<0.124.0->vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (0.7.0)
+Requirement already satisfied: pydantic-core==2.46.4 in /usr/local/python3.12.13/lib/python3.12/site-packages (from pydantic!=1.8,!=1.8.1,!=2.0.0,!=2.0.1,!=2.1.0,<3.0.0,>=1.7.4->fastapi<0.124.0->vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (2.46.4)
+Requirement already satisfied: typing-inspection>=0.4.2 in /usr/local/python3.12.13/lib/python3.12/site-packages (from pydantic!=1.8,!=1.8.1,!=2.0.0,!=2.0.1,!=2.1.0,<3.0.0,>=1.7.4->fastapi<0.124.0->vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (0.4.2)
+Requirement already satisfied: loguru in /usr/local/python3.12.13/lib/python3.12/site-packages (from compressed_tensors>=0.11.0->vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (0.7.3)
+Requirement already satisfied: vcs-versioning<3,>=2.0.0.dev0 in /usr/local/python3.12.13/lib/python3.12/site-packages (from setuptools-scm>=8->vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (2.2.2)
+Requirement already satisfied: mpmath<1.4,>=1.1.0 in /usr/local/python3.12.13/lib/python3.12/site-packages (from sympy>=1.13.3->torch==2.10.0->vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (1.3.0)
+Requirement already satisfied: apache-tvm-ffi>=0.1.9 in /usr/local/python3.12.13/lib/python3.12/site-packages (from xgrammar>=0.1.30->vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (0.1.12)
+Requirement already satisfied: MarkupSafe>=2.0 in /usr/local/python3.12.13/lib/python3.12/site-packages (from jinja2->torch==2.10.0->vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (3.0.3)
+Requirement already satisfied: llvmlite<0.49,>=0.48.0dev0 in /usr/local/python3.12.13/lib/python3.12/site-packages (from numba->vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (0.48.0)
+Requirement already satisfied: python-dateutil>=2.8.2 in /usr/local/python3.12.13/lib/python3.12/site-packages (from pandas->vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (2.9.0.post0)
+Requirement already satisfied: six>=1.5 in /usr/local/python3.12.13/lib/python3.12/site-packages (from python-dateutil>=2.8.2->pandas->vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (1.17.0)
+Requirement already satisfied: aiofiles in /usr/local/python3.12.13/lib/python3.12/site-packages (from quart->vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (25.1.0)
+Requirement already satisfied: blinker>=1.6 in /usr/local/python3.12.13/lib/python3.12/site-packages (from quart->vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (1.9.0)
+Requirement already satisfied: flask>=3.0 in /usr/local/python3.12.13/lib/python3.12/site-packages (from quart->vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (3.1.3)
+Requirement already satisfied: hypercorn>=0.11.2 in /usr/local/python3.12.13/lib/python3.12/site-packages (from quart->vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (0.18.0)
+Requirement already satisfied: itsdangerous in /usr/local/python3.12.13/lib/python3.12/site-packages (from quart->vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (2.2.0)
+Requirement already satisfied: werkzeug>=3.0 in /usr/local/python3.12.13/lib/python3.12/site-packages (from quart->vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (3.1.8)
+Requirement already satisfied: h2>=4.3.0 in /usr/local/python3.12.13/lib/python3.12/site-packages (from hypercorn>=0.11.2->quart->vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (4.3.0)
+Requirement already satisfied: priority in /usr/local/python3.12.13/lib/python3.12/site-packages (from hypercorn>=0.11.2->quart->vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (2.0.0)
+Requirement already satisfied: wsproto>=0.14.0 in /usr/local/python3.12.13/lib/python3.12/site-packages (from hypercorn>=0.11.2->quart->vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (1.3.2)
+Requirement already satisfied: hyperframe<7,>=6.1 in /usr/local/python3.12.13/lib/python3.12/site-packages (from h2>=4.3.0->hypercorn>=0.11.2->quart->vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (6.1.0)
+Requirement already satisfied: hpack<5,>=4.1 in /usr/local/python3.12.13/lib/python3.12/site-packages (from h2>=4.3.0->hypercorn>=0.11.2->quart->vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (4.2.0)
+Requirement already satisfied: shellingham>=1.3.0 in /usr/local/python3.12.13/lib/python3.12/site-packages (from typer->transformers==5.14.1->vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (1.5.4)
+Requirement already satisfied: rich>=13.8.0 in /usr/local/python3.12.13/lib/python3.12/site-packages (from typer->transformers==5.14.1->vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (15.0.0)
+Requirement already satisfied: markdown-it-py>=2.2.0 in /usr/local/python3.12.13/lib/python3.12/site-packages (from rich>=13.8.0->typer->transformers==5.14.1->vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (4.2.0)
+Requirement already satisfied: pygments<3.0.0,>=2.13.0 in /usr/local/python3.12.13/lib/python3.12/site-packages (from rich>=13.8.0->typer->transformers==5.14.1->vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (2.20.0)
+Requirement already satisfied: mdurl~=0.1 in /usr/local/python3.12.13/lib/python3.12/site-packages (from markdown-it-py>=2.2.0->rich>=13.8.0->typer->transformers==5.14.1->vllm_ascend==0.19.1rc2.dev1266+gf476ea53e.d20260729) (0.1.2)
+Building wheels for collected packages: vllm_ascend
+  Building editable for vllm_ascend (pyproject.toml) ... error
+  error: subprocess-exited-with-error
+
+  × Building editable for vllm_ascend (pyproject.toml) did not run successfully.
+  │ exit code: 1
+  ╰─> [636 lines of output]
+      /usr/local/python3.12.13/lib/python3.12/site-packages/setuptools/dist.py:765: SetuptoolsDeprecationWarning: License classifiers are deprecated.
+      !!
+
+              ********************************************************************************
+              Please consider removing the following classifiers in favor of a SPDX license expression:
+
+              License :: OSI Approved :: Apache Software License
+
+              See https://packaging.python.org/en/latest/guides/writing-pyproject-toml/#license for details.
+              ********************************************************************************
+
+      !!
+        self._finalize_license_expression()
+      running editable_wheel
+      creating /tmp/pip-ephem-wheel-cache-hyper50k/wheels/93/80/bd/0e6a37ef9d1a8fc9fbb948bc09730bde2c2ed71bef9afc5ad4/tmpbkn1xfy2/.tmp-a1pnyeat/vllm_ascend.egg-info
+      writing /tmp/pip-ephem-wheel-cache-hyper50k/wheels/93/80/bd/0e6a37ef9d1a8fc9fbb948bc09730bde2c2ed71bef9afc5ad4/tmpbkn1xfy2/.tmp-a1pnyeat/vllm_ascend.egg-info/PKG-INFO
+      writing dependency_links to /tmp/pip-ephem-wheel-cache-hyper50k/wheels/93/80/bd/0e6a37ef9d1a8fc9fbb948bc09730bde2c2ed71bef9afc5ad4/tmpbkn1xfy2/.tmp-a1pnyeat/vllm_ascend.egg-info/dependency_links.txt
+      writing entry points to /tmp/pip-ephem-wheel-cache-hyper50k/wheels/93/80/bd/0e6a37ef9d1a8fc9fbb948bc09730bde2c2ed71bef9afc5ad4/tmpbkn1xfy2/.tmp-a1pnyeat/vllm_ascend.egg-info/entry_points.txt
+      writing requirements to /tmp/pip-ephem-wheel-cache-hyper50k/wheels/93/80/bd/0e6a37ef9d1a8fc9fbb948bc09730bde2c2ed71bef9afc5ad4/tmpbkn1xfy2/.tmp-a1pnyeat/vllm_ascend.egg-info/requires.txt
+      writing top-level names to /tmp/pip-ephem-wheel-cache-hyper50k/wheels/93/80/bd/0e6a37ef9d1a8fc9fbb948bc09730bde2c2ed71bef9afc5ad4/tmpbkn1xfy2/.tmp-a1pnyeat/vllm_ascend.egg-info/top_level.txt
+      writing manifest file '/tmp/pip-ephem-wheel-cache-hyper50k/wheels/93/80/bd/0e6a37ef9d1a8fc9fbb948bc09730bde2c2ed71bef9afc5ad4/tmpbkn1xfy2/.tmp-a1pnyeat/vllm_ascend.egg-info/SOURCES.txt'
+      adding license file 'LICENSE'
+      writing manifest file '/tmp/pip-ephem-wheel-cache-hyper50k/wheels/93/80/bd/0e6a37ef9d1a8fc9fbb948bc09730bde2c2ed71bef9afc5ad4/tmpbkn1xfy2/.tmp-a1pnyeat/vllm_ascend.egg-info/SOURCES.txt'
+      creating '/tmp/pip-ephem-wheel-cache-hyper50k/wheels/93/80/bd/0e6a37ef9d1a8fc9fbb948bc09730bde2c2ed71bef9afc5ad4/tmpbkn1xfy2/.tmp-a1pnyeat/vllm_ascend-0.19.1rc2.dev1266+gf476ea53e.d20260729.dist-info'
+      creating /tmp/pip-ephem-wheel-cache-hyper50k/wheels/93/80/bd/0e6a37ef9d1a8fc9fbb948bc09730bde2c2ed71bef9afc5ad4/tmpbkn1xfy2/.tmp-a1pnyeat/vllm_ascend-0.19.1rc2.dev1266+gf476ea53e.d20260729.dist-info/WHEEL
+      running build_py
+      Generated _build_info.py with SOC version: ascend310p1
+      running build_ext
+      running build_aclnn
+      [build_aclnn] start: ROOT_DIR=/opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend SOC_VERSION=ascend310p1 cwd=/opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend
+      [build_aclnn] env: ASCEND_HOME_PATH=/usr/local/Ascend/cann-9.1.0-beta.1 ASCEND_TOOLKIT_HOME=/usr/local/Ascend/cann-9.1.0-beta.1
+      [build_aclnn] matched SOC branch: ascend310
+      [build_aclnn] catlass include=/opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/third_party/catlass/include
+      [build_aclnn] resolved SOC_ARG=ascend310p
+      [build_aclnn] resolved CUSTOM_OPS=causal_conv1d_v310;custom_fused_infer_attention;recurrent_gated_delta_rule_v310;chunk_fwd_o;chunk_gated_delta_rule_fwd_h
+      [build_aclnn] custom op count=5
+      [build_aclnn] op causal_conv1d_v310: dir=/opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/moe/causal_conv1d_v310 cmake=yes op_host_cmake=yes op_kernel_cpp_count=1
+      [build_aclnn] op custom_fused_infer_attention: dir=/opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/attention/custom_fused_infer_attention cmake=yes op_host_cmake=yes op_kernel_cpp_count=1
+      [build_aclnn] op recurrent_gated_delta_rule_v310: dir=/opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/attention/recurrent_gated_delta_rule_v310 cmake=yes op_host_cmake=yes op_kernel_cpp_count=1
+      [build_aclnn] op chunk_fwd_o: dir=/opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/moe/chunk_fwd_o cmake=yes op_host_cmake=yes op_kernel_cpp_count=1
+      [build_aclnn] op chunk_gated_delta_rule_fwd_h: dir=/opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/moe/chunk_gated_delta_rule_fwd_h cmake=yes op_host_cmake=yes op_kernel_cpp_count=1
+      [build_aclnn] subshell cwd before cd=/opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend
+      [build_aclnn] subshell cwd after cd=/opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc
+      [build_aclnn] preserving csrc/build and cleaning output dirs
+      [build_aclnn] build command: bash build.sh --pkg --ops="causal_conv1d_v310;custom_fused_infer_attention;recurrent_gated_delta_rule_v310;chunk_fwd_o;chunk_gated_delta_rule_fwd_h" --soc="ascend310p"
+      [build_aclnn] building custom ops causal_conv1d_v310;custom_fused_infer_attention;recurrent_gated_delta_rule_v310;chunk_fwd_o;chunk_gated_delta_rule_fwd_h for ascend310p1
+      which: no ccache in (/usr/local/Ascend/cann-9.1.0-beta.1/bin:/usr/local/Ascend/cann-9.1.0-beta.1/tools/ccec_compiler/bin:/usr/local/Ascend/cann-9.1.0-beta.1/tools/profiler/bin:/usr/local/Ascend/cann-9.1.0-beta.1/tools/ascend_system_advisor/asys:/usr/local/Ascend/cann-9.1.0-beta.1/tools/show_kernel_debug_data:/usr/local/Ascend/cann-9.1.0-beta.1/tools/msobjdump:/usr/local/Ascend/nnal/atb/latest/atb/cxx_abi_1/bin:/usr/local/Ascend/nnal/atb/latest/atb/cxx_abi_1/bin:/usr/local/Ascend/ascend-toolkit/latest/bin:/usr/local/Ascend/ascend-toolkit/latest/compiler/ccec_compiler/bin:/usr/local/Ascend/ascend-toolkit/latest/tools/ccec_compiler/bin:/usr/local/python3.12.13/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin)
+      json found in /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/third_party/json, and not force rebuild cann third_party
+      CMake Warning (author) at /usr/local/python3.12.13/lib/python3.12/site-packages/cmake/data/share/cmake-4.4/Modules/ExternalProject/shared_internal_commands.cmake:1277 (message):
+        The DOWNLOAD_EXTRACT_TIMESTAMP option was not given and policy CMP0135 is
+        not set.  The policy's OLD behavior will be used.  When using a URL
+        download, the timestamps of extracted files should preferably be that of
+        the time of extraction, otherwise code that depends on the extracted
+        contents might not be rebuilt if the URL changes.  The OLD behavior
+        preserves the timestamps from the archive instead, but this is usually not
+        what you want.  Update your project to the NEW behavior or specify the
+        DOWNLOAD_EXTRACT_TIMESTAMP option with a value of true to avoid this
+        robustness issue.
+      Call Stack (most recent call first):
+        /usr/local/python3.12.13/lib/python3.12/site-packages/cmake/data/share/cmake-4.4/Modules/ExternalProject.cmake:3283 (_ep_add_download_command)
+        cmake/third_party/ascend_protobuf.cmake:47 (ExternalProject_Add)
+        CMakeLists.txt:130 (include)
+      This warning is for project developers.  Use -Wno-author to suppress it.
+
+      /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/cmake/scripts/util/ascendc_impl_build.py:212: SyntaxWarning: invalid escape sequence '\d'
+        ascendc_api_version = re.findall(r"#define ASCENDC_API_VERSION (\d+)", ascendc_api_version_file.read())
+      json found in /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/third_party/json, and not force rebuild cann third_party
+      [2026-07-29 02:17:15] [2026-07-29 02:17:15] Info: use CMake generator Ninja
+      [2026-07-29 02:17:15] [2026-07-29 02:17:15] Info: cmake config generator=-G Ninja -DBUILD_OPEN_PROJECT=ON -DASCEND_OP_NAME=causal_conv1d_v310;custom_fused_infer_attention;recurrent_gated_delta_rule_v310;chunk_fwd_o;chunk_gated_delta_rule_fwd_h -DCANN_3RD_LIB_PATH=/opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/third_party -DCUSTOM_ASCEND_CANN_PACKAGE_PATH=/usr/local/Ascend/cann-9.1.0-beta.1 -DCHECK_COMPATIBLE=true -DASCEND_COMPUTE_UNIT=ascend310p; -DENABLE_BUILT_IN=OFF -DENABLE_OPS_HOST=ON -DENABLE_OPS_KERNEL=ON -DENABLE_BUILD_PKG=ON .
+      [2026-07-29 02:17:16] -- compile project with library
+      [2026-07-29 02:17:16] -- ASCEND_CANN_PACKAGE_PATH=/usr/local/Ascend/cann-9.1.0-beta.1
+      [2026-07-29 02:17:16] -- ENABLE_CCACHE=ON, CUSTOM_CCACHE=
+      [2026-07-29 02:17:16] -- CCACHE_PROGRAM=CCACHE_PROGRAM-NOTFOUND
+      [2026-07-29 02:17:16] -- ASCEND_COMPUTE_UNIT=ascend310p;
+      [2026-07-29 02:17:16] -- ASCEND_OP_NAME=causal_conv1d_v310;custom_fused_infer_attention;recurrent_gated_delta_rule_v310;chunk_fwd_o;chunk_gated_delta_rule_fwd_h
+      [2026-07-29 02:17:16] -- TILING_KEY=
+      [2026-07-29 02:17:16] -- TESTS_UT_OPS_TEST=
+      [2026-07-29 02:17:16] -- TESTS_EXAMPLE_OPS_TEST=
+      [2026-07-29 02:17:16] -- CMAKE_BUILD_TYPE=Release
+      [2026-07-29 02:17:16] -- VERSION=
+      [2026-07-29 02:17:22] -- Start building custom package.
+      [2026-07-29 02:17:22] -- Search libs under install path /usr/local/Ascend/cann-9.1.0-beta.1
+      [2026-07-29 02:17:22] -- CMAKE_MODULE_PATH            :/opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/cmake/modules
+      [2026-07-29 02:17:22] -- compile option:   -Wall -Wextra -Wshadow -Wformat=2 -fno-common -fPIC -Wformat-signedness -Wno-missing-include-dirs -Wno-write-strings
+      [2026-07-29 02:17:22] -- Transformer Variables in dlog module:
+      [2026-07-29 02:17:22] -- dlog_TRANSFORMER_INCLUDE_DIR="/usr/local/Ascend/cann-9.1.0-beta.1/pkg_inc/base"
+      [2026-07-29 02:17:22] -- dlog_SHARED_LIBRARY="/usr/local/Ascend/cann-9.1.0-beta.1/lib64/libascendalog.so"
+      [2026-07-29 02:17:22] --
+      [2026-07-29 02:17:22]  Properties for TARGET dlog:
+      [2026-07-29 02:17:22]    dlog.INTERFACE_COMPILE_DEFINITIONS = "LOG_CPP;PROCESS_LOG"
+      [2026-07-29 02:17:22]    dlog.INTERFACE_LINK_LIBRARIES = "dlog_headers"
+      [2026-07-29 02:17:22]    dlog.IMPORTED_LOCATION = "/usr/local/Ascend/cann-9.1.0-beta.1/lib64/libascendalog.so"
+      [2026-07-29 02:17:22]
+      [2026-07-29 02:17:22] --
+      [2026-07-29 02:17:22]  Properties for TARGET dlog_headers:
+      [2026-07-29 02:17:22]    dlog_headers.INTERFACE_INCLUDE_DIRECTORIES = "/usr/local/Ascend/cann-9.1.0-beta.1/pkg_inc/base"
+      [2026-07-29 02:17:22]
+      [2026-07-29 02:17:22] -- Found OPABSE include:/usr/local/Ascend/cann-9.1.0-beta.1/aarch64-linux/pkg_inc
+      [2026-07-29 02:17:22] -- Found OPABSE lib:/usr/local/Ascend/cann-9.1.0-beta.1/aarch64-linux/lib64/libops_base.so
+      [2026-07-29 02:17:22] -- Found platform include:/usr/local/Ascend/cann-9.1.0-beta.1/aarch64-linux/include
+      [2026-07-29 02:17:22] -- Found register library:/usr/local/Ascend/cann-9.1.0-beta.1/aarch64-linux/lib64/libregister.so
+      [2026-07-29 02:17:22] -- Found opp_registry library:/usr/local/Ascend/cann-9.1.0-beta.1/aarch64-linux/lib64/libopp_registry.so
+      [2026-07-29 02:17:22] -- Found exe_graph library:/usr/local/Ascend/cann-9.1.0-beta.1/aarch64-linux/lib64/libexe_graph.so
+      [2026-07-29 02:17:22] -- Found graph_base library:/usr/local/Ascend/cann-9.1.0-beta.1/aarch64-linux/lib64/libgraph_base.so
+      [2026-07-29 02:17:22] -- Found error_manager library:/usr/local/Ascend/cann-9.1.0-beta.1/aarch64-linux/lib64/liberror_manager.so
+      [2026-07-29 02:17:22] -- Found metadef library:/usr/local/Ascend/cann-9.1.0-beta.1/aarch64-linux/lib64/libmetadef.so
+      [2026-07-29 02:17:22] -- Found rt2_registry library:/usr/local/Ascend/cann-9.1.0-beta.1/aarch64-linux/lib64/librt2_registry.a
+      [2026-07-29 02:17:22] -- Found source metadef include dir:  /usr/local/Ascend/cann-9.1.0-beta.1/aarch64-linux/include/;/usr/local/Ascend/cann-9.1.0-beta.1/aarch64-linux/include/exe_graph
+      [2026-07-29 02:17:22] -- Found graph library:/usr/local/Ascend/cann-9.1.0-beta.1/aarch64-liCMake Warning (author) at /usr/local/python3.12.13/lib/python3.12/site-packages/cmake/data/share/cmake-4.4/Modules/ExternalProject/shared_internal_commands.cmake:1277 (message):
+        The DOWNLOAD_EXTRACT_TIMESTAMP option was not given and policy CMP0135 is
+        not set.  The policy's OLD behavior will be used.  When using a URL
+        download, the timestamps of extracted files should preferably be that of
+        the time of extraction, otherwise code that depends on the extracted
+        contents might not be rebuilt if the URL changes.  The OLD behavior
+        preserves the timestamps from the archive instead, but this is usually not
+        what you want.  Update your project to the NEW behavior or specify the
+        DOWNLOAD_EXTRACT_TIMESTAMP option with a value of true to avoid this
+        robustness issue.
+      Call Stack (most recent call first):
+        /usr/local/python3.12.13/lib/python3.12/site-packages/cmake/data/share/cmake-4.4/Modules/ExternalProject.cmake:3283 (_ep_add_download_command)
+        cmake/third_party/ascend_protobuf.cmake:47 (ExternalProject_Add)
+        CMakeLists.txt:130 (include)
+      This warning is for project developers.  Use -Wno-author to suppress it.
+
+      nux/lib64/libgraph.so
+      [2026-07-29 02:17:22] -- Found source acl include dir:  /usr/local/Ascend/cann-9.1.0-beta.1/aarch64-linux/include
+      [2026-07-29 02:17:22] -- Found source npuruntime include dir: /usr/local/Ascend/cann-9.1.0-beta.1/aarch64-linux/pkg_inc/runtime
+      [2026-07-29 02:17:22] -- Found aclnn include dir:  /usr/local/Ascend/cann-9.1.0-beta.1/aarch64-linux/include
+      [2026-07-29 02:17:22] -- Found opdev include dir:  /usr/local/Ascend/cann-9.1.0-beta.1/aarch64-linux/include/aclnn
+      [2026-07-29 02:17:22] -- Found tilingapi include:/usr/local/Ascend/cann-9.1.0-beta.1/aarch64-linux/include
+      [2026-07-29 02:17:22] -- TILINGAPI_INC_DIRS: /usr/local/Ascend/cann-9.1.0-beta.1/aarch64-linux/include;/usr/local/Ascend/cann-9.1.0-beta.1/aarch64-linux/ascendc;/usr/local/Ascend/cann-9.1.0-beta.1/aarch64-linux/ascendc/include;/usr/local/Ascend/cann-9.1.0-beta.1/aarch64-linux/ascendc/include/highlevel_api;/usr/local/Ascend/cann-9.1.0-beta.1/aarch64-linux/ascendc/include/highlevel_api/lib;/usr/local/Ascend/cann-9.1.0-beta.1/aarch64-linux/ascendc/include/highlevel_api/impl;/usr/local/Ascend/cann-9.1.0-beta.1/aarch64-linux/ascendc/include/highlevel_api/tiling
+      [2026-07-29 02:17:22] -- Found tilingapi lib:/usr/local/Ascend/cann-9.1.0-beta.1/aarch64-linux/lib64/libtiling_api.a
+      [2026-07-29 02:17:22] -- Using AICPU include dirs: /usr/local/Ascend/cann-9.1.0-beta.1/aarch64-linux/include/aicpu;/usr/local/Ascend/cann-9.1.0-beta.1/aarch64-linux/include/experiment;/usr/local/Ascend/cann-9.1.0-beta.1/aarch64-linux/include/experiment/cce;/usr/local/Ascend/cann-9.1.0-beta.1/aarch64-linux/include/experiment/msprof;/usr/local/Ascend/cann-9.1.0-beta.1/aarch64-linux/pkg_inc;/usr/local/Ascend/cann-9.1.0-beta.1/aarch64-linux/pkg_inc/aicpu;/usr/local/Ascend/cann-9.1.0-beta.1/aarch64-linux/pkg_inc/aicpu_common/context;/usr/local/Ascend/cann-9.1.0-beta.1/aarch64-linux/pkg_inc/aicpu_common/context/common;/usr/local/Ascend/cann-9.1.0-beta.1/aarch64-linux/pkg_inc/aicpu_common/context/cpu_proto;/usr/local/Ascend/cann-9.1.0-beta.1/aarch64-linux/pkg_inc/aicpu_common/context/utils;/usr/local/Ascend/cann-9.1.0-beta.1/aarch64-linux/include/aicpu_common/context;/usr/local/Ascend/cann-9.1.0-beta.1/aarch64-linux/include/aicpu_common/context/common;/usr/local/Ascend/cann-9.1.0-beta.1/aarch64-linux/include/aicpu_common/context/cpu_proto;/usr/local/Ascend/cann-9.1.0-beta.1/aarch64-linux/include/experiment/datagw/aicpu/common;/usr/local/Ascend/cann-9.1.0-beta.1/aarch64-linux/include/aicpu_common/context/utils
+      [2026-07-29 02:17:22] -- Found abseil-cpp in /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/third_party/abseil-cpp
+      [2026-07-29 02:17:22] -- Could NOT find ascend_protobuf_build_transformer (missing: ASCEND_PROTOBUF_SHARED_INCLUDE)
+      [2026-07-29 02:17:22] -- [ThirdPartyLib][ascend protobuf] ascend protobuf shared not found, finding binary file.
+      [2026-07-29 02:17:22] -- [ThirdPartyLib][ascend protobuf] found in file:///opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/third_party/pkg/protobuf-25.1.tar.gz.
+      [2026-07-29 02:17:22] -- Variables in alog module:
+      [2026-07-29 02:17:22] -- alog_a_INCLUDE_DIR="/usr/local/Ascend/cann-9.1.0-beta.1/include"
+      [2026-07-29 02:17:22] -- slog_a_SHARED_LIBRARY="/usr/local/Ascend/cann-9.1.0-beta.1/lib64/libascendalog.so"
+      [2026-07-29 02:17:22] -- alog_a_SHARED_LIBRARY="/usr/local/Ascend/cann-9.1.0-beta.1/lib64/libascendalog.so"
+      [2026-07-29 02:17:22] --
+      [2026-07-29 02:17:22]  Properties for TARGET slog_a:
+      [2026-07-29 02:17:22]    slog_a.INTERFACE_COMPILE_DEFINITIONS = "LOG_CPP;PROCESS_LOG"
+      [2026-07-29 02:17:22]    slog_a.INTERFACE_LINK_LIBRARIES = "alog_headers"
+      [2026-07-29 02:17:22]    slog_a.IMPORTED_LOCATION = "/usr/local/Ascend/cann-9.1.0-beta.1/lib64/libascendalog.so"
+      [2026-07-29 02:17:22]
+      [2026-07-29 02:17:22] --
+      [2026-07-29 02:17:22]  Properties for TARGET alog_a:
+      [2026-07-29 02:17:22]    alog_a.INTERFACE_COMPILE_DEFINITIONS = "LOG_CPP;PROCESS_LOG"
+      [2026-07-29 02:17:22]    alog_a.INTERFACE_LINK_LIBRARIES = "alog_headers"
+      [2026-07-29 02:17:22]    alog_a.IMPORTED_LOCATION = "/usr/local/Ascend/cann-9.1.0-beta.1/lib64/libascendalog.so"
+      [2026-07-29 02:17:22]
+      [2026-07-29 02:17:22] --
+      [2026-07-29 02:17:22]  Properties for TARGET alog_headers:
+      [2026-07-29 02:17:22]    alog_headers.INTERFACE_INCLUDE_DIRECTORIES = "/usr/local/Ascend/cann-9.1.0-beta.1/include;/usr/local/Ascend/cann-9.1.0-beta.1/include/base"
+      [2026-07-29 02:17:22]
+      [2026-07-29 02:17:22] -- Could NOT find unified_dlog (missing: _INCLUDE_ROOT_DIR)
+      [2026-07-29 02:17:22] -- Detected architecture: ARM64
+      [2026-07-29 02:17:22] -- End building custom package.
+      [2026-07-29 02:17:22] -- create aclnn master header file: /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/build/aclnn_ops_transformer_custom.h
+      [2026-07-29 02:17:22] -- no operator info to generate
+      [2026-07-29 02:17:22] -- Configuring done (6.5s)
+      [2026-07-29 02:17:22] -- Generating done (0.1s)
+      [2026-07-29 02:17:22] -- Build files have been written to: /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/build
+      [2026-07-29 02:17:23] [1/10] Performing build step for 'tiling_sink_task'
+      [2026-07-29 02:17:23] ninja: no work to do.
+      [2026-07-29 02:17:23] [2/10] No install step for 'tiling_sink_task'
+      [2026-07-29 02:17:23] [3/10] Completed 'tiling_sink_task'
+      [2026-07-29 02:17:23] [4/10] cd /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/build && /usr/local/python3.12.13/bin/python3.12 /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/cmake/scripts/util/ascendc_impl_build.py "" "" "" "" /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/build/impl /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/build/autogen --opsinfo-dir /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/build/autogen /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/build/autogen/inner /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/build/autogen/exc
+      [2026-07-29 02:17:23] /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/cmake/scripts/util/ascendc_impl_build.py:212: SyntaxWarning: invalid escape sequence '\d'
+      [2026-07-29 02:17:23]   ascendc_api_version = re.findall(r"#define ASCENDC_API_VERSION (\d+)", ascendc_api_version_file.read())
+      [2026-07-29 02:17:23] [5/10] cd /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/build && /usr/local/python3.12.13/lib/python3.12/site-packages/cmake/data/bin/cmake -E make_directory /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/build/binary/ascend310p/gen && /usr/local/python3.12.13/bin/python3.12 /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/cmake/scripts/util/ascendc_bin_param_build.py /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/build/autogen/aic-ascend310p-ops-info.ini /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/build/binary/ascend310p/gen ascend310p --opc-config-file /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/build/autogen/custom_opc_options.ini && /usr/local/python3.12.13/bin/python3.12 /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/cmake/scripts/util/ascendc_bin_param_build.py /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/build/autogen/inner/aic-ascend310p-ops-info.ini /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/build/binary/ascend310p/gen ascend310p --opc-config-file /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/build/autogen/custom_opc_options.ini && /usr/local/python3.12.13/bin/python3.12 /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/cmake/scripts/util/ascendc_bin_param_build.py /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/build/autogen/exc/aic-ascend310p-ops-info.ini /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/build/binary/ascend310p/gen ascend310p --opc-config-file /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/build/autogen/custom_opc_options.ini && bash /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/cmake/scripts/fix_format.sh /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/build/binary/ascend310p/gen
+      [2026-07-29 02:17:23] INFO: /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/build/autogen/inner/aic-ascend310p-ops-info.ini does not exists in this project, skip generating compile commands.
+      [2026-07-29 02:17:28] [6/10] Building CXX object moe/causal_conv1d_v310/op_host/CMakeFiles/ophost_transformer_tiling_obj.dir/__/__/chunk_gated_delta_rule_fwd_h/op_host/chunk_gated_delta_rule_fwd_h_tiling.cpp.o
+      [2026-07-29 02:17:28] /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/moe/chunk_gated_delta_rule_fwd_h/op_host/chunk_gated_delta_rule_fwd_h_tiling.cpp: In function ‘void optiling::ChunkGatedDeltaRuleFwdHTilingDataPrint(gert::TilingContext*, ChunkGatedDeltaRuleFwdHTilingData&)’:
+      [2026-07-29 02:17:28] /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/moe/chunk_gated_delta_rule_fwd_h/op_host/chunk_gated_delta_rule_fwd_h_tiling.cpp:41:10: warning: unused variable ‘nodeName’ [-Wunused-variable]
+      [2026-07-29 02:17:28]    41 |     auto nodeName = context->GetNodeName();
+      [2026-07-29 02:17:28]       |          ^~~~~~~~
+      [2026-07-29 02:17:28] /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/moe/chunk_gated_delta_rule_fwd_h/op_host/chunk_gated_delta_rule_fwd_h_tiling.cpp:39:117: warning: unused parameter ‘tiling’ [-Wunused-parameter]
+      [2026-07-29 02:17:28]    39 | static void ChunkGatedDeltaRuleFwdHTilingDataPrint(gert::TilingContext *context, ChunkGatedDeltaRuleFwdHTilingData &tiling)
+      [2026-07-29 02:17:28]       |                                                                                  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~
+      [2026-07-29 02:17:28] [7/10] Building CXX object moe/causal_conv1d_v310/op_host/CMakeFiles/ophost_transformer_tiling_obj.dir/__/__/chunk_fwd_o/op_host/chunk_fwd_o_tiling.cpp.o
+      [2026-07-29 02:17:28] /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/moe/chunk_fwd_o/op_host/chunk_fwd_o_tiling.cpp: In function ‘void optiling::ChunkFwdOTilingDataPrint(gert::TilingContext*, ChunkFwdOTilingData&)’:
+      [2026-07-29 02:17:28] /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/moe/chunk_fwd_o/op_host/chunk_fwd_o_tiling.cpp:40:10: warning: unused variable ‘nodeName’ [-Wunused-variable]
+      [2026-07-29 02:17:28]    40 |     auto nodeName = context->GetNodeName();
+      [2026-07-29 02:17:28]       |          ^~~~~~~~
+      [2026-07-29 02:17:28] /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/moe/chunk_fwd_o/op_host/chunk_fwd_o_tiling.cpp:38:89: warning: unused parameter ‘tiling’ [-Wunused-parameter]
+      [2026-07-29 02:17:28]    38 | static void ChunkFwdOTilingDataPrint(gert::TilingContext *context, ChunkFwdOTilingData &tiling)
+      [2026-07-29 02:17:28]       |                                                                    ~~~~~~~~~~~~~~~~~~~~~^~~~~~
+      [2026-07-29 02:17:28] /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/moe/chunk_fwd_o/op_host/chunk_fwd_o_tiling.cpp: In function ‘ge::graphStatus optiling::Tiling4ChunkFwdO(gert::TilingContext*)’:
+      [2026-07-29 02:17:28] /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/moe/chunk_fwd_o/op_host/chunk_fwd_o_tiling.cpp:82:19: warning: conversion from ‘double’ to ‘float’ may change value [-Wfloat-conversion]
+      [2026-07-29 02:17:28]    82 |     float scale = *(attrPtr->GetAttrPointer<double>(ATTR_SCALE_IDX));
+      [2026-07-29 02:17:28]       |                   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+      [2026-07-29 02:17:28] [8/10] Linking CXX shared library libcust_opmaster_rt2.0.so
+      [2026-07-29 02:17:28] [9/10] Generating compat/liboptiling.so
+      [2026-07-29 02:17:28] [9/10] Run CPack packaging tool...
+      [2026-07-29 02:17:28] CPack: Create package using External
+      [2026-07-29 02:17:28] CPack: Install projects
+      [2026-07-29 02:17:28] CPack: - Install project: cann_ops-transformer []
+      [2026-07-29 02:17:28] CPack: Create package
+      [2026-07-29 02:17:28]
+      [2026-07-29 02:17:28] About to compress 5476 KB of data...
+      [2026-07-29 02:17:28] Adding files to archive named "cann-ops-transformer-custom_linux-aarch64.run"...
+      [2026-07-29 02:17:28] ./help.info
+      [2026-07-29 02:17:28] ./install.sh
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_api/include/aclnnop/aclnn_causal_conv1d_v310.h
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_api/include/aclnnop/aclnn_chunk_fwd_o.h
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_api/include/aclnnop/aclnn_chunk_gated_delta_rule_fwd_h.h
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_api/include/aclnnop/aclnn_custom_fused_infer_attention.h
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_api/include/aclnnop/aclnn_ops_transformer_custom.h
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_api/include/aclnnop/aclnn_recurrent_gated_delta_rule_v310.h
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_api/lib/libcust_opapi.so
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/config/ascend310p/aic-ascend310p-ops-info.json
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/causal_conv1d_v310/causal_conv1d_v310.cpp
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/causal_conv1d_v310/causal_conv1d_v310.h
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/causal_conv1d_v310/causal_conv1d_v310_common.h
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/causal_conv1d_v310/causal_conv1d_v310_tiling_data.h
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/causal_conv1d_v310/causal_conv1d_v310_tiling_key.h
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/chunk_fwd_o/arch22/epilogue/block/block_epilogue_gdn_fwdo_output.hpp
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/chunk_fwd_o/arch22/epilogue/block/block_epilogue_gdn_fwdo_qkmask.hpp
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/chunk_fwd_o/arch22/epilogue/gdn_fwd_o_epilogue_policies.hpp
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/chunk_fwd_o/arch22/gemm/block/block_scheduler_gdn_fwd_o.hpp
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/chunk_fwd_o/arch22/gemm/kernel/gdn_fwd_o_kernel.hpp
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/chunk_fwd_o/chunk_fwd_o.cpp
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/chunk_gated_delta_rule_fwd_h/arch22/epilogue/block/block_epilogue_gdn_fwdh_update.hpp
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/chunk_gated_delta_rule_fwd_h/arch22/epilogue/block/block_epilogue_gdn_fwdh_vnew.hpp
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/chunk_gated_delta_rule_fwd_h/arch22/epilogue/gdn_fwd_h_epilogue_policies.hpp
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/chunk_gated_delta_rule_fwd_h/arch22/gemm/block/block_scheduler_gdn_fwd_h.hpp
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/chunk_gated_delta_rule_fwd_h/arch22/gemm/kernel/gdn_fwd_h_kernel.hpp
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/chunk_gated_delta_rule_fwd_h/chunk_gated_delta_rule_fwd_h.cpp
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/common/common.h
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/common/common_func.h
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/common/dropmask.h
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/common/gm_to_l1_iterator.h
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/common/gm_to_ub_iterator.h
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/common/hardware.h
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/common/iterator.h
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/common/l0c_to_gm_iterator.h
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/common/l0c_to_l1_iterator.h
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/common/l0c_to_ub_iterator.h
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/common/l1_to_bt_iterator.h
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/common/l1_to_fb_iterator.h
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/common/l1_to_l0_iterator.h
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/common/l1_to_ub_iterator.h
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/common/layout.h
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/common/mem.h
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/common/mma.h
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/common/pse.h
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/common/simd.h
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/common/util.h
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/custom_fused_infer_attention/common.h
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/custom_fused_infer_attention/common_func.h
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/custom_fused_infer_attention/custom_fused_infer_attention.cpp
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/custom_fused_infer_attention/gm_to_l1_iterator.h
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/custom_fused_infer_attention/gm_to_ub_iterator.h
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/custom_fused_infer_attention/hardware.h
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/custom_fused_infer_attention/ifa_public_define.h
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/custom_fused_infer_attention/iterator.h
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/custom_fused_infer_attention/l0c_to_ub_iterator.h
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/custom_fused_infer_attention/l1_to_l0_iterator.h
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/custom_fused_infer_attention/l1_to_ub_iterator.h
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/custom_fused_infer_attention/layout.h
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/custom_fused_infer_attention/mem.h
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/custom_fused_infer_attention/mma.h
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/custom_fused_infer_attention/simd.h
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/custom_fused_infer_attention/unpad_paged_attention_decoder.h
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/recurrent_gated_delta_rule_v310/recurrent_gated_delta_rule_v310.cpp
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/recurrent_gated_delta_rule_v310/recurrent_gated_delta_rule_v310.h
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/recurrent_gated_delta_rule_v310/recurrent_gated_delta_rule_v310_tiling_data.h
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/dynamic/causal_conv1d_v310.py
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/dynamic/chunk_fwd_o.py
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/dynamic/chunk_gated_delta_rule_fwd_h.py
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/dynamic/custom_fused_infer_attention.py
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/dynamic/recurrent_gated_delta_rule_v310.py
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/kernel/ascend310p/causal_conv1d_v310/CausalConv1dV310_f8799e506fced51951fa40429a30b893.json
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/kernel/ascend310p/causal_conv1d_v310/CausalConv1dV310_f8799e506fced51951fa40429a30b893.o
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/kernel/ascend310p/chunk_fwd_o/ChunkFwdO_468be93dec9481966e0177cfd499986d.json
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/kernel/ascend310p/chunk_fwd_o/ChunkFwdO_468be93dec9481966e0177cfd499986d.o
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/kernel/ascend310p/chunk_fwd_o/ChunkFwdO_707498c78530a537f88ab9f335b99816.json
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/kernel/ascend310p/chunk_fwd_o/ChunkFwdO_707498c78530a537f88ab9f335b99816.o
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/kernel/ascend310p/chunk_fwd_o/ChunkFwdO_a2e54254f74a60f6f1ddea6fa0e1bf0e.json
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/kernel/ascend310p/chunk_fwd_o/ChunkFwdO_a2e54254f74a60f6f1ddea6fa0e1bf0e.o
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/kernel/ascend310p/chunk_fwd_o/ChunkFwdO_d4fc774159b2651ab5cc995d4a7d029b.json
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/kernel/ascend310p/chunk_fwd_o/ChunkFwdO_d4fc774159b2651ab5cc995d4a7d029b.o
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/kernel/ascend310p/chunk_gated_delta_rule_fwd_h/ChunkGatedDeltaRuleFwdH_0c6d721f948d07280ddb3f78c8ee264f.json
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/kernel/ascend310p/chunk_gated_delta_rule_fwd_h/ChunkGatedDeltaRuleFwdH_0c6d721f948d07280ddb3f78c8ee264f.o
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/kernel/ascend310p/chunk_gated_delta_rule_fwd_h/ChunkGatedDeltaRuleFwdH_17f9487b3624265312502db640f0e3cb.json
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/kernel/ascend310p/chunk_gated_delta_rule_fwd_h/ChunkGatedDeltaRuleFwdH_17f9487b3624265312502db640f0e3cb.o
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/kernel/ascend310p/chunk_gated_delta_rule_fwd_h/ChunkGatedDeltaRuleFwdH_7de42a0daa64bba8f188684b09dbd9e6.json
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/kernel/ascend310p/chunk_gated_delta_rule_fwd_h/ChunkGatedDeltaRuleFwdH_7de42a0daa64bba8f188684b09dbd9e6.o
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/kernel/ascend310p/chunk_gated_delta_rule_fwd_h/ChunkGatedDeltaRuleFwdH_7e558339de2b775a637749a2f058423b.json
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/kernel/ascend310p/chunk_gated_delta_rule_fwd_h/ChunkGatedDeltaRuleFwdH_7e558339de2b775a637749a2f058423b.o
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/kernel/ascend310p/chunk_gated_delta_rule_fwd_h/ChunkGatedDeltaRuleFwdH_c90ea72048d28d09e09d67b3c1510fd4.json
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/kernel/ascend310p/chunk_gated_delta_rule_fwd_h/ChunkGatedDeltaRuleFwdH_c90ea72048d28d09e09d67b3c1510fd4.o
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/kernel/ascend310p/chunk_gated_delta_rule_fwd_h/ChunkGatedDeltaRuleFwdH_d0451c0b964d491017d89040847e9615.json
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/kernel/ascend310p/chunk_gated_delta_rule_fwd_h/ChunkGatedDeltaRuleFwdH_d0451c0b964d491017d89040847e9615.o
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/kernel/ascend310p/chunk_gated_delta_rule_fwd_h/ChunkGatedDeltaRuleFwdH_da7b8be16b2775c80bb697533cd61607.json
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/kernel/ascend310p/chunk_gated_delta_rule_fwd_h/ChunkGatedDeltaRuleFwdH_da7b8be16b2775c80bb697533cd61607.o
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/kernel/ascend310p/chunk_gated_delta_rule_fwd_h/ChunkGatedDeltaRuleFwdH_e0b93aa62ba111fcf82ba1c4780d7ea1.json
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/kernel/ascend310p/chunk_gated_delta_rule_fwd_h/ChunkGatedDeltaRuleFwdH_e0b93aa62ba111fcf82ba1c4780d7ea1.o
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/kernel/ascend310p/custom_fused_infer_attention/CustomFusedInferAttention_b62e16d4c09bee161cef5818ea0a1e55.json
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/kernel/ascend310p/custom_fused_infer_attention/CustomFusedInferAttention_b62e16d4c09bee161cef5818ea0a1e55.o
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/kernel/ascend310p/recurrent_gated_delta_rule_v310/RecurrentGatedDeltaRuleV310_6aff7d75e8b2117fc8ad1f974495c0d0.json
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/kernel/ascend310p/recurrent_gated_delta_rule_v310/RecurrentGatedDeltaRuleV310_6aff7d75e8b2117fc8ad1f974495c0d0.o
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/kernel/config/ascend310p/binary_info_config.json
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/kernel/config/ascend310p/causal_conv1d_v310.json
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/kernel/config/ascend310p/chunk_fwd_o.json
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/kernel/config/ascend310p/chunk_gated_delta_rule_fwd_h.json
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/kernel/config/ascend310p/custom_fused_infer_attention.json
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/kernel/config/ascend310p/recurrent_gated_delta_rule_v310.json
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/op_tiling/lib/linux/aarch64/libcust_opmaster_rt2.0.so
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_impl/ai_core/tbe/op_tiling/liboptiling.so
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_proto/inc/causal_conv1d_v310_proto.h
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_proto/inc/chunk_fwd_o_proto.h
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_proto/inc/chunk_gated_delta_rule_fwd_h_proto.h
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_proto/inc/custom_fused_infer_attention_proto.h
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_proto/inc/recurrent_gated_delta_rule_v310_proto.h
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/op_proto/lib/linux/aarch64/libcust_opsproto_rt2.0.so
+      [2026-07-29 02:17:28] ./packages/vendors/custom_transformer/version.info
+      [2026-07-29 02:17:28] ./uninstall.sh
+      [2026-07-29 02:17:28] ./upgrade.sh
+      [2026-07-29 02:17:29] CRC: 2524610773
+      [2026-07-29 02:17:29] SHA256: a924c60e7d48d039d163efeedfe13c503367231226f795c375a4cde0ce997e3e
+      [2026-07-29 02:17:29] Skipping md5sum at user request
+      [2026-07-29 02:17:29]
+      [2026-07-29 02:17:29] Self-extractable archive "cann-ops-transformer-custom_linux-aarch64.run" successfully created.
+      [2026-07-29 02:17:29] Copy /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/build/_CPack_Packages/Linux/External/cann-ops-transformer-custom_linux-aarch64.run/cann-ops-transformer-custom_linux-aarch64.run to /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/build/
+      [2026-07-29 02:17:29] Copy /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/build/_CPack_Packages/Linux/External/cann-ops-transformer-custom_linux-aarch64.run/cann-ops-transformer-custom_linux-aarch64.run to /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/build_out/
+      [2026-07-29 02:17:29] CPack: - package: /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/build/cann-ops-transformer-custom_linux-aarch64.run.json generated.
+      [2026-07-29 02:17:29] CPack: - package: /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/build/cann-ops-transformer-custom_linux-aarch64.run generated.
+      [build_aclnn] build.sh finished
+      [build_aclnn] custom_ops_install_dir=/opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/vllm_ascend/_cann_ops_custom
+      [build_aclnn] installer candidate count=1
+      [build_aclnn] installer candidate: -rwxr-x--- 1 root root 2.0M Jul 29 02:17 ./build/cann-ops-transformer-custom_linux-aarch64.run
+      [build_aclnn] running installer: ./build/cann-ops-transformer-custom_linux-aarch64.run
+      grep: warning: stray \ before -
+      Verifying archive integrity...     0%    52%  100%   SHA256 checksums are OK. All good.
+      Uncompressing version:1.0     0%    52%  100%
+      [ops_custom] [2026-07-29 02:17:29] [INFO] create /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors.
+      [ops_custom] [2026-07-29 02:17:29] [INFO] create /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer.
+      [ops_custom] [2026-07-29 02:17:29] [INFO] validate shared libraries before installation
+      [ops_custom] [2026-07-29 02:17:30] [INFO] upgrade framework
+      [ops_custom] [2026-07-29 02:17:30] [INFO] no need to upgrade ops framework files
+      [ops_custom] [2026-07-29 02:17:30] [INFO] upgrade op proto
+      [ops_custom] [2026-07-29 02:17:30] [INFO] create /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_proto.
+      [ops_custom] [2026-07-29 02:17:30] [INFO] copy new ops op_proto files ......
+      [ops_custom] [2026-07-29 02:17:30] [INFO] upgrade op impl
+      [ops_custom] [2026-07-29 02:17:30] [INFO] create /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_impl.
+      [ops_custom] [2026-07-29 02:17:30] [INFO] copy new ops op_impl files ......
+      [ops_custom] [2026-07-29 02:17:30] [INFO] upgrade op api
+      [ops_custom] [2026-07-29 02:17:30] [INFO] create /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_api.
+      [ops_custom] [2026-07-29 02:17:30] [INFO] copy new ops op_api files ......
+      [ops_custom] [2026-07-29 02:17:30] [INFO] upgrade uninstall
+      [ops_custom] [2026-07-29 02:17:30] [INFO] copy new uninstall.sh files ......
+      [ops_custom] [2026-07-29 02:17:30] [INFO] upgrade version.info
+      [ops_custom] [2026-07-29 02:17:30] [INFO] copy new version.info files ......
+      [ops_custom] [2026-07-29 02:17:30] [INFO] no need to upgrade custom.proto files
+      [ops_custom] [2026-07-29 02:17:30] [INFO] using requirements: when custom module install finished or before you run the custom module, execute the command [ source /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/bin/set_env.bash ] to set the environment path
+      SUCCESS
+      [build_aclnn] installer finished
+      [build_aclnn] installed files under /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/vllm_ascend/_cann_ops_custom (maxdepth=4, first 120 entries):
+      [build_aclnn] install: /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/vllm_ascend/_cann_ops_custom/.gitkeep
+      [build_aclnn] install: /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors
+      [build_aclnn] install: /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer
+      [build_aclnn] install: /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/bin
+      [build_aclnn] install: /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/bin/set_env.bash
+      [build_aclnn] install: /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_api
+      [build_aclnn] install: /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_api/include
+      [build_aclnn] install: /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_api/lib
+      [build_aclnn] install: /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_impl
+      [build_aclnn] install: /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_impl/ai_core
+      [build_aclnn] install: /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_proto
+      [build_aclnn] install: /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_proto/inc
+      [build_aclnn] install: /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_proto/lib
+      [build_aclnn] install: /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/scripts
+      [build_aclnn] install: /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/scripts/uninstall.sh
+      [build_aclnn] install: /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/version.info
+      [build_aclnn] VLLM_BATCH_INVARIANT is not set to 1, skipping batch_invariant ops build
+      Running bash build_aclnn.sh ...
+      build_aclnn.sh executed successfully!
+      Found existing ASCEND_HOME_PATH: /usr/local/Ascend/cann-9.1.0-beta.1
+      Found existing PYTHON_EXECUTABLE: /usr/local/python3.12.13/bin/python3.12
+      Found existing PYTHON_INCLUDE_PATH: /usr/local/python3.12.13/include/python3.12
+      /usr/local/python3.12.13/lib/python3.12/site-packages/setuptools/_distutils/cmd.py:90: DevelopDeprecationWarning: develop command is deprecated.
+      !!
+
+              ********************************************************************************
+              Please avoid running ``setup.py`` and ``develop``.
+              Instead, use standards-based tools like pip or uv.
+
+              This deprecation is overdue, please update your project and remove deprecated
+              calls to avoid build errors in the future.
+
+              See https://github.com/pypa/setuptools/issues/917 for details.
+              ********************************************************************************
+
+      !!
+        self.initialize_options()
+      cmake config command: ['cmake', '-DCMAKE_BUILD_TYPE=Release', '-DCMAKE_EXPORT_COMPILE_COMMANDS=1', '-DASCEND_HOME_PATH=/usr/local/Ascend/cann-9.1.0-beta.1', '-DPYTHON_EXECUTABLE=/usr/local/python3.12.13/bin/python3.12', '-DPYTHON_INCLUDE_PATH=/usr/local/python3.12.13/include/python3.12', '-DCMAKE_INSTALL_PREFIX=/opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/vllm_ascend', '-DCMAKE_PREFIX_PATH=/usr/local/python3.12.13/lib/python3.12/site-packages/pybind11/share/cmake/pybind11', '-DSOC_VERSION=ascend310p1', '-DFETCHCONTENT_BASE_DIR=/opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/.deps', '-DTORCH_NPU_PATH=/usr/local/python3.12.13/lib/python3.12/site-packages/torch_npu', '/opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend']
+      -- The C compiler identification is GNU 12.3.1
+      -- The CXX compiler identification is GNU 12.3.1
+      -- Detecting C compiler ABI info
+      -- Detecting C compiler ABI info - done
+      -- Check for working C compiler: /usr/bin/cc - skipped
+      -- Detecting C compile features
+      -- Detecting C compile features - done
+      -- Detecting CXX compiler ABI info
+      -- Detecting CXX compiler ABI info - done
+      -- Check for working CXX compiler: /usr/bin/c++ - skipped
+      -- Detecting CXX compile features
+      -- Detecting CXX compile features - done
+      CMake Warning (author) at /usr/local/python3.12.13/lib/python3.12/site-packages/pybind11/share/cmake/pybind11/FindPythonLibsNew.cmake:101 (message):
+        Policy CMP0148 is not set: The FindPythonInterp and FindPythonLibs modules
+        are removed.  Run "cmake --help-policy CMP0148" for policy details.  Use
+        the cmake_policy command to set the policy and suppress this warning, or
+        preferably upgrade to using FindPython, either by calling it explicitly
+        before pybind11, or by setting PYBIND11_FINDPYTHON ON before pybind11.
+      Call Stack (most recent call first):
+        /usr/local/python3.12.13/lib/python3.12/site-packages/pybind11/share/cmake/pybind11/pybind11Tools.cmake:44 (find_package)
+        /usr/local/python3.12.13/lib/python3.12/site-packages/pybind11/share/cmake/pybind11/pybind11Common.cmake:237 (include)
+        /usr/local/python3.12.13/lib/python3.12/site-packages/pybind11/share/cmake/pybind11/pybind11Config.cmake:257 (include)
+        CMakeLists.txt:15 (find_package)
+      This warning is for project developers.  Use -Wno-author to suppress it.
+
+      CMake Warning (deprecated) at /usr/local/python3.12.13/lib/python3.12/site-packages/pybind11/share/cmake/pybind11/FindPythonLibsNew.cmake:110 (cmake_policy):
+        The OLD behavior for policy CMP0148 will be removed from a future version
+        of CMake.
+
+        The cmake-policies(7) manual explains that the OLD behaviors of all
+        policies are deprecated and that a policy should be set to OLD only under
+        specific short-term circumstances.  Projects should be ported to the NEW
+        behavior and not rely on setting a policy to OLD.
+      Call Stack (most recent call first):
+        /usr/local/python3.12.13/lib/python3.12/site-packages/pybind11/share/cmake/pybind11/pybind11Tools.cmake:44 (find_package)
+        /usr/local/python3.12.13/lib/python3.12/site-packages/pybind11/share/cmake/pybind11/pybind11Common.cmake:237 (include)
+        /usr/local/python3.12.13/lib/python3.12/site-packages/pybind11/share/cmake/pybind11/pybind11Config.cmake:257 (include)
+        CMakeLists.txt:15 (find_package)
+      This warning is for project developers.  Use -Wno-author or -Wno-deprecated
+      to suppress it.
+
+      -- Found PythonInterp: /usr/local/python3.12.13/bin/python3.12 (found suitable version "3.12.13", minimum required is "3.8")
+      -- Found PythonLibs: /usr/local/python3.12.13/lib/libpython3.12.so
+      -- Performing Test HAS_FLTO_AUTO
+      -- Performing Test HAS_FLTO_AUTO - Success
+      -- Found pybind11: /usr/local/python3.12.13/lib/python3.12/site-packages/pybind11/include (found version "3.0.4")
+      CMake Warning at /usr/local/python3.12.13/lib/python3.12/site-packages/torch/share/cmake/Torch/TorchConfig.cmake:22 (message):
+        static library kineto_LIBRARY-NOTFOUND not found.
+      Call Stack (most recent call first):
+        /usr/local/python3.12.13/lib/python3.12/site-packages/torch/share/cmake/Torch/TorchConfig.cmake:125 (append_torchlib_if_found)
+        CMakeLists.txt:20 (find_package)
+
+
+      -- Found Torch: /usr/local/python3.12.13/lib/python3.12/site-packages/torch/lib/libtorch.so
+      -- Detected SOC version: ascend310p1
+      -- Hardware ascend310p1 detected: skip vllm_ascend_kernels compile
+      TORCH_NPU_PATH is /usr/local/python3.12.13/lib/python3.12/site-packages/torch_npu
+      -- Performing Test HAVE_ACLRT_MEMCPY_BATCH_ASYNC
+      -- Performing Test HAVE_ACLRT_MEMCPY_BATCH_ASYNC - Success
+      -- aclrtMemcpyBatchAsync: detected in CANN headers, enabling batch memcpy path
+      -- Configuring done (17.6s)
+      -- Generating done (0.0s)
+      CMake Warning (unused-cli):
+        Manually-specified variables were not used by the project:
+
+          FETCHCONTENT_BASE_DIR
+
+
+      -- Build files have been written to: /tmp/tmpw9uer456.build-temp
+      CMake Warning:
+        Ignoring extra path from command line:
+
+         "cmake"
+
+
+      CMake Warning (author) at /usr/local/python3.12.13/lib/python3.12/site-packages/pybind11/share/cmake/pybind11/FindPythonLibsNew.cmake:101 (message):
+        Policy CMP0148 is not set: The FindPythonInterp and FindPythonLibs modules
+        are removed.  Run "cmake --help-policy CMP0148" for policy details.  Use
+        the cmake_policy command to set the policy and suppress this warning, or
+        preferably upgrade to using FindPython, either by calling it explicitly
+        before pybind11, or by setting PYBIND11_FINDPYTHON ON before pybind11.
+      Call Stack (most recent call first):
+        /usr/local/python3.12.13/lib/python3.12/site-packages/pybind11/share/cmake/pybind11/pybind11Tools.cmake:44 (find_package)
+        /usr/local/python3.12.13/lib/python3.12/site-packages/pybind11/share/cmake/pybind11/pybind11Common.cmake:237 (include)
+        /usr/local/python3.12.13/lib/python3.12/site-packages/pybind11/share/cmake/pybind11/pybind11Config.cmake:257 (include)
+        CMakeLists.txt:15 (find_package)
+      This warning is for project developers.  Use -Wno-author to suppress it.
+
+      CMake Warning (deprecated) at /usr/local/python3.12.13/lib/python3.12/site-packages/pybind11/share/cmake/pybind11/FindPythonLibsNew.cmake:110 (cmake_policy):
+        The OLD behavior for policy CMP0148 will be removed from a future version
+        of CMake.
+
+        The cmake-policies(7) manual explains that the OLD behaviors of all
+        policies are deprecated and that a policy should be set to OLD only under
+        specific short-term circumstances.  Projects should be ported to the NEW
+        behavior and not rely on setting a policy to OLD.
+      Call Stack (most recent call first):
+        /usr/local/python3.12.13/lib/python3.12/site-packages/pybind11/share/cmake/pybind11/pybind11Tools.cmake:44 (find_package)
+        /usr/local/python3.12.13/lib/python3.12/site-packages/pybind11/share/cmake/pybind11/pybind11Common.cmake:237 (include)
+        /usr/local/python3.12.13/lib/python3.12/site-packages/pybind11/share/cmake/pybind11/pybind11Config.cmake:257 (include)
+        CMakeLists.txt:15 (find_package)
+      This warning is for project developers.  Use -Wno-author or -Wno-deprecated
+      to suppress it.
+
+      -- Found pybind11: /usr/local/python3.12.13/lib/python3.12/site-packages/pybind11/include (found version "3.0.4")
+      CMake Warning at /usr/local/python3.12.13/lib/python3.12/site-packages/torch/share/cmake/Torch/TorchConfig.cmake:22 (message):
+        static library kineto_LIBRARY-NOTFOUND not found.
+      Call Stack (most recent call first):
+        /usr/local/python3.12.13/lib/python3.12/site-packages/torch/share/cmake/Torch/TorchConfig.cmake:125 (append_torchlib_if_found)
+        CMakeLists.txt:20 (find_package)
+
+
+      -- Detected SOC version: ascend310p1
+      -- Hardware ascend310p1 detected: skip vllm_ascend_kernels compile
+      TORCH_NPU_PATH is /usr/local/python3.12.13/lib/python3.12/site-packages/torch_npu
+      -- aclrtMemcpyBatchAsync: detected in CANN headers, enabling batch memcpy path
+      -- Configuring done (16.8s)
+      -- Generating done (0.0s)
+      -- Build files have been written to: /tmp/tmpw9uer456.build-temp
+      [ 50%] Building CXX object CMakeFiles/vllm_ascend_C.dir/csrc/camem_allocator.cpp.o
+      [ 50%] Building CXX object CMakeFiles/vllm_ascend_C.dir/csrc/aclnn_torch_adapter/NPUStorageImpl.cpp.o
+      [ 50%] Building CXX object CMakeFiles/vllm_ascend_C.dir/csrc/aclnn_torch_adapter/NPUBridge.cpp.o
+      [ 83%] Building CXX object CMakeFiles/vllm_ascend_C.dir/csrc/torch_binding.cpp.o
+      [ 83%] Building CXX object CMakeFiles/vllm_ascend_C.dir/csrc/torch_binding_meta.cpp.o
+      /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/torch_binding.cpp:33:10: fatal error: moe/apply_top_k_top_p_custom/apply_top_k_top_p_custom_torch_adpt.h: No such file or directory
+         33 | #include "moe/apply_top_k_top_p_custom/apply_top_k_top_p_custom_torch_adpt.h"
+            |          ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+      compilation terminated.
+      gmake[3]: *** [CMakeFiles/vllm_ascend_C.dir/build.make:121: CMakeFiles/vllm_ascend_C.dir/csrc/torch_binding.cpp.o] Error 1
+      gmake[3]: *** Waiting for unfinished jobs....
+      /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/torch_binding_meta.cpp: In function ‘std::tuple<at::Tensor, at::Tensor, at::Tensor> vllm_ascend::meta::moe_gating_top_k_meta(const at::Tensor&, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, bool, double, double, const std::optional<at::Tensor>&)’:
+      /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/torch_binding_meta.cpp:402:48: warning: ‘constexpr T c10::value_or_else(const std::optional<_Tp>&, F&&) [with T = at::Tensor; F = vllm_ascend::meta::moe_gating_top_k_meta(const at::Tensor&, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, bool, double, double, const std::optional<at::Tensor>&)::<lambda()>]’ is deprecated: Please use std::optional::value_or instead of c10::value_or_else [-Wdeprecated-declarations]
+        402 |     const at::Tensor &bias = c10::value_or_else(bias_opt, [] { return at::Tensor(); });
+            |                              ~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+      In file included from /usr/local/python3.12.13/lib/python3.12/site-packages/torch/include/c10/core/SymInt.h:9,
+                       from /usr/local/python3.12.13/lib/python3.12/site-packages/torch/include/c10/core/Scalar.h:13,
+                       from /usr/local/python3.12.13/lib/python3.12/site-packages/torch/include/ATen/core/TensorBody.h:17,
+                       from /usr/local/python3.12.13/lib/python3.12/site-packages/torch/include/ATen/core/Tensor.h:4,
+                       from /usr/local/python3.12.13/lib/python3.12/site-packages/torch/include/ATen/Tensor.h:4,
+                       from /usr/local/python3.12.13/lib/python3.12/site-packages/torch/include/torch/csrc/autograd/function_hook.h:4,
+                       from /usr/local/python3.12.13/lib/python3.12/site-packages/torch/include/torch/csrc/autograd/cpp_hook.h:3,
+                       from /usr/local/python3.12.13/lib/python3.12/site-packages/torch/include/torch/csrc/autograd/variable.h:7,
+                       from /usr/local/python3.12.13/lib/python3.12/site-packages/torch/include/torch/csrc/autograd/autograd.h:4,
+                       from /usr/local/python3.12.13/lib/python3.12/site-packages/torch/include/torch/csrc/api/include/torch/autograd.h:4,
+                       from /usr/local/python3.12.13/lib/python3.12/site-packages/torch/include/torch/csrc/api/include/torch/all.h:8,
+                       from /usr/local/python3.12.13/lib/python3.12/site-packages/torch/include/torch/extension.h:6,
+                       from /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/torch_binding_meta.cpp:1:
+      /usr/local/python3.12.13/lib/python3.12/site-packages/torch/include/c10/util/Optional.h:40:1: note: declared here
+         40 | value_or_else(const std::optional<T>& v, F&& func) {
+            | ^~~~~~~~~~~~~
+      /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/torch_binding_meta.cpp: In function ‘std::tuple<at::Tensor, at::Tensor, at::Tensor> vllm_ascend::meta::chunk_gated_delta_rule_fwd_h_meta(const at::Tensor&, const at::Tensor&, const at::Tensor&, const std::optional<at::Tensor>&, const std::optional<at::Tensor>&, const std::optional<at::Tensor>&, std::optional<bool>, std::optional<long int>, std::optional<bool>, std::optional<c10::ArrayRef<long int> >, std::optional<c10::ArrayRef<long int> >, std::optional<bool>, std::optional<bool>)’:
+      /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/torch_binding_meta.cpp:1470:58: warning: ‘constexpr T c10::value_or_else(const std::optional<_Tp>&, F&&) [with T = at::Tensor; F = vllm_ascend::meta::chunk_gated_delta_rule_fwd_h_meta(const at::Tensor&, const at::Tensor&, const at::Tensor&, const std::optional<at::Tensor>&, const std::optional<at::Tensor>&, const std::optional<at::Tensor>&, std::optional<bool>, std::optional<long int>, std::optional<bool>, std::optional<c10::ArrayRef<long int> >, std::optional<c10::ArrayRef<long int> >, std::optional<bool>, std::optional<bool>)::<lambda()>]’ is deprecated: Please use std::optional::value_or instead of c10::value_or_else [-Wdeprecated-declarations]
+       1470 |     const at::Tensor &initial_state_ = c10::value_or_else(initial_state, [] { return at::Tensor(); });
+            |                                        ~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+      /usr/local/python3.12.13/lib/python3.12/site-packages/torch/include/c10/util/Optional.h:40:1: note: declared here
+         40 | value_or_else(const std::optional<T>& v, F&& func) {
+            | ^~~~~~~~~~~~~
+      /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/torch_binding_meta.cpp:1472:46: warning: ‘constexpr T c10::value_or_else(const std::optional<_Tp>&, F&&) [with T = at::Tensor; F = vllm_ascend::meta::chunk_gated_delta_rule_fwd_h_meta(const at::Tensor&, const at::Tensor&, const at::Tensor&, const std::optional<at::Tensor>&, const std::optional<at::Tensor>&, const std::optional<at::Tensor>&, std::optional<bool>, std::optional<long int>, std::optional<bool>, std::optional<c10::ArrayRef<long int> >, std::optional<c10::ArrayRef<long int> >, std::optional<bool>, std::optional<bool>)::<lambda()>]’ is deprecated: Please use std::optional::value_or instead of c10::value_or_else [-Wdeprecated-declarations]
+       1472 |     const at::Tensor &g_ = c10::value_or_else(g, [] { return at::Tensor(); });
+            |                            ~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+      /usr/local/python3.12.13/lib/python3.12/site-packages/torch/include/c10/util/Optional.h:40:1: note: declared here
+         40 | value_or_else(const std::optional<T>& v, F&& func) {
+            | ^~~~~~~~~~~~~
+      /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/torch_binding_meta.cpp:1473:47: warning: ‘constexpr T c10::value_or_else(const std::optional<_Tp>&, F&&) [with T = at::Tensor; F = vllm_ascend::meta::chunk_gated_delta_rule_fwd_h_meta(const at::Tensor&, const at::Tensor&, const at::Tensor&, const std::optional<at::Tensor>&, const std::optional<at::Tensor>&, const std::optional<at::Tensor>&, std::optional<bool>, std::optional<long int>, std::optional<bool>, std::optional<c10::ArrayRef<long int> >, std::optional<c10::ArrayRef<long int> >, std::optional<bool>, std::optional<bool>)::<lambda()>]’ is deprecated: Please use std::optional::value_or instead of c10::value_or_else [-Wdeprecated-declarations]
+       1473 |     const at::Tensor &gk_ = c10::value_or_else(gk, [] { return at::Tensor(); });
+            |                             ~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+      /usr/local/python3.12.13/lib/python3.12/site-packages/torch/include/c10/util/Optional.h:40:1: note: declared here
+         40 | value_or_else(const std::optional<T>& v, F&& func) {
+            | ^~~~~~~~~~~~~
+      /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/torch_binding_meta.cpp: In function ‘at::Tensor vllm_ascend::meta::chunk_fwd_o_meta(const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&, double, const std::optional<at::Tensor>&, const std::optional<at::Tensor>&, std::optional<c10::ArrayRef<long int> >, std::optional<c10::ArrayRef<long int> >, std::optional<long int>, std::optional<bool>)’:
+      /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/csrc/torch_binding_meta.cpp:1527:46: warning: ‘constexpr T c10::value_or_else(const std::optional<_Tp>&, F&&) [with T = at::Tensor; F = vllm_ascend::meta::chunk_fwd_o_meta(const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&, double, const std::optional<at::Tensor>&, const std::optional<at::Tensor>&, std::optional<c10::ArrayRef<long int> >, std::optional<c10::ArrayRef<long int> >, std::optional<long int>, std::optional<bool>)::<lambda()>]’ is deprecated: Please use std::optional::value_or instead of c10::value_or_else [-Wdeprecated-declarations]
+       1527 |     const at::Tensor &g_ = c10::value_or_else(g, [] { return at::Tensor(); });
+            |                            ~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+      /usr/local/python3.12.13/lib/python3.12/site-packages/torch/include/c10/util/Optional.h:40:1: note: declared here
+         40 | value_or_else(const std::optional<T>& v, F&& func) {
+            | ^~~~~~~~~~~~~
+      gmake[2]: *** [CMakeFiles/Makefile2:87: CMakeFiles/vllm_ascend_C.dir/all] Error 2
+      gmake[1]: *** [CMakeFiles/Makefile2:94: CMakeFiles/vllm_ascend_C.dir/rule] Error 2
+      gmake: *** [Makefile:169: vllm_ascend_C] Error 2
+      Traceback (most recent call last):
+        File "/usr/local/python3.12.13/lib/python3.12/site-packages/pip/_vendor/pyproject_hooks/_in_process/_in_process.py", line 389, in <module>
+          main()
+        File "/usr/local/python3.12.13/lib/python3.12/site-packages/pip/_vendor/pyproject_hooks/_in_process/_in_process.py", line 373, in main
+          json_out["return_val"] = hook(**hook_input["kwargs"])
+                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        File "/usr/local/python3.12.13/lib/python3.12/site-packages/pip/_vendor/pyproject_hooks/_in_process/_in_process.py", line 303, in build_editable
+          return hook(wheel_directory, config_settings, metadata_directory)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        File "/usr/local/python3.12.13/lib/python3.12/site-packages/setuptools/build_meta.py", line 472, in build_editable
+          return self._build_with_temp_dir(
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^
+        File "/usr/local/python3.12.13/lib/python3.12/site-packages/setuptools/build_meta.py", line 408, in _build_with_temp_dir
+          self.run_setup()
+        File "/usr/local/python3.12.13/lib/python3.12/site-packages/setuptools/build_meta.py", line 317, in run_setup
+          exec(code, locals())
+        File "<string>", line 512, in <module>
+        File "/usr/local/python3.12.13/lib/python3.12/site-packages/setuptools/__init__.py", line 117, in setup
+          return distutils.core.setup(**attrs)  # type: ignore[return-value]
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        File "/usr/local/python3.12.13/lib/python3.12/site-packages/setuptools/_distutils/core.py", line 186, in setup
+          return run_commands(dist)
+                 ^^^^^^^^^^^^^^^^^^
+        File "/usr/local/python3.12.13/lib/python3.12/site-packages/setuptools/_distutils/core.py", line 202, in run_commands
+          dist.run_commands()
+        File "/usr/local/python3.12.13/lib/python3.12/site-packages/setuptools/_distutils/dist.py", line 1002, in run_commands
+          self.run_command(cmd)
+        File "/usr/local/python3.12.13/lib/python3.12/site-packages/setuptools/dist.py", line 1107, in run_command
+          super().run_command(command)
+        File "/usr/local/python3.12.13/lib/python3.12/site-packages/setuptools/_distutils/dist.py", line 1021, in run_command
+          cmd_obj.run()
+        File "/usr/local/python3.12.13/lib/python3.12/site-packages/setuptools/command/editable_wheel.py", line 140, in run
+          self._create_wheel_file(bdist_wheel)
+        File "/usr/local/python3.12.13/lib/python3.12/site-packages/setuptools/command/editable_wheel.py", line 350, in _create_wheel_file
+          files, mapping = self._run_build_commands(dist_name, unpacked, lib, tmp)
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        File "/usr/local/python3.12.13/lib/python3.12/site-packages/setuptools/command/editable_wheel.py", line 273, in _run_build_commands
+          self._run_build_subcommands()
+        File "/usr/local/python3.12.13/lib/python3.12/site-packages/setuptools/command/editable_wheel.py", line 300, in _run_build_subcommands
+          self.run_command(name)
+        File "/usr/local/python3.12.13/lib/python3.12/site-packages/setuptools/_distutils/cmd.py", line 357, in run_command
+          self.distribution.run_command(command)
+        File "/usr/local/python3.12.13/lib/python3.12/site-packages/setuptools/dist.py", line 1107, in run_command
+          super().run_command(command)
+        File "/usr/local/python3.12.13/lib/python3.12/site-packages/setuptools/_distutils/dist.py", line 1021, in run_command
+          cmd_obj.run()
+        File "<string>", line 445, in run
+        File "/usr/local/python3.12.13/lib/python3.12/site-packages/setuptools/command/build_ext.py", line 97, in run
+          _build_ext.run(self)
+        File "/usr/local/python3.12.13/lib/python3.12/site-packages/setuptools/_distutils/command/build_ext.py", line 368, in run
+          self.build_extensions()
+        File "<string>", line 402, in build_extensions
+        File "/usr/local/python3.12.13/lib/python3.12/subprocess.py", line 413, in check_call
+          raise CalledProcessError(retcode, cmd)
+      subprocess.CalledProcessError: Command '['cmake', '--build', '.', '-j=96', '--target=vllm_ascend_C']' returned non-zero exit status 2.
+      An error occurred when building editable wheel for vllm_ascend.
+      See debugging tips in: https://setuptools.pypa.io/en/latest/userguide/development_mode.html#debugging-tips
+      [end of output]
+
+  note: This error originates from a subprocess, and is likely not a problem with pip.
+  ERROR: Failed building editable for vllm_ascend
+Failed to build vllm_ascend
+
+[notice] A new release of pip is available: 26.1.1 -> 26.1.2
+[notice] To update, run: pip install --upgrade pip
+error: failed-wheel-build-for-install
+
+× Failed to build installable wheels for some pyproject.toml based projects
+╰─> vllm_ascend
+
