@@ -1,0 +1,226 @@
+[root@36ec83f85b6d vllm-ascend]# TORCH_DEVICE_BACKEND_AUTOLOAD=0 pytest -sv tests/ut/_310p tests/ut/spec_decode/test_dspark_proposer.py
+INFO 07-29 03:17:35 [__init__.py:44] Available plugins for group vllm.platform_plugins:
+INFO 07-29 03:17:35 [__init__.py:46] - ascend -> vllm_ascend:register
+INFO 07-29 03:17:35 [__init__.py:49] All plugins in this group will be loaded. Set `VLLM_PLUGINS` to control which plugins to load.
+INFO 07-29 03:17:35 [__init__.py:237] Platform plugin ascend is activated
+INFO 07-29 03:17:41 [platform.py:61] Breakable cudagraph is force disabled on Ascend because DeepSeek V4 PIECEWISE cudagraph is not supported yet.
+INFO 07-29 03:17:41 [importing.py:88] Triton not installed or not compatible; certain GPU-related functions will not be available.
+=========================================================================================== test session starts ===========================================================================================
+platform linux -- Python 3.12.13, pytest-8.3.2, pluggy-1.6.0 -- /usr/local/python3.12.13/bin/python3
+cachedir: .pytest_cache
+rootdir: /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend
+configfile: pyproject.toml
+plugins: xdist-3.6.1, anyio-4.14.2
+collected 176 items
+
+tests/ut/_310p/attention/test_attention_mask_310.py::TestAttentionMaskBuilder310::test_get_attention_mask_310 PASSED
+tests/ut/_310p/attention/test_attention_mask_310.py::TestAttentionMaskBuilder310::test_get_splitfuse_attn_mask_310 PASSED
+tests/ut/_310p/attention/test_attention_v1_310.py::TestAscendAttentionBackend310::test_get_builder_cls PASSED
+tests/ut/_310p/attention/test_attention_v1_310.py::TestAscendAttentionBackend310::test_get_impl_cls PASSED
+tests/ut/_310p/attention/test_attention_v1_310.py::TestAscendAttentionBackend310::test_get_kv_cache_shape_not PASSED
+tests/ut/_310p/attention/test_attention_v1_310.py::TestAscendAttentionBackendImpl310::test_forward_chunked_prefill_310 PASSED
+tests/ut/_310p/attention/test_attention_v1_310.py::TestAscendAttentionBackendImpl310::test_forward_mtp_310 PASSED
+tests/ut/_310p/attention/test_attention_v1_310.py::TestAscendAttentionBackendImpl310::test_forward_paged_attention_310 PASSED
+tests/ut/_310p/attention/test_attention_v1_310.py::TestAscendAttentionBackendImpl310::test_forward_prefill_310 PASSED
+tests/ut/_310p/attention/test_attention_v1_310.py::TestAscendAttentionBackendImpl310::test_forward_prefill_310_coerces_device_seq_lens_to_host PASSED
+tests/ut/_310p/attention/test_attention_v1_310.py::TestAscendAttentionBackendImpl310::test_forward_prefill_310_v3_also_gets_host_seq_lens PASSED
+tests/ut/_310p/attention/test_attention_v1_310.py::TestAscendAttentionBackendImpl310::test_forward_prefill_cache_hit_310 PASSED
+tests/ut/_310p/attention/test_attention_v1_310.py::TestAscendAttentionBackendImpl310::test_splitfuse_v2_uses_the_fixed_compressed_mask PASSED
+tests/ut/_310p/attention/test_attention_v1_310.py::TestAscendAttentionMetadataBuilder310::test_build_for_drafting_calls_build_with_is_drafting_true PASSED
+tests/ut/_310p/attention/test_attention_v1_310.py::TestAscendAttentionMetadataBuilder310::test_fill_query_lens_cpu_with_buffer_is_drafting PASSED
+tests/ut/_310p/attention/test_attention_v1_310.py::TestAscendAttentionMetadataBuilder310::test_fill_query_lens_cpu_with_buffer_not_drafting PASSED
+tests/ut/_310p/attention/test_attention_v1_310.py::TestAscendAttentionMetadataBuilder310::test_fill_query_lens_cpu_without_buffer PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaCallContract::test_caches_are_passed_by_reference PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaCallContract::test_dspark_expects_k_queries_not_k_plus_one PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaCallContract::test_head_counts_and_scale PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaCallContract::test_kv_lens_are_passed_through PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaCallContract::test_mask_is_none_regardless_of_metadata PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaCallContract::test_precision_and_layout_flags PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaCallContract::test_q_lens_are_raw_not_cumulative PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaCallContract::test_query_is_reshaped_to_tnd PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaCallContract::test_result_is_copied_into_the_caller_buffer PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaDynamicGuards::test_batch_size_disagreement_is_refused PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaDynamicGuards::test_cumulative_q_lens_are_refused PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaDynamicGuards::test_kv_len_exceeding_block_table_capacity_is_refused PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaDynamicGuards::test_missing_raw_q_lens_is_refused PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaDynamicGuards::test_non_int32_block_table_is_refused PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaDynamicGuards::test_q_len_greater_than_kv_len_is_refused PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaDynamicGuards::test_token_count_disagreement_is_refused PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaDynamicGuards::test_wrong_q_len_for_method_is_refused PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaScopeValidation::test_bf16_is_refused PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaScopeValidation::test_graph_mode_is_refused PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaScopeValidation::test_illegal_gqa_is_refused PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaScopeValidation::test_non_16_aligned_kv_is_refused PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaScopeValidation::test_non_nz_cache_format_is_refused PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaScopeValidation::test_scope_is_validated_once_then_cached PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaScopeValidation::test_scope_validator_refuses_unsupported_method_on_its_own PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaScopeValidation::test_tp4_layout_is_allowed PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaScopeValidation::test_unexpected_k_is_refused PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaScopeValidation::test_unsupported_architecture_is_refused PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaScopeValidation::test_unsupported_method_is_refused PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaScopeValidation::test_wrong_cache_block_size_is_refused PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaOpResolution::test_missing_op_fails_loud_without_fallback PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaOutputAliasing::test_op_writes_through_to_the_caller_buffer PASSED
+tests/ut/_310p/attention/test_parallel_draft_routing_310p.py::TestParallelDraftRouting::test_causal_paths_are_unchanged PASSED
+tests/ut/_310p/attention/test_parallel_draft_routing_310p.py::TestParallelDraftRouting::test_causal_paths_do_not_need_a_forward_context PASSED
+tests/ut/_310p/attention/test_parallel_draft_routing_310p.py::TestParallelDraftRouting::test_dflash_draft_non_causal_chunked_prefill_goes_to_adn PASSED
+tests/ut/_310p/attention/test_parallel_draft_routing_310p.py::TestParallelDraftRouting::test_draft_non_causal_in_other_states_fails_loud PASSED
+tests/ut/_310p/attention/test_parallel_draft_routing_310p.py::TestParallelDraftRouting::test_dspark_draft_non_causal_chunked_prefill_goes_to_adn PASSED
+tests/ut/_310p/attention/test_parallel_draft_routing_310p.py::TestParallelDraftRouting::test_no_speculative_config_non_causal_fails_loud PASSED
+tests/ut/_310p/attention/test_parallel_draft_routing_310p.py::TestParallelDraftRouting::test_non_draft_non_causal_fails_loud PASSED
+tests/ut/_310p/attention/test_parallel_draft_routing_310p.py::TestParallelDraftRouting::test_unsupported_method_non_causal_fails_loud PASSED
+tests/ut/_310p/fused_moe/test_experts_selector_310.py::TestExpertsSelector310::test_select_experts[256] PASSED
+tests/ut/_310p/fused_moe/test_experts_selector_310.py::TestExpertsSelector310::test_select_experts[128] PASSED
+tests/ut/_310p/fused_moe/test_experts_selector_310.py::TestExpertsSelector310::test_select_experts_chunks_large_token_batch PASSED
+tests/ut/_310p/fused_moe/test_moe_mlp_310.py::TestUnifiedApplyMLP310::test_all_gather_apply_mlp_returns_common_tuple_contract PASSED
+tests/ut/_310p/fused_moe/test_moe_mlp_310.py::TestUnifiedApplyMLP310::test_unified_apply_mlp_with_quantization_310 PASSED
+tests/ut/_310p/fused_moe/test_moe_mlp_310.py::TestUnifiedApplyMLP310::test_unified_apply_mlp_without_quantization_310 PASSED
+tests/ut/_310p/fused_moe/test_shared_fused_moe_310.py::test_runner_310_installs_specialized_unquantized_method_and_comm PASSED
+tests/ut/_310p/fused_moe/test_shared_fused_moe_310.py::test_process_weights_after_loading_310_uses_version_specific_layout PASSED
+tests/ut/_310p/fused_moe/test_shared_fused_moe_310.py::test_shared_experts_part2_310_applies_optional_gate[False] PASSED
+tests/ut/_310p/fused_moe/test_shared_fused_moe_310.py::test_shared_experts_part2_310_applies_optional_gate[True] PASSED
+tests/ut/_310p/fused_moe/test_shared_fused_moe_310.py::test_shared_forward_impl_310_returns_current_runner_contract[False] PASSED
+tests/ut/_310p/fused_moe/test_shared_fused_moe_310.py::test_shared_forward_impl_310_returns_current_runner_contract[True] PASSED
+tests/ut/_310p/ops/test_chunk_gated_delta_rule_310.py::test_chunk_gated_delta_rule_310_output_shape_and_dtype PASSED
+tests/ut/_310p/ops/test_chunk_gated_delta_rule_310.py::test_chunk_gated_delta_rule_310_varlen_path PASSED
+tests/ut/_310p/ops/test_chunk_gated_delta_rule_310.py::test_chunk_gated_delta_rule_310_varlen_tnd_path PASSED
+tests/ut/_310p/ops/test_conv_310.py::test_conv3d_310_forward_oot_uses_forward_native PASSED
+tests/ut/_310p/ops/test_gdn_310.py::test_ascend_gdn_attention_310_uses_310p_backend PASSED
+tests/ut/_310p/ops/test_gdn_310.py::test_zero_padded_tokens_masks_only_padded_token_positions PASSED
+tests/ut/_310p/ops/test_gdn_310.py::test_mask_padded_recurrent_accepted_tokens_zeros_dummy_requests PASSED
+tests/ut/_310p/ops/test_gdn_310.py::test_builder310_pads_spec_decode_metadata_with_dummy_requests PASSED
+tests/ut/_310p/ops/test_layernorm_310.py::test_rmsnorm_gated_310_forward_oot_uses_rmsnorm_activation_mul PASSED
+tests/ut/_310p/ops/test_layernorm_310.py::test_rmsnorm_gated_310_forward_oot_uses_rmsnorm_without_gate PASSED
+tests/ut/_310p/ops/test_layernorm_310.py::test_rmsnorm_gated_310_forward_oot_keeps_native_for_group_norm PASSED
+tests/ut/_310p/ops/test_mm_encoder_attention_310.py::test_register_customop_overrides_mm_encoder_attention_for_310p PASSED
+tests/ut/_310p/ops/test_mm_encoder_attention_310.py::test_mm_encoder_attention_310_forward_oot_with_padding PASSED
+tests/ut/_310p/ops/test_rotary_embedding_310.py::test_set_mrope_apply_rotary_slices_populates_globals PASSED
+tests/ut/_310p/ops/test_rotary_embedding_310.py::test_set_mrope_apply_rotary_slices_reuses_buffer_address PASSED
+tests/ut/_310p/ops/test_rotary_embedding_310.py::test_ascend_rotary_embedding_310_drafting_flag PASSED
+tests/ut/_310p/quantization/test_modelslim_config_310.py::TestAscendModelSlimConfig310::test_get_quant_method_for_fused_moe_310 PASSED
+tests/ut/_310p/quantization/test_modelslim_config_310.py::TestAscendModelSlimConfig310::test_get_quant_method_for_linear_310 PASSED
+tests/ut/_310p/quantization/test_modelslim_config_310.py::TestAscendModelSlimConfig310::test_get_quant_method_maps_lm_head_prefix_310 PASSED
+tests/ut/_310p/quantization/test_w8a8_dynamic_310.py::TestAscendW8A8FusedMoEMethod310::test_get_dynamic_quant_param_310 PASSED
+tests/ut/_310p/quantization/test_w8a8_dynamic_310.py::TestAscendW8A8FusedMoEMethod310::test_get_weight_310 PASSED
+tests/ut/_310p/quantization/test_w8a8_dynamic_310.py::TestAscendW8A8DynamicLinearMethod310::test_apply_310 PASSED
+tests/ut/_310p/quantization/test_w8a8_dynamic_310.py::TestAscendW8A8DynamicLinearMethod310::test_get_perchannel_param_310 PASSED
+tests/ut/_310p/quantization/test_w8a8_dynamic_310.py::TestAscendW8A8DynamicLinearMethod310::test_get_weight_310 PASSED
+tests/ut/_310p/quantization/test_w8a8_dynamic_310.py::TestAscendW8A8DynamicLinearMethod310::test_process_weights_after_loading_calls_nz_format_cast_310p PASSED
+tests/ut/_310p/quantization/test_w8a8_static_310.py::TestAscendW8A8LinearMethod310::test_apply_with_x_is_int8_310 PASSED
+tests/ut/_310p/quantization/test_w8a8_static_310.py::TestAscendW8A8LinearMethod310::test_apply_with_x_not_int8_310 PASSED
+tests/ut/_310p/quantization/test_w8a8_static_310.py::TestAscendW8A8LinearMethod310::test_get_perchannel_param_310 PASSED
+tests/ut/_310p/quantization/test_w8a8_static_310.py::TestAscendW8A8LinearMethod310::test_get_pertensor_param_310 PASSED
+tests/ut/_310p/quantization/test_w8a8_static_310.py::TestAscendW8A8LinearMethod310::test_get_weight_310 PASSED
+tests/ut/_310p/quantization/test_w8a8_static_310.py::TestAscendW8A8LinearMethod310::test_process_weights_after_loading_calls_nz_format_cast_310p PASSED
+tests/ut/_310p/quantization/test_w8a8s_310.py::TestAscendW8A8SLinearMethod310::test_apply_with_x_is_int8_310 PASSED
+tests/ut/_310p/quantization/test_w8a8s_310.py::TestAscendW8A8SLinearMethod310::test_apply_with_x_not_int8_310 PASSED
+tests/ut/_310p/quantization/test_w8a8s_310.py::TestAscendW8A8SLinearMethod310::test_get_perchannel_param_310 PASSED
+tests/ut/_310p/quantization/test_w8a8s_310.py::TestAscendW8A8SLinearMethod310::test_get_pertensor_param_310 PASSED
+tests/ut/_310p/quantization/test_w8a8s_310.py::TestAscendW8A8SLinearMethod310::test_get_weight_310 PASSED
+tests/ut/_310p/quantization/test_w8a8sc_310.py::TestAscendW8A8SCLinearMethod310::test_apply_with_x_is_int8_310 SKIPPED (Skip as npu_matmul_compress_dequant will be supported in PTA 26.0.0.)
+tests/ut/_310p/quantization/test_w8a8sc_310.py::TestAscendW8A8SCLinearMethod310::test_apply_with_x_not_int8_310 SKIPPED (Skip as npu_matmul_compress_dequant will be supported in PTA 26.0.0.)
+tests/ut/_310p/quantization/test_w8a8sc_310.py::TestAscendW8A8SCLinearMethod310::test_get_perchannel_param_310 PASSED
+tests/ut/_310p/quantization/test_w8a8sc_310.py::TestAscendW8A8SCLinearMethod310::test_get_pertensor_param_310 PASSED
+tests/ut/_310p/quantization/test_w8a8sc_310.py::TestAscendW8A8SCLinearMethod310::test_get_weight_310 PASSED
+tests/ut/_310p/sample/test_sampler_310.py::TestSampler310pStandalone::test_fill_cpu_exponential_310p_moves_has_draft_mask_to_cpu PASSED
+tests/ut/_310p/sample/test_sampler_310.py::TestSampler310pStandalone::test_random_sample_310p_fallback_to_initial_seed_when_set_state_failed PASSED
+tests/ut/_310p/sample/test_sampler_310.py::TestSampler310pStandalone::test_random_sample_310p_rebuild_cache_when_generator_identity_changes PASSED
+tests/ut/_310p/sample/test_sampler_310.py::TestSampler310pStandalone::test_random_sample_310p_reuse_cpu_generator_cache PASSED
+tests/ut/_310p/spec_decode/test_llm_base_proposer_310.py::TestAscendSpecDecodeBaseProposer310::test_run_merged_draft_restores_rope_flag_after_exception PASSED
+tests/ut/_310p/spec_decode/test_llm_base_proposer_310.py::TestAscendSpecDecodeBaseProposer310::test_run_merged_draft_sets_rope_flag_before_call PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestExpandParallelDraftingInputs::test_context_buffer_untouched_beyond_scheduled_segment PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestExpandParallelDraftingInputs::test_dflash_single_request PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestExpandParallelDraftingInputs::test_dspark_single_request PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestExpandParallelDraftingInputs::test_query_slots_cross_page_boundary PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestExpandParallelDraftingInputs::test_query_slots_never_equal_raw_cache_positions PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestExpandParallelDraftingInputs::test_ragged_segment_with_distinct_seq_lens PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestExpandParallelDraftingInputs::test_rejected_tail_excluded_from_query_but_kept_in_context PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestDflashDispatch::test_310p_metadata_is_switched_to_non_causal_parallel_draft PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestDflashDispatch::test_310p_slot_mapping_matches_the_verified_helper PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestDflashDispatch::test_310p_uses_helper_and_never_launches_triton PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestDflashDispatch::test_non_310p_still_launches_triton PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestResolve310pBlockSize::test_accepts_the_supported_configuration PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestResolve310pBlockSize::test_rejects_a_candidate_list_without_the_supported_size PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestResolve310pBlockSize::test_rejects_a_selected_size_outside_scope PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestResolve310pBlockSize::test_rejects_drafter_disagreeing_with_the_block_table PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestDSparkDispatch::test_metadata_matches_dspark_layout FAILED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestDSparkDispatch::test_multi_group_is_refused_on_310p PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestDSparkDispatch::test_non_310p_still_launches_triton PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestDSparkDispatch::test_single_group_calls_helper_once_with_dspark_semantics PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestDSparkDispatch::test_slot_mapping_matches_the_verified_helper PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestProfileRopeFlagCoverage::test_dflash_profile_covers_context_and_query PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestProfileRopeFlagCoverage::test_dspark_profile_covers_context_and_query PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestProfileRopeFlagCoverage::test_flag_is_restored_after_the_profile_branch PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestProfileRopeFlagCoverage::test_flag_is_restored_even_when_the_forward_raises PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestProfileRopeFlagCoverage::test_non_310p_leaves_the_flag_untouched PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestBonusAnchorRefusedOn310p::test_anchor_first_is_accepted_on_310p PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestBonusAnchorRefusedOn310p::test_bonus_anchor_is_allowed_off_310p PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestBonusAnchorRefusedOn310p::test_bonus_anchor_is_refused_on_310p PASSED
+tests/ut/_310p/test_block_table_310p.py::TestBlockTable310::test_compute_slot_mapping_rejects_device_tensor_inputs PASSED
+tests/ut/_310p/test_block_table_310p.py::TestBlockTable310::test_compute_slot_mapping_with_query_start_loc_signature PASSED
+tests/ut/_310p/test_block_table_310p.py::TestBlockTable310::test_compute_slot_mapping_with_req_indices_signature PASSED
+tests/ut/_310p/test_block_table_310p.py::TestBlockTable310::test_multi_group_compute_slot_mapping_accepts_none_compressed_args PASSED
+tests/ut/_310p/test_block_table_310p.py::TestBlockTable310::test_multi_group_compute_slot_mapping_uses_compressed_inputs_per_group PASSED
+tests/ut/_310p/test_kv_block_zeroer_310p.py::TestAscendKVBlockZeroer310::test_init_meta_deduplicates_kv_pointers PASSED
+tests/ut/_310p/test_kv_block_zeroer_310p.py::TestAscendKVBlockZeroer310::test_zero_block_ids_noop_when_empty PASSED
+tests/ut/_310p/test_kv_block_zeroer_310p.py::TestAscendKVBlockZeroer310::test_zero_block_ids_zeros_target_slices PASSED
+tests/ut/_310p/test_mamba_align_fallback_310p_source.py::test_310p_postprocess_fallback_preserves_upstream_metadata_semantics PASSED
+tests/ut/_310p/test_mamba_align_fallback_310p_source.py::test_310p_postprocess_fallback_mirrors_state_copy_without_triton PASSED
+tests/ut/_310p/test_model_runner_310p.py::test_prepare_inputs_keeps_aclgraph_metadata_on_cpu PASSED
+tests/ut/_310p/test_model_runner_310p.py::test_model_forward_updates_mtp_full_graph_params_before_replay PASSED
+tests/ut/_310p/test_model_runner_310p.py::TestNPUModelRunner310::test_may_reinitialize_input_batch_expands_prefix_mamba_block_table PASSED
+tests/ut/_310p/test_qwen3_context_rope_310p.py::TestApplyContextRope310P::test_does_not_pass_repeated_positions PASSED
+tests/ut/_310p/test_qwen3_context_rope_310p.py::TestApplyContextRope310P::test_non_310p_keeps_the_single_fused_call PASSED
+tests/ut/_310p/test_qwen3_context_rope_310p.py::TestApplyContextRope310P::test_non_310p_result_reflects_the_rotation PASSED
+tests/ut/_310p/test_qwen3_context_rope_310p.py::TestApplyContextRope310P::test_rotates_one_layer_at_a_time PASSED
+tests/ut/_310p/test_qwen3_context_rope_310p.py::TestApplyContextRope310P::test_uses_the_rotated_result_not_the_input PASSED
+tests/ut/_310p/test_sharded_state_loader_310p.py::TestShardedStateLoader310::test_generate_quant_description_float_model_310 PASSED
+tests/ut/_310p/test_sharded_state_loader_310p.py::TestShardedStateLoader310::test_generate_quant_description_int_model_310 PASSED
+tests/ut/_310p/test_sharded_state_loader_310p.py::TestShardedStateLoader310::test_generate_quant_description_no_quant_config_310 PASSED
+tests/ut/_310p/test_sharded_state_loader_310p.py::TestShardedStateLoader310::test_save_model_with_nd_format_310 PASSED
+tests/ut/spec_decode/test_dspark_proposer.py::TestDSparkPositionsFullUnderMultiDp::test_positions_not_pre_sliced[0] PASSED
+tests/ut/spec_decode/test_dspark_proposer.py::TestDSparkPositionsFullUnderMultiDp::test_positions_not_pre_sliced[8] PASSED
+tests/ut/spec_decode/test_dspark_proposer.py::TestDSparkPositionsFullUnderMultiDp::test_positions_not_pre_sliced[32] PASSED
+tests/ut/spec_decode/test_dspark_proposer.py::TestDSparkPositionsFullUnderMultiDp::test_positions_full_and_padded_for_dsa[8] PASSED
+tests/ut/spec_decode/test_dspark_proposer.py::TestDSparkPositionsFullUnderMultiDp::test_positions_full_and_padded_for_dsa[32] PASSED
+tests/ut/spec_decode/test_dspark_proposer.py::TestPadDraftBuffersBeforeBuild::test_zeros_dp_padding_region PASSED
+tests/ut/spec_decode/test_dspark_proposer.py::TestPadDraftBuffersBeforeBuild::test_noop_without_dp_padding PASSED
+tests/ut/spec_decode/test_dspark_proposer.py::TestPadDraftBuffersBeforeBuild::test_must_precede_build PASSED
+tests/ut/spec_decode/test_dspark_proposer.py::TestPadDraftBuffersBeforeBuild::test_called_before_build_in_propose PASSED
+tests/ut/spec_decode/test_dspark_proposer.py::TestDSparkInitialization::test_configures_anchor_sampling[hf_config0-True-3] PASSED
+tests/ut/spec_decode/test_dspark_proposer.py::TestDSparkInitialization::test_configures_anchor_sampling[hf_config1-False-4] PASSED
+
+================================================================================================ FAILURES =================================================================================================
+_________________________________________________________________________ TestDSparkDispatch.test_metadata_matches_dspark_layout __________________________________________________________________________
+
+self = <test_parallel_drafting_inputs_310p.TestDSparkDispatch testMethod=test_metadata_matches_dspark_layout>
+
+    def test_metadata_matches_dspark_layout(self):
+        proposer = make_dspark_proposer()
+        (result, _) = self._run_310p(proposer)
+        num_query_total, token_indices, out_cad, _ = result
+
+        from vllm_ascend.attention.attention_v1 import AscendAttentionState
+
+        self.assertEqual(num_query_total, 2 * self.Q_PER_REQ)
+        self.assertEqual(token_indices.shape[0], 2 * self.Q_PER_REQ)
+        self.assertEqual(out_cad.num_actual_tokens, 2 * self.Q_PER_REQ)
+        self.assertEqual(out_cad.num_input_tokens, 2 * self.Q_PER_REQ)
+        self.assertEqual(out_cad.max_query_len, self.Q_PER_REQ)
+>       self.assertEqual(out_cad.positions.shape[0], 2 * self.Q_PER_REQ)
+E       AssertionError: 64 != 14
+
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py:621: AssertionError
+============================================================================================ warnings summary =============================================================================================
+../../../../../usr/local/python3.12.13/lib/python3.12/site-packages/torch/jit/_script.py:362: 14 warnings
+  /usr/local/python3.12.13/lib/python3.12/site-packages/torch/jit/_script.py:362: DeprecationWarning: `torch.jit.script_method` is deprecated. Please switch to `torch.compile` or `torch.export`.
+    warnings.warn(
+
+tests/ut/_310p/test_model_runner_310p.py::test_model_forward_updates_mtp_full_graph_params_before_replay
+  /usr/local/python3.12.13/lib/python3.12/multiprocessing/popen_fork.py:66: DeprecationWarning: This process (pid=32346) is multi-threaded, use of fork() may lead to deadlocks in the child.
+    self.pid = os.fork()
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+========================================================================================= short test summary info =========================================================================================
+FAILED tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestDSparkDispatch::test_metadata_matches_dspark_layout - AssertionError: 64 != 14
+========================================================================== 1 failed, 173 passed, 2 skipped, 15 warnings in 5.87s ==========================================================================
