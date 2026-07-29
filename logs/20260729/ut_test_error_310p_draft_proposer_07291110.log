@@ -1,0 +1,820 @@
+[root@36ec83f85b6d vllm-ascend]# TORCH_DEVICE_BACKEND_AUTOLOAD=0 pytest -sv tests/ut/_310p tests/ut/spec_decode/test_dspark_proposer.py
+INFO 07-29 03:00:42 [__init__.py:44] Available plugins for group vllm.platform_plugins:
+INFO 07-29 03:00:42 [__init__.py:46] - ascend -> vllm_ascend:register
+INFO 07-29 03:00:42 [__init__.py:49] All plugins in this group will be loaded. Set `VLLM_PLUGINS` to control which plugins to load.
+INFO 07-29 03:00:42 [__init__.py:237] Platform plugin ascend is activated
+INFO 07-29 03:00:47 [platform.py:61] Breakable cudagraph is force disabled on Ascend because DeepSeek V4 PIECEWISE cudagraph is not supported yet.
+INFO 07-29 03:00:47 [importing.py:88] Triton not installed or not compatible; certain GPU-related functions will not be available.
+=========================================================================================== test session starts ===========================================================================================
+platform linux -- Python 3.12.13, pytest-8.3.2, pluggy-1.6.0 -- /usr/local/python3.12.13/bin/python3
+cachedir: .pytest_cache
+rootdir: /opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend
+configfile: pyproject.toml
+plugins: xdist-3.6.1, anyio-4.14.2
+collected 173 items
+
+tests/ut/_310p/attention/test_attention_mask_310.py::TestAttentionMaskBuilder310::test_get_attention_mask_310 PASSED
+tests/ut/_310p/attention/test_attention_mask_310.py::TestAttentionMaskBuilder310::test_get_splitfuse_attn_mask_310 PASSED
+tests/ut/_310p/attention/test_attention_v1_310.py::TestAscendAttentionBackend310::test_get_builder_cls PASSED
+tests/ut/_310p/attention/test_attention_v1_310.py::TestAscendAttentionBackend310::test_get_impl_cls PASSED
+tests/ut/_310p/attention/test_attention_v1_310.py::TestAscendAttentionBackend310::test_get_kv_cache_shape_not PASSED
+tests/ut/_310p/attention/test_attention_v1_310.py::TestAscendAttentionBackendImpl310::test_forward_chunked_prefill_310 PASSED
+tests/ut/_310p/attention/test_attention_v1_310.py::TestAscendAttentionBackendImpl310::test_forward_mtp_310 PASSED
+tests/ut/_310p/attention/test_attention_v1_310.py::TestAscendAttentionBackendImpl310::test_forward_paged_attention_310 PASSED
+tests/ut/_310p/attention/test_attention_v1_310.py::TestAscendAttentionBackendImpl310::test_forward_prefill_310 PASSED
+tests/ut/_310p/attention/test_attention_v1_310.py::TestAscendAttentionBackendImpl310::test_forward_prefill_310_coerces_device_seq_lens_to_host PASSED
+tests/ut/_310p/attention/test_attention_v1_310.py::TestAscendAttentionBackendImpl310::test_forward_prefill_310_v3_also_gets_host_seq_lens PASSED
+tests/ut/_310p/attention/test_attention_v1_310.py::TestAscendAttentionBackendImpl310::test_forward_prefill_cache_hit_310 PASSED
+tests/ut/_310p/attention/test_attention_v1_310.py::TestAscendAttentionBackendImpl310::test_splitfuse_v2_uses_the_fixed_compressed_mask PASSED
+tests/ut/_310p/attention/test_attention_v1_310.py::TestAscendAttentionMetadataBuilder310::test_build_for_drafting_calls_build_with_is_drafting_true PASSED
+tests/ut/_310p/attention/test_attention_v1_310.py::TestAscendAttentionMetadataBuilder310::test_fill_query_lens_cpu_with_buffer_is_drafting PASSED
+tests/ut/_310p/attention/test_attention_v1_310.py::TestAscendAttentionMetadataBuilder310::test_fill_query_lens_cpu_with_buffer_not_drafting PASSED
+tests/ut/_310p/attention/test_attention_v1_310.py::TestAscendAttentionMetadataBuilder310::test_fill_query_lens_cpu_without_buffer PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaCallContract::test_caches_are_passed_by_reference PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaCallContract::test_dspark_expects_k_queries_not_k_plus_one PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaCallContract::test_head_counts_and_scale PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaCallContract::test_kv_lens_are_passed_through PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaCallContract::test_mask_is_none_regardless_of_metadata PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaCallContract::test_precision_and_layout_flags PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaCallContract::test_q_lens_are_raw_not_cumulative PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaCallContract::test_query_is_reshaped_to_tnd PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaCallContract::test_result_is_copied_into_the_caller_buffer PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaDynamicGuards::test_batch_size_disagreement_is_refused PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaDynamicGuards::test_cumulative_q_lens_are_refused PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaDynamicGuards::test_kv_len_exceeding_block_table_capacity_is_refused PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaDynamicGuards::test_missing_raw_q_lens_is_refused PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaDynamicGuards::test_non_int32_block_table_is_refused PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaDynamicGuards::test_q_len_greater_than_kv_len_is_refused PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaDynamicGuards::test_token_count_disagreement_is_refused PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaDynamicGuards::test_wrong_q_len_for_method_is_refused PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaScopeValidation::test_bf16_is_refused PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaScopeValidation::test_graph_mode_is_refused PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaScopeValidation::test_illegal_gqa_is_refused PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaScopeValidation::test_non_16_aligned_kv_is_refused PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaScopeValidation::test_non_nz_cache_format_is_refused PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaScopeValidation::test_scope_is_validated_once_then_cached PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaScopeValidation::test_scope_validator_refuses_unsupported_method_on_its_own PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaScopeValidation::test_tp4_layout_is_allowed PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaScopeValidation::test_unexpected_k_is_refused PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaScopeValidation::test_unsupported_architecture_is_refused PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaScopeValidation::test_unsupported_method_is_refused PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaScopeValidation::test_wrong_cache_block_size_is_refused PASSED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaOpResolution::test_missing_op_fails_loud_without_fallback FAILED
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaOutputAliasing::test_op_writes_through_to_the_caller_buffer PASSED
+tests/ut/_310p/attention/test_parallel_draft_routing_310p.py::TestParallelDraftRouting::test_causal_paths_are_unchanged PASSED
+tests/ut/_310p/attention/test_parallel_draft_routing_310p.py::TestParallelDraftRouting::test_causal_paths_do_not_need_a_forward_context PASSED
+tests/ut/_310p/attention/test_parallel_draft_routing_310p.py::TestParallelDraftRouting::test_dflash_draft_non_causal_chunked_prefill_goes_to_adn PASSED
+tests/ut/_310p/attention/test_parallel_draft_routing_310p.py::TestParallelDraftRouting::test_draft_non_causal_in_other_states_fails_loud PASSED
+tests/ut/_310p/attention/test_parallel_draft_routing_310p.py::TestParallelDraftRouting::test_dspark_draft_non_causal_chunked_prefill_goes_to_adn PASSED
+tests/ut/_310p/attention/test_parallel_draft_routing_310p.py::TestParallelDraftRouting::test_no_speculative_config_non_causal_fails_loud PASSED
+tests/ut/_310p/attention/test_parallel_draft_routing_310p.py::TestParallelDraftRouting::test_non_draft_non_causal_fails_loud PASSED
+tests/ut/_310p/attention/test_parallel_draft_routing_310p.py::TestParallelDraftRouting::test_unsupported_method_non_causal_fails_loud PASSED
+tests/ut/_310p/fused_moe/test_experts_selector_310.py::TestExpertsSelector310::test_select_experts[256] PASSED
+tests/ut/_310p/fused_moe/test_experts_selector_310.py::TestExpertsSelector310::test_select_experts[128] PASSED
+tests/ut/_310p/fused_moe/test_experts_selector_310.py::TestExpertsSelector310::test_select_experts_chunks_large_token_batch PASSED
+tests/ut/_310p/fused_moe/test_moe_mlp_310.py::TestUnifiedApplyMLP310::test_all_gather_apply_mlp_returns_common_tuple_contract PASSED
+tests/ut/_310p/fused_moe/test_moe_mlp_310.py::TestUnifiedApplyMLP310::test_unified_apply_mlp_with_quantization_310 PASSED
+tests/ut/_310p/fused_moe/test_moe_mlp_310.py::TestUnifiedApplyMLP310::test_unified_apply_mlp_without_quantization_310 PASSED
+tests/ut/_310p/fused_moe/test_shared_fused_moe_310.py::test_runner_310_installs_specialized_unquantized_method_and_comm PASSED
+tests/ut/_310p/fused_moe/test_shared_fused_moe_310.py::test_process_weights_after_loading_310_uses_version_specific_layout PASSED
+tests/ut/_310p/fused_moe/test_shared_fused_moe_310.py::test_shared_experts_part2_310_applies_optional_gate[False] PASSED
+tests/ut/_310p/fused_moe/test_shared_fused_moe_310.py::test_shared_experts_part2_310_applies_optional_gate[True] PASSED
+tests/ut/_310p/fused_moe/test_shared_fused_moe_310.py::test_shared_forward_impl_310_returns_current_runner_contract[False] PASSED
+tests/ut/_310p/fused_moe/test_shared_fused_moe_310.py::test_shared_forward_impl_310_returns_current_runner_contract[True] PASSED
+tests/ut/_310p/ops/test_chunk_gated_delta_rule_310.py::test_chunk_gated_delta_rule_310_output_shape_and_dtype PASSED
+tests/ut/_310p/ops/test_chunk_gated_delta_rule_310.py::test_chunk_gated_delta_rule_310_varlen_path PASSED
+tests/ut/_310p/ops/test_chunk_gated_delta_rule_310.py::test_chunk_gated_delta_rule_310_varlen_tnd_path PASSED
+tests/ut/_310p/ops/test_conv_310.py::test_conv3d_310_forward_oot_uses_forward_native PASSED
+tests/ut/_310p/ops/test_gdn_310.py::test_ascend_gdn_attention_310_uses_310p_backend PASSED
+tests/ut/_310p/ops/test_gdn_310.py::test_zero_padded_tokens_masks_only_padded_token_positions PASSED
+tests/ut/_310p/ops/test_gdn_310.py::test_mask_padded_recurrent_accepted_tokens_zeros_dummy_requests PASSED
+tests/ut/_310p/ops/test_gdn_310.py::test_builder310_pads_spec_decode_metadata_with_dummy_requests PASSED
+tests/ut/_310p/ops/test_layernorm_310.py::test_rmsnorm_gated_310_forward_oot_uses_rmsnorm_activation_mul PASSED
+tests/ut/_310p/ops/test_layernorm_310.py::test_rmsnorm_gated_310_forward_oot_uses_rmsnorm_without_gate PASSED
+tests/ut/_310p/ops/test_layernorm_310.py::test_rmsnorm_gated_310_forward_oot_keeps_native_for_group_norm PASSED
+tests/ut/_310p/ops/test_mm_encoder_attention_310.py::test_register_customop_overrides_mm_encoder_attention_for_310p PASSED
+tests/ut/_310p/ops/test_mm_encoder_attention_310.py::test_mm_encoder_attention_310_forward_oot_with_padding PASSED
+tests/ut/_310p/ops/test_rotary_embedding_310.py::test_set_mrope_apply_rotary_slices_populates_globals PASSED
+tests/ut/_310p/ops/test_rotary_embedding_310.py::test_set_mrope_apply_rotary_slices_reuses_buffer_address PASSED
+tests/ut/_310p/ops/test_rotary_embedding_310.py::test_ascend_rotary_embedding_310_drafting_flag PASSED
+tests/ut/_310p/quantization/test_modelslim_config_310.py::TestAscendModelSlimConfig310::test_get_quant_method_for_fused_moe_310 PASSED
+tests/ut/_310p/quantization/test_modelslim_config_310.py::TestAscendModelSlimConfig310::test_get_quant_method_for_linear_310 PASSED
+tests/ut/_310p/quantization/test_modelslim_config_310.py::TestAscendModelSlimConfig310::test_get_quant_method_maps_lm_head_prefix_310 PASSED
+tests/ut/_310p/quantization/test_w8a8_dynamic_310.py::TestAscendW8A8FusedMoEMethod310::test_get_dynamic_quant_param_310 PASSED
+tests/ut/_310p/quantization/test_w8a8_dynamic_310.py::TestAscendW8A8FusedMoEMethod310::test_get_weight_310 PASSED
+tests/ut/_310p/quantization/test_w8a8_dynamic_310.py::TestAscendW8A8DynamicLinearMethod310::test_apply_310 PASSED
+tests/ut/_310p/quantization/test_w8a8_dynamic_310.py::TestAscendW8A8DynamicLinearMethod310::test_get_perchannel_param_310 PASSED
+tests/ut/_310p/quantization/test_w8a8_dynamic_310.py::TestAscendW8A8DynamicLinearMethod310::test_get_weight_310 PASSED
+tests/ut/_310p/quantization/test_w8a8_dynamic_310.py::TestAscendW8A8DynamicLinearMethod310::test_process_weights_after_loading_calls_nz_format_cast_310p PASSED
+tests/ut/_310p/quantization/test_w8a8_static_310.py::TestAscendW8A8LinearMethod310::test_apply_with_x_is_int8_310 PASSED
+tests/ut/_310p/quantization/test_w8a8_static_310.py::TestAscendW8A8LinearMethod310::test_apply_with_x_not_int8_310 PASSED
+tests/ut/_310p/quantization/test_w8a8_static_310.py::TestAscendW8A8LinearMethod310::test_get_perchannel_param_310 PASSED
+tests/ut/_310p/quantization/test_w8a8_static_310.py::TestAscendW8A8LinearMethod310::test_get_pertensor_param_310 PASSED
+tests/ut/_310p/quantization/test_w8a8_static_310.py::TestAscendW8A8LinearMethod310::test_get_weight_310 PASSED
+tests/ut/_310p/quantization/test_w8a8_static_310.py::TestAscendW8A8LinearMethod310::test_process_weights_after_loading_calls_nz_format_cast_310p PASSED
+tests/ut/_310p/quantization/test_w8a8s_310.py::TestAscendW8A8SLinearMethod310::test_apply_with_x_is_int8_310 PASSED
+tests/ut/_310p/quantization/test_w8a8s_310.py::TestAscendW8A8SLinearMethod310::test_apply_with_x_not_int8_310 PASSED
+tests/ut/_310p/quantization/test_w8a8s_310.py::TestAscendW8A8SLinearMethod310::test_get_perchannel_param_310 PASSED
+tests/ut/_310p/quantization/test_w8a8s_310.py::TestAscendW8A8SLinearMethod310::test_get_pertensor_param_310 PASSED
+tests/ut/_310p/quantization/test_w8a8s_310.py::TestAscendW8A8SLinearMethod310::test_get_weight_310 PASSED
+tests/ut/_310p/quantization/test_w8a8sc_310.py::TestAscendW8A8SCLinearMethod310::test_apply_with_x_is_int8_310 SKIPPED (Skip as npu_matmul_compress_dequant will be supported in PTA 26.0.0.)
+tests/ut/_310p/quantization/test_w8a8sc_310.py::TestAscendW8A8SCLinearMethod310::test_apply_with_x_not_int8_310 SKIPPED (Skip as npu_matmul_compress_dequant will be supported in PTA 26.0.0.)
+tests/ut/_310p/quantization/test_w8a8sc_310.py::TestAscendW8A8SCLinearMethod310::test_get_perchannel_param_310 PASSED
+tests/ut/_310p/quantization/test_w8a8sc_310.py::TestAscendW8A8SCLinearMethod310::test_get_pertensor_param_310 PASSED
+tests/ut/_310p/quantization/test_w8a8sc_310.py::TestAscendW8A8SCLinearMethod310::test_get_weight_310 PASSED
+tests/ut/_310p/sample/test_sampler_310.py::TestSampler310pStandalone::test_fill_cpu_exponential_310p_moves_has_draft_mask_to_cpu PASSED
+tests/ut/_310p/sample/test_sampler_310.py::TestSampler310pStandalone::test_random_sample_310p_fallback_to_initial_seed_when_set_state_failed PASSED
+tests/ut/_310p/sample/test_sampler_310.py::TestSampler310pStandalone::test_random_sample_310p_rebuild_cache_when_generator_identity_changes PASSED
+tests/ut/_310p/sample/test_sampler_310.py::TestSampler310pStandalone::test_random_sample_310p_reuse_cpu_generator_cache PASSED
+tests/ut/_310p/spec_decode/test_llm_base_proposer_310.py::TestAscendSpecDecodeBaseProposer310::test_run_merged_draft_restores_rope_flag_after_exception PASSED
+tests/ut/_310p/spec_decode/test_llm_base_proposer_310.py::TestAscendSpecDecodeBaseProposer310::test_run_merged_draft_sets_rope_flag_before_call PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestExpandParallelDraftingInputs::test_context_buffer_untouched_beyond_scheduled_segment PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestExpandParallelDraftingInputs::test_dflash_single_request PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestExpandParallelDraftingInputs::test_dspark_single_request PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestExpandParallelDraftingInputs::test_query_slots_cross_page_boundary PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestExpandParallelDraftingInputs::test_query_slots_never_equal_raw_cache_positions PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestExpandParallelDraftingInputs::test_ragged_segment_with_distinct_seq_lens PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestExpandParallelDraftingInputs::test_rejected_tail_excluded_from_query_but_kept_in_context PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestDflashDispatch::test_310p_metadata_is_switched_to_non_causal_parallel_draft PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestDflashDispatch::test_310p_slot_mapping_matches_the_verified_helper PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestDflashDispatch::test_310p_uses_helper_and_never_launches_triton PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestDflashDispatch::test_non_310p_still_launches_triton PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestResolve310pBlockSize::test_accepts_the_supported_configuration PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestResolve310pBlockSize::test_rejects_a_candidate_list_without_the_supported_size PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestResolve310pBlockSize::test_rejects_a_selected_size_outside_scope PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestResolve310pBlockSize::test_rejects_drafter_disagreeing_with_the_block_table PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestDSparkDispatch::test_metadata_matches_dspark_layout FAILED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestDSparkDispatch::test_multi_group_is_refused_on_310p FAILED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestDSparkDispatch::test_non_310p_still_launches_triton FAILED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestDSparkDispatch::test_single_group_calls_helper_once_with_dspark_semantics FAILED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestDSparkDispatch::test_slot_mapping_matches_the_verified_helper FAILED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestProfileRopeFlagCoverage::test_dflash_profile_covers_context_and_query PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestProfileRopeFlagCoverage::test_dspark_profile_covers_context_and_query FAILED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestProfileRopeFlagCoverage::test_flag_is_restored_after_the_profile_branch PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestProfileRopeFlagCoverage::test_flag_is_restored_even_when_the_forward_raises PASSED
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestProfileRopeFlagCoverage::test_non_310p_leaves_the_flag_untouched PASSED
+tests/ut/_310p/test_block_table_310p.py::TestBlockTable310::test_compute_slot_mapping_rejects_device_tensor_inputs PASSED
+tests/ut/_310p/test_block_table_310p.py::TestBlockTable310::test_compute_slot_mapping_with_query_start_loc_signature PASSED
+tests/ut/_310p/test_block_table_310p.py::TestBlockTable310::test_compute_slot_mapping_with_req_indices_signature PASSED
+tests/ut/_310p/test_block_table_310p.py::TestBlockTable310::test_multi_group_compute_slot_mapping_accepts_none_compressed_args PASSED
+tests/ut/_310p/test_block_table_310p.py::TestBlockTable310::test_multi_group_compute_slot_mapping_uses_compressed_inputs_per_group PASSED
+tests/ut/_310p/test_kv_block_zeroer_310p.py::TestAscendKVBlockZeroer310::test_init_meta_deduplicates_kv_pointers PASSED
+tests/ut/_310p/test_kv_block_zeroer_310p.py::TestAscendKVBlockZeroer310::test_zero_block_ids_noop_when_empty PASSED
+tests/ut/_310p/test_kv_block_zeroer_310p.py::TestAscendKVBlockZeroer310::test_zero_block_ids_zeros_target_slices PASSED
+tests/ut/_310p/test_mamba_align_fallback_310p_source.py::test_310p_postprocess_fallback_preserves_upstream_metadata_semantics PASSED
+tests/ut/_310p/test_mamba_align_fallback_310p_source.py::test_310p_postprocess_fallback_mirrors_state_copy_without_triton PASSED
+tests/ut/_310p/test_model_runner_310p.py::test_prepare_inputs_keeps_aclgraph_metadata_on_cpu PASSED
+tests/ut/_310p/test_model_runner_310p.py::test_model_forward_updates_mtp_full_graph_params_before_replay PASSED
+tests/ut/_310p/test_model_runner_310p.py::TestNPUModelRunner310::test_may_reinitialize_input_batch_expands_prefix_mamba_block_table PASSED
+tests/ut/_310p/test_qwen3_context_rope_310p.py::TestApplyContextRope310P::test_does_not_pass_repeated_positions PASSED
+tests/ut/_310p/test_qwen3_context_rope_310p.py::TestApplyContextRope310P::test_non_310p_keeps_the_single_fused_call PASSED
+tests/ut/_310p/test_qwen3_context_rope_310p.py::TestApplyContextRope310P::test_non_310p_result_reflects_the_rotation PASSED
+tests/ut/_310p/test_qwen3_context_rope_310p.py::TestApplyContextRope310P::test_rotates_one_layer_at_a_time PASSED
+tests/ut/_310p/test_qwen3_context_rope_310p.py::TestApplyContextRope310P::test_uses_the_rotated_result_not_the_input PASSED
+tests/ut/_310p/test_sharded_state_loader_310p.py::TestShardedStateLoader310::test_generate_quant_description_float_model_310 PASSED
+tests/ut/_310p/test_sharded_state_loader_310p.py::TestShardedStateLoader310::test_generate_quant_description_int_model_310 PASSED
+tests/ut/_310p/test_sharded_state_loader_310p.py::TestShardedStateLoader310::test_generate_quant_description_no_quant_config_310 PASSED
+tests/ut/_310p/test_sharded_state_loader_310p.py::TestShardedStateLoader310::test_save_model_with_nd_format_310 PASSED
+tests/ut/spec_decode/test_dspark_proposer.py::TestDSparkPositionsFullUnderMultiDp::test_positions_not_pre_sliced[0] FAILED
+tests/ut/spec_decode/test_dspark_proposer.py::TestDSparkPositionsFullUnderMultiDp::test_positions_not_pre_sliced[8] FAILED
+tests/ut/spec_decode/test_dspark_proposer.py::TestDSparkPositionsFullUnderMultiDp::test_positions_not_pre_sliced[32] FAILED
+tests/ut/spec_decode/test_dspark_proposer.py::TestDSparkPositionsFullUnderMultiDp::test_positions_full_and_padded_for_dsa[8] FAILED
+tests/ut/spec_decode/test_dspark_proposer.py::TestDSparkPositionsFullUnderMultiDp::test_positions_full_and_padded_for_dsa[32] FAILED
+tests/ut/spec_decode/test_dspark_proposer.py::TestPadDraftBuffersBeforeBuild::test_zeros_dp_padding_region PASSED
+tests/ut/spec_decode/test_dspark_proposer.py::TestPadDraftBuffersBeforeBuild::test_noop_without_dp_padding PASSED
+tests/ut/spec_decode/test_dspark_proposer.py::TestPadDraftBuffersBeforeBuild::test_must_precede_build PASSED
+tests/ut/spec_decode/test_dspark_proposer.py::TestPadDraftBuffersBeforeBuild::test_called_before_build_in_propose PASSED
+tests/ut/spec_decode/test_dspark_proposer.py::TestDSparkInitialization::test_configures_anchor_sampling[hf_config0-True-3] PASSED
+tests/ut/spec_decode/test_dspark_proposer.py::TestDSparkInitialization::test_configures_anchor_sampling[hf_config1-False-4] FAILED
+
+================================================================================================ FAILURES =================================================================================================
+_____________________________________________________________________ TestFiaOpResolution.test_missing_op_fails_loud_without_fallback _____________________________________________________________________
+
+self = <tests.ut._310p.attention.test_custom_fused_infer_attention_310p.TestFiaOpResolution testMethod=test_missing_op_fails_loud_without_fallback>
+
+    def test_missing_op_fails_loud_without_fallback(self):
+        # A wheel built for a non-310P SOC imports fine but carries no such
+        # symbol. That must stop the run, not silently reroute to the causal
+        # split-fuse kernel.
+>       with mock_patch.object(torch.ops._C_ascend, "npu_custom_fused_infer_attention_out", None):
+
+tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py:335:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+/usr/local/python3.12.13/lib/python3.12/unittest/mock.py:1467: in __enter__
+    original, local = self.get_original()
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <unittest.mock._patch object at 0xfffece451760>
+
+    def get_original(self):
+        target = self.getter()
+        name = self.attribute
+
+        original = DEFAULT
+        local = False
+
+        try:
+            original = target.__dict__[name]
+        except (AttributeError, KeyError):
+            original = getattr(target, name, DEFAULT)
+        else:
+            local = True
+
+        if name in _builtins and isinstance(target, ModuleType):
+            self.create = True
+
+        if not self.create and original is DEFAULT:
+>           raise AttributeError(
+                "%s does not have the attribute %r" % (target, name)
+            )
+E           AttributeError: <module 'torch.ops._C_ascend' from 'torch.ops'> does not have the attribute 'npu_custom_fused_infer_attention_out'
+
+/usr/local/python3.12.13/lib/python3.12/unittest/mock.py:1437: AttributeError
+_________________________________________________________________________ TestDSparkDispatch.test_metadata_matches_dspark_layout __________________________________________________________________________
+
+self = <test_parallel_drafting_inputs_310p.TestDSparkDispatch testMethod=test_metadata_matches_dspark_layout>
+
+    def test_metadata_matches_dspark_layout(self):
+        proposer = make_dspark_proposer()
+>       (result, _) = self._run_310p(proposer)
+
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py:608:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py:573: in _run_310p
+    return self._call(proposer, cad), cad
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py:537: in _call
+    return proposer.set_inputs_first_pass(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <vllm_ascend.spec_decode.dspark_proposer.AscendDSparkProposer object at 0xfffecec064e0>, target_token_ids = tensor([0, 0, 0, 0, 0, 0], dtype=torch.int32)
+next_token_ids = tensor([11, 22], dtype=torch.int32), target_positions = tensor([255, 256, 130, 131, 132, 133], dtype=torch.int32)
+target_hidden_states = tensor([[0., 0., 0., 0., 0., 0., 0., 0.],
+        [0., 0., 0., 0., 0., 0., 0., 0.],
+        [0., 0., 0., 0., 0., 0., 0... [0., 0., 0., 0., 0., 0., 0., 0.],
+        [0., 0., 0., 0., 0., 0., 0., 0.],
+        [0., 0., 0., 0., 0., 0., 0., 0.]])
+token_indices_to_sample = None
+cad = namespace(num_reqs=2, slot_mapping=tensor([ 7, 10, 13, 16, 19, 22], dtype=torch.int32), block_table_tensor=tensor([[17...al=True, attn_mask=<object object at 0xfffecf3623e0>, attn_state=None, actual_seq_lengths_q=[], decode_token_per_req=0)
+num_rejected_tokens_gpu = None, req_scheduled_tokens = None, long_seq_metadata = None, num_prefill_reqs = 0, num_decode_reqs = 0
+
+    def set_inputs_first_pass(
+        self,
+        target_token_ids: torch.Tensor,
+        next_token_ids: torch.Tensor,
+        target_positions: torch.Tensor,
+        target_hidden_states: torch.Tensor,
+        token_indices_to_sample: torch.Tensor | None,
+        cad: CommonAttentionMetadata,
+        num_rejected_tokens_gpu: torch.Tensor | None,
+        req_scheduled_tokens=None,
+        long_seq_metadata=None,
+        num_prefill_reqs=0,
+        num_decode_reqs=0,
+    ) -> tuple[int, torch.Tensor, CommonAttentionMetadata, tuple[Any, Any] | None]:
+        # The initial input token of markovHead is the next token
+        n = next_token_ids.shape[0]
+        self._dspark_seed_buffer[:n].copy_(next_token_ids)
+        self._dspark_seed_buffer[n:].fill_(0)
+        batch_size = cad.num_reqs
+>       num_query_total = batch_size * self.num_query_per_req
+E       AttributeError: 'AscendDSparkProposer' object has no attribute 'num_query_per_req'
+
+vllm_ascend/spec_decode/dspark_proposer.py:222: AttributeError
+_________________________________________________________________________ TestDSparkDispatch.test_multi_group_is_refused_on_310p __________________________________________________________________________
+
+self = <test_parallel_drafting_inputs_310p.TestDSparkDispatch testMethod=test_multi_group_is_refused_on_310p>
+
+    def test_multi_group_is_refused_on_310p(self):
+        proposer = make_dspark_proposer(num_groups=2)
+        with self.assertRaisesRegex(RuntimeError, "single draft KV cache group"):
+>           self._run_310p(proposer, spy=lambda **kw: None)
+
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py:604:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py:573: in _run_310p
+    return self._call(proposer, cad), cad
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py:537: in _call
+    return proposer.set_inputs_first_pass(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    def set_inputs_first_pass(
+        self,
+        target_token_ids: torch.Tensor,
+        next_token_ids: torch.Tensor,
+        target_positions: torch.Tensor,
+        target_hidden_states: torch.Tensor,
+        token_indices_to_sample: torch.Tensor | None,
+        cad: CommonAttentionMetadata,
+        num_rejected_tokens_gpu: torch.Tensor | None,
+        req_scheduled_tokens=None,
+        long_seq_metadata=None,
+        num_prefill_reqs=0,
+        num_decode_reqs=0,
+    ) -> tuple[int, torch.Tensor, CommonAttentionMetadata, tuple[Any, Any] | None]:
+        # The initial input token of markovHead is the next token
+        n = next_token_ids.shape[0]
+        self._dspark_seed_buffer[:n].copy_(next_token_ids)
+        self._dspark_seed_buffer[n:].fill_(0)
+        batch_size = cad.num_reqs
+>       num_query_total = batch_size * self.num_query_per_req
+E       AttributeError: 'AscendDSparkProposer' object has no attribute 'num_query_per_req'
+
+vllm_ascend/spec_decode/dspark_proposer.py:222: AttributeError
+_________________________________________________________________________ TestDSparkDispatch.test_non_310p_still_launches_triton __________________________________________________________________________
+
+self = <test_parallel_drafting_inputs_310p.TestDSparkDispatch testMethod=test_non_310p_still_launches_triton>
+
+    def test_non_310p_still_launches_triton(self):
+        proposer = make_dspark_proposer()
+        cad = make_dflash_cad(self.CTX_LENS, self.SEQ_LENS)
+        with (
+            mock_patch(f"{DFLASH_MOD}.is_310p", return_value=False),
+            mock_patch("vllm_ascend.spec_decode.dspark_proposer.is_310p", return_value=False),
+            mock_patch(f"{DFLASH_MOD}.copy_and_expand_dflash_and_dspark_inputs_kernel_single_grid",
+                       _ExplodingLauncher()),
+        ):
+            with self.assertRaisesRegex(AssertionError, "Triton kernel was launched"):
+>               self._call(proposer, cad)
+
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py:659:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py:537: in _call
+    return proposer.set_inputs_first_pass(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    def set_inputs_first_pass(
+        self,
+        target_token_ids: torch.Tensor,
+        next_token_ids: torch.Tensor,
+        target_positions: torch.Tensor,
+        target_hidden_states: torch.Tensor,
+        token_indices_to_sample: torch.Tensor | None,
+        cad: CommonAttentionMetadata,
+        num_rejected_tokens_gpu: torch.Tensor | None,
+        req_scheduled_tokens=None,
+        long_seq_metadata=None,
+        num_prefill_reqs=0,
+        num_decode_reqs=0,
+    ) -> tuple[int, torch.Tensor, CommonAttentionMetadata, tuple[Any, Any] | None]:
+        # The initial input token of markovHead is the next token
+        n = next_token_ids.shape[0]
+        self._dspark_seed_buffer[:n].copy_(next_token_ids)
+        self._dspark_seed_buffer[n:].fill_(0)
+        batch_size = cad.num_reqs
+>       num_query_total = batch_size * self.num_query_per_req
+E       AttributeError: 'AscendDSparkProposer' object has no attribute 'num_query_per_req'
+
+vllm_ascend/spec_decode/dspark_proposer.py:222: AttributeError
+______________________________________________________________ TestDSparkDispatch.test_single_group_calls_helper_once_with_dspark_semantics _______________________________________________________________
+
+self = <test_parallel_drafting_inputs_310p.TestDSparkDispatch testMethod=test_single_group_calls_helper_once_with_dspark_semantics>
+
+    def test_single_group_calls_helper_once_with_dspark_semantics(self):
+        calls = []
+
+        def spy(**kwargs):
+            calls.append(kwargs)
+
+        proposer = make_dspark_proposer()
+>       self._run_310p(proposer, spy=spy)
+
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py:582:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py:573: in _run_310p
+    return self._call(proposer, cad), cad
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py:537: in _call
+    return proposer.set_inputs_first_pass(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <vllm_ascend.spec_decode.dspark_proposer.AscendDSparkProposer object at 0xfffecee90140>, target_token_ids = tensor([0, 0, 0, 0, 0, 0], dtype=torch.int32)
+next_token_ids = tensor([11, 22], dtype=torch.int32), target_positions = tensor([255, 256, 130, 131, 132, 133], dtype=torch.int32)
+target_hidden_states = tensor([[0., 0., 0., 0., 0., 0., 0., 0.],
+        [0., 0., 0., 0., 0., 0., 0., 0.],
+        [0., 0., 0., 0., 0., 0., 0... [0., 0., 0., 0., 0., 0., 0., 0.],
+        [0., 0., 0., 0., 0., 0., 0., 0.],
+        [0., 0., 0., 0., 0., 0., 0., 0.]])
+token_indices_to_sample = None
+cad = namespace(num_reqs=2, slot_mapping=tensor([ 7, 10, 13, 16, 19, 22], dtype=torch.int32), block_table_tensor=tensor([[17...al=True, attn_mask=<object object at 0xfffecf361f00>, attn_state=None, actual_seq_lengths_q=[], decode_token_per_req=0)
+num_rejected_tokens_gpu = None, req_scheduled_tokens = None, long_seq_metadata = None, num_prefill_reqs = 0, num_decode_reqs = 0
+
+    def set_inputs_first_pass(
+        self,
+        target_token_ids: torch.Tensor,
+        next_token_ids: torch.Tensor,
+        target_positions: torch.Tensor,
+        target_hidden_states: torch.Tensor,
+        token_indices_to_sample: torch.Tensor | None,
+        cad: CommonAttentionMetadata,
+        num_rejected_tokens_gpu: torch.Tensor | None,
+        req_scheduled_tokens=None,
+        long_seq_metadata=None,
+        num_prefill_reqs=0,
+        num_decode_reqs=0,
+    ) -> tuple[int, torch.Tensor, CommonAttentionMetadata, tuple[Any, Any] | None]:
+        # The initial input token of markovHead is the next token
+        n = next_token_ids.shape[0]
+        self._dspark_seed_buffer[:n].copy_(next_token_ids)
+        self._dspark_seed_buffer[n:].fill_(0)
+        batch_size = cad.num_reqs
+>       num_query_total = batch_size * self.num_query_per_req
+E       AttributeError: 'AscendDSparkProposer' object has no attribute 'num_query_per_req'
+
+vllm_ascend/spec_decode/dspark_proposer.py:222: AttributeError
+____________________________________________________________________ TestDSparkDispatch.test_slot_mapping_matches_the_verified_helper _____________________________________________________________________
+
+self = <test_parallel_drafting_inputs_310p.TestDSparkDispatch testMethod=test_slot_mapping_matches_the_verified_helper>
+
+    def test_slot_mapping_matches_the_verified_helper(self):
+        """Runs the real helper end to end, so the per-group wiring is checked."""
+        proposer = make_dspark_proposer()
+>       (result, _) = self._run_310p(proposer)
+
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py:634:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py:573: in _run_310p
+    return self._call(proposer, cad), cad
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py:537: in _call
+    return proposer.set_inputs_first_pass(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <vllm_ascend.spec_decode.dspark_proposer.AscendDSparkProposer object at 0xfffece41db80>, target_token_ids = tensor([0, 0, 0, 0, 0, 0], dtype=torch.int32)
+next_token_ids = tensor([11, 22], dtype=torch.int32), target_positions = tensor([255, 256, 130, 131, 132, 133], dtype=torch.int32)
+target_hidden_states = tensor([[0., 0., 0., 0., 0., 0., 0., 0.],
+        [0., 0., 0., 0., 0., 0., 0., 0.],
+        [0., 0., 0., 0., 0., 0., 0... [0., 0., 0., 0., 0., 0., 0., 0.],
+        [0., 0., 0., 0., 0., 0., 0., 0.],
+        [0., 0., 0., 0., 0., 0., 0., 0.]])
+token_indices_to_sample = None
+cad = namespace(num_reqs=2, slot_mapping=tensor([ 7, 10, 13, 16, 19, 22], dtype=torch.int32), block_table_tensor=tensor([[17...al=True, attn_mask=<object object at 0xfffecf361ce0>, attn_state=None, actual_seq_lengths_q=[], decode_token_per_req=0)
+num_rejected_tokens_gpu = None, req_scheduled_tokens = None, long_seq_metadata = None, num_prefill_reqs = 0, num_decode_reqs = 0
+
+    def set_inputs_first_pass(
+        self,
+        target_token_ids: torch.Tensor,
+        next_token_ids: torch.Tensor,
+        target_positions: torch.Tensor,
+        target_hidden_states: torch.Tensor,
+        token_indices_to_sample: torch.Tensor | None,
+        cad: CommonAttentionMetadata,
+        num_rejected_tokens_gpu: torch.Tensor | None,
+        req_scheduled_tokens=None,
+        long_seq_metadata=None,
+        num_prefill_reqs=0,
+        num_decode_reqs=0,
+    ) -> tuple[int, torch.Tensor, CommonAttentionMetadata, tuple[Any, Any] | None]:
+        # The initial input token of markovHead is the next token
+        n = next_token_ids.shape[0]
+        self._dspark_seed_buffer[:n].copy_(next_token_ids)
+        self._dspark_seed_buffer[n:].fill_(0)
+        batch_size = cad.num_reqs
+>       num_query_total = batch_size * self.num_query_per_req
+E       AttributeError: 'AscendDSparkProposer' object has no attribute 'num_query_per_req'
+
+vllm_ascend/spec_decode/dspark_proposer.py:222: AttributeError
+________________________________________________________________ TestProfileRopeFlagCoverage.test_dspark_profile_covers_context_and_query _________________________________________________________________
+
+self = <test_parallel_drafting_inputs_310p.TestProfileRopeFlagCoverage testMethod=test_dspark_profile_covers_context_and_query>
+
+    def test_dspark_profile_covers_context_and_query(self):
+        from vllm_ascend.spec_decode.dspark_proposer import AscendDSparkProposer
+
+        self._assert_both_forwards_covered(
+>           self._run_profile(AscendDSparkProposer, 7, "vllm_ascend.spec_decode.dspark_proposer")
+        )
+
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py:749:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py:723: in _run_profile
+    proposer.dummy_run(num_tokens=CONTEXT_TOKENS, num_reqs=NUM_REQS, is_profile=True)
+/usr/local/python3.12.13/lib/python3.12/site-packages/torch/utils/_contextlib.py:124: in decorate_context
+    return func(*args, **kwargs)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <vllm_ascend.spec_decode.dspark_proposer.AscendDSparkProposer object at 0xfffecebe1760>, num_tokens = 12, num_reqs = 2, num_tokens_across_dp = None, aclgraph_runtime_mode = <CUDAGraphMode.NONE: 0>
+batch_descriptor = None, dummy_compute_logits = <function AscendDSparkProposer.<lambda> at 0xfffedae51d00>, is_profile = True, kwargs = {}
+
+    @torch.inference_mode()
+    def dummy_run(
+        self,
+        num_tokens: int,
+        num_reqs: int = 0,
+        num_tokens_across_dp: torch.Tensor | None = None,
+        aclgraph_runtime_mode: CUDAGraphMode = CUDAGraphMode.NONE,
+        batch_descriptor=None,
+        dummy_compute_logits=lambda hidden_states: None,
+        is_profile=False,
+        **kwargs,
+    ) -> None:
+>       num_query_total = num_reqs * self.num_query_per_req
+E       AttributeError: 'AscendDSparkProposer' object has no attribute 'num_query_per_req'
+
+vllm_ascend/spec_decode/dspark_proposer.py:332: AttributeError
+__________________________________________________________________ TestDSparkPositionsFullUnderMultiDp.test_positions_not_pre_sliced[0] ___________________________________________________________________
+
+obj = <module 'vllm_ascend.spec_decode.dspark_proposer' from '/opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/vllm_ascend/spec_decode/dspark_proposer.py'>
+name = 'copy_and_expand_dflash_and_dspark_inputs_kernel_single_grid', ann = 'vllm_ascend.spec_decode.dspark_proposer'
+
+    def annotated_getattr(obj: object, name: str, ann: str) -> object:
+        try:
+>           obj = getattr(obj, name)
+E           AttributeError: module 'vllm_ascend.spec_decode.dspark_proposer' has no attribute 'copy_and_expand_dflash_and_dspark_inputs_kernel_single_grid'
+
+/usr/local/python3.12.13/lib/python3.12/site-packages/_pytest/monkeypatch.py:90: AttributeError
+
+The above exception was the direct cause of the following exception:
+
+self = <tests.ut.spec_decode.test_dspark_proposer.TestDSparkPositionsFullUnderMultiDp object at 0xfffeceb9fb60>, monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0xfffe72a49bb0>, dp_padding = 0
+
+    @pytest.mark.parametrize("dp_padding", MULTI_DP_PADDING_SIZES)
+    def test_positions_not_pre_sliced(self, monkeypatch, dp_padding):
+        """``cad.positions`` must be the full buffer, not ``[:num_query_total]``."""
+>       monkeypatch.setattr(
+            "vllm_ascend.spec_decode.dspark_proposer.copy_and_expand_dflash_and_dspark_inputs_kernel_single_grid",
+            MagicMock(),
+        )
+
+tests/ut/spec_decode/test_dspark_proposer.py:148:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+/usr/local/python3.12.13/lib/python3.12/site-packages/_pytest/monkeypatch.py:104: in derive_importpath
+    annotated_getattr(target, attr, ann=module)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+obj = <module 'vllm_ascend.spec_decode.dspark_proposer' from '/opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/vllm_ascend/spec_decode/dspark_proposer.py'>
+name = 'copy_and_expand_dflash_and_dspark_inputs_kernel_single_grid', ann = 'vllm_ascend.spec_decode.dspark_proposer'
+
+    def annotated_getattr(obj: object, name: str, ann: str) -> object:
+        try:
+            obj = getattr(obj, name)
+        except AttributeError as e:
+>           raise AttributeError(
+                f"{type(obj).__name__!r} object at {ann} has no attribute {name!r}"
+            ) from e
+E           AttributeError: 'module' object at vllm_ascend.spec_decode.dspark_proposer has no attribute 'copy_and_expand_dflash_and_dspark_inputs_kernel_single_grid'
+
+/usr/local/python3.12.13/lib/python3.12/site-packages/_pytest/monkeypatch.py:92: AttributeError
+__________________________________________________________________ TestDSparkPositionsFullUnderMultiDp.test_positions_not_pre_sliced[8] ___________________________________________________________________
+
+obj = <module 'vllm_ascend.spec_decode.dspark_proposer' from '/opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/vllm_ascend/spec_decode/dspark_proposer.py'>
+name = 'copy_and_expand_dflash_and_dspark_inputs_kernel_single_grid', ann = 'vllm_ascend.spec_decode.dspark_proposer'
+
+    def annotated_getattr(obj: object, name: str, ann: str) -> object:
+        try:
+>           obj = getattr(obj, name)
+E           AttributeError: module 'vllm_ascend.spec_decode.dspark_proposer' has no attribute 'copy_and_expand_dflash_and_dspark_inputs_kernel_single_grid'
+
+/usr/local/python3.12.13/lib/python3.12/site-packages/_pytest/monkeypatch.py:90: AttributeError
+
+The above exception was the direct cause of the following exception:
+
+self = <tests.ut.spec_decode.test_dspark_proposer.TestDSparkPositionsFullUnderMultiDp object at 0xfffeceb9fce0>, monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0xfffe743f7b30>, dp_padding = 8
+
+    @pytest.mark.parametrize("dp_padding", MULTI_DP_PADDING_SIZES)
+    def test_positions_not_pre_sliced(self, monkeypatch, dp_padding):
+        """``cad.positions`` must be the full buffer, not ``[:num_query_total]``."""
+>       monkeypatch.setattr(
+            "vllm_ascend.spec_decode.dspark_proposer.copy_and_expand_dflash_and_dspark_inputs_kernel_single_grid",
+            MagicMock(),
+        )
+
+tests/ut/spec_decode/test_dspark_proposer.py:148:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+/usr/local/python3.12.13/lib/python3.12/site-packages/_pytest/monkeypatch.py:104: in derive_importpath
+    annotated_getattr(target, attr, ann=module)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+obj = <module 'vllm_ascend.spec_decode.dspark_proposer' from '/opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/vllm_ascend/spec_decode/dspark_proposer.py'>
+name = 'copy_and_expand_dflash_and_dspark_inputs_kernel_single_grid', ann = 'vllm_ascend.spec_decode.dspark_proposer'
+
+    def annotated_getattr(obj: object, name: str, ann: str) -> object:
+        try:
+            obj = getattr(obj, name)
+        except AttributeError as e:
+>           raise AttributeError(
+                f"{type(obj).__name__!r} object at {ann} has no attribute {name!r}"
+            ) from e
+E           AttributeError: 'module' object at vllm_ascend.spec_decode.dspark_proposer has no attribute 'copy_and_expand_dflash_and_dspark_inputs_kernel_single_grid'
+
+/usr/local/python3.12.13/lib/python3.12/site-packages/_pytest/monkeypatch.py:92: AttributeError
+__________________________________________________________________ TestDSparkPositionsFullUnderMultiDp.test_positions_not_pre_sliced[32] __________________________________________________________________
+
+obj = <module 'vllm_ascend.spec_decode.dspark_proposer' from '/opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/vllm_ascend/spec_decode/dspark_proposer.py'>
+name = 'copy_and_expand_dflash_and_dspark_inputs_kernel_single_grid', ann = 'vllm_ascend.spec_decode.dspark_proposer'
+
+    def annotated_getattr(obj: object, name: str, ann: str) -> object:
+        try:
+>           obj = getattr(obj, name)
+E           AttributeError: module 'vllm_ascend.spec_decode.dspark_proposer' has no attribute 'copy_and_expand_dflash_and_dspark_inputs_kernel_single_grid'
+
+/usr/local/python3.12.13/lib/python3.12/site-packages/_pytest/monkeypatch.py:90: AttributeError
+
+The above exception was the direct cause of the following exception:
+
+self = <tests.ut.spec_decode.test_dspark_proposer.TestDSparkPositionsFullUnderMultiDp object at 0xfffeceb9fe30>, monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0xfffe6d422bd0>, dp_padding = 32
+
+    @pytest.mark.parametrize("dp_padding", MULTI_DP_PADDING_SIZES)
+    def test_positions_not_pre_sliced(self, monkeypatch, dp_padding):
+        """``cad.positions`` must be the full buffer, not ``[:num_query_total]``."""
+>       monkeypatch.setattr(
+            "vllm_ascend.spec_decode.dspark_proposer.copy_and_expand_dflash_and_dspark_inputs_kernel_single_grid",
+            MagicMock(),
+        )
+
+tests/ut/spec_decode/test_dspark_proposer.py:148:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+/usr/local/python3.12.13/lib/python3.12/site-packages/_pytest/monkeypatch.py:104: in derive_importpath
+    annotated_getattr(target, attr, ann=module)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+obj = <module 'vllm_ascend.spec_decode.dspark_proposer' from '/opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/vllm_ascend/spec_decode/dspark_proposer.py'>
+name = 'copy_and_expand_dflash_and_dspark_inputs_kernel_single_grid', ann = 'vllm_ascend.spec_decode.dspark_proposer'
+
+    def annotated_getattr(obj: object, name: str, ann: str) -> object:
+        try:
+            obj = getattr(obj, name)
+        except AttributeError as e:
+>           raise AttributeError(
+                f"{type(obj).__name__!r} object at {ann} has no attribute {name!r}"
+            ) from e
+E           AttributeError: 'module' object at vllm_ascend.spec_decode.dspark_proposer has no attribute 'copy_and_expand_dflash_and_dspark_inputs_kernel_single_grid'
+
+/usr/local/python3.12.13/lib/python3.12/site-packages/_pytest/monkeypatch.py:92: AttributeError
+______________________________________________________________ TestDSparkPositionsFullUnderMultiDp.test_positions_full_and_padded_for_dsa[8] ______________________________________________________________
+
+obj = <module 'vllm_ascend.spec_decode.dspark_proposer' from '/opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/vllm_ascend/spec_decode/dspark_proposer.py'>
+name = 'copy_and_expand_dflash_and_dspark_inputs_kernel_single_grid', ann = 'vllm_ascend.spec_decode.dspark_proposer'
+
+    def annotated_getattr(obj: object, name: str, ann: str) -> object:
+        try:
+>           obj = getattr(obj, name)
+E           AttributeError: module 'vllm_ascend.spec_decode.dspark_proposer' has no attribute 'copy_and_expand_dflash_and_dspark_inputs_kernel_single_grid'
+
+/usr/local/python3.12.13/lib/python3.12/site-packages/_pytest/monkeypatch.py:90: AttributeError
+
+The above exception was the direct cause of the following exception:
+
+self = <tests.ut.spec_decode.test_dspark_proposer.TestDSparkPositionsFullUnderMultiDp object at 0xfffece3a40b0>, monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0xfffe6d4e8680>, dp_padding = 8
+
+    @pytest.mark.parametrize("dp_padding", [8, 32])
+    def test_positions_full_and_padded_for_dsa(self, monkeypatch, dp_padding):
+        """After set_inputs_first_pass + _pad_draft_buffers, positions[:num_input]
+        is full-length and zero-padded in the DP region."""
+>       monkeypatch.setattr(
+            "vllm_ascend.spec_decode.dspark_proposer.copy_and_expand_dflash_and_dspark_inputs_kernel_single_grid",
+            MagicMock(),
+        )
+
+tests/ut/spec_decode/test_dspark_proposer.py:168:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+/usr/local/python3.12.13/lib/python3.12/site-packages/_pytest/monkeypatch.py:104: in derive_importpath
+    annotated_getattr(target, attr, ann=module)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+obj = <module 'vllm_ascend.spec_decode.dspark_proposer' from '/opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/vllm_ascend/spec_decode/dspark_proposer.py'>
+name = 'copy_and_expand_dflash_and_dspark_inputs_kernel_single_grid', ann = 'vllm_ascend.spec_decode.dspark_proposer'
+
+    def annotated_getattr(obj: object, name: str, ann: str) -> object:
+        try:
+            obj = getattr(obj, name)
+        except AttributeError as e:
+>           raise AttributeError(
+                f"{type(obj).__name__!r} object at {ann} has no attribute {name!r}"
+            ) from e
+E           AttributeError: 'module' object at vllm_ascend.spec_decode.dspark_proposer has no attribute 'copy_and_expand_dflash_and_dspark_inputs_kernel_single_grid'
+
+/usr/local/python3.12.13/lib/python3.12/site-packages/_pytest/monkeypatch.py:92: AttributeError
+_____________________________________________________________ TestDSparkPositionsFullUnderMultiDp.test_positions_full_and_padded_for_dsa[32] ______________________________________________________________
+
+obj = <module 'vllm_ascend.spec_decode.dspark_proposer' from '/opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/vllm_ascend/spec_decode/dspark_proposer.py'>
+name = 'copy_and_expand_dflash_and_dspark_inputs_kernel_single_grid', ann = 'vllm_ascend.spec_decode.dspark_proposer'
+
+    def annotated_getattr(obj: object, name: str, ann: str) -> object:
+        try:
+>           obj = getattr(obj, name)
+E           AttributeError: module 'vllm_ascend.spec_decode.dspark_proposer' has no attribute 'copy_and_expand_dflash_and_dspark_inputs_kernel_single_grid'
+
+/usr/local/python3.12.13/lib/python3.12/site-packages/_pytest/monkeypatch.py:90: AttributeError
+
+The above exception was the direct cause of the following exception:
+
+self = <tests.ut.spec_decode.test_dspark_proposer.TestDSparkPositionsFullUnderMultiDp object at 0xfffece3a4230>, monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0xfffe6d4ea180>, dp_padding = 32
+
+    @pytest.mark.parametrize("dp_padding", [8, 32])
+    def test_positions_full_and_padded_for_dsa(self, monkeypatch, dp_padding):
+        """After set_inputs_first_pass + _pad_draft_buffers, positions[:num_input]
+        is full-length and zero-padded in the DP region."""
+>       monkeypatch.setattr(
+            "vllm_ascend.spec_decode.dspark_proposer.copy_and_expand_dflash_and_dspark_inputs_kernel_single_grid",
+            MagicMock(),
+        )
+
+tests/ut/spec_decode/test_dspark_proposer.py:168:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+/usr/local/python3.12.13/lib/python3.12/site-packages/_pytest/monkeypatch.py:104: in derive_importpath
+    annotated_getattr(target, attr, ann=module)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+obj = <module 'vllm_ascend.spec_decode.dspark_proposer' from '/opt/x00873006/dspark_dev/vllm-workspace-xc/vllm-ascend/vllm_ascend/spec_decode/dspark_proposer.py'>
+name = 'copy_and_expand_dflash_and_dspark_inputs_kernel_single_grid', ann = 'vllm_ascend.spec_decode.dspark_proposer'
+
+    def annotated_getattr(obj: object, name: str, ann: str) -> object:
+        try:
+            obj = getattr(obj, name)
+        except AttributeError as e:
+>           raise AttributeError(
+                f"{type(obj).__name__!r} object at {ann} has no attribute {name!r}"
+            ) from e
+E           AttributeError: 'module' object at vllm_ascend.spec_decode.dspark_proposer has no attribute 'copy_and_expand_dflash_and_dspark_inputs_kernel_single_grid'
+
+/usr/local/python3.12.13/lib/python3.12/site-packages/_pytest/monkeypatch.py:92: AttributeError
+______________________________________________________________ TestDSparkInitialization.test_configures_anchor_sampling[hf_config1-False-4] _______________________________________________________________
+
+self = <tests.ut.spec_decode.test_dspark_proposer.TestDSparkInitialization object at 0xfffece3a4b60>, hf_config = namespace(dspark_bonus_anchor=True), expected_sample_from_anchor = False
+expected_num_query_per_req = 4
+
+    @pytest.mark.parametrize(
+        ("hf_config", "expected_sample_from_anchor", "expected_num_query_per_req"),
+        [
+            pytest.param(SimpleNamespace(), True, _NUM_SPECULATIVE_TOKENS),
+            pytest.param(SimpleNamespace(dspark_bonus_anchor=True), False, 1 + _NUM_SPECULATIVE_TOKENS),
+        ],
+    )
+    def test_configures_anchor_sampling(
+        self,
+        hf_config: SimpleNamespace,
+        expected_sample_from_anchor: bool,
+        expected_num_query_per_req: int,
+    ) -> None:
+        """Verify the bonus-anchor flag selects the expected query layout."""
+>       proposer = self._make_proposer(
+            max_num_tokens=_MAX_NUM_TOKENS,
+            num_reqs=_MAX_BATCH_SIZE,
+            block_size=_NUM_SPECULATIVE_TOKENS,
+            hf_config=hf_config,
+        )
+
+tests/ut/spec_decode/test_dspark_proposer.py:289:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests/ut/spec_decode/test_dspark_proposer.py:83: in _make_proposer
+    proposer = AscendDSparkProposer(vllm_config, device)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <vllm_ascend.spec_decode.dspark_proposer.AscendDSparkProposer object at 0xfffe72ebeae0>
+vllm_config = namespace(speculative_config=namespace(draft_sample_method='greedy', draft_model_config=namespace(hf_config=namespace(...chor=True), get_hidden_size=<function _DSparkProposerTestBase._make_vllm_config.<locals>.<lambda> at 0xfffe6d4d9e40>)))
+device = device(type='cpu'), runner = None
+
+    def __init__(
+        self,
+        vllm_config: VllmConfig,
+        device: torch.device,
+        runner=None,
+    ):
+        super().__init__(vllm_config, device, runner=runner)
+        assert vllm_config.speculative_config is not None
+        if vllm_config.speculative_config.draft_sample_method == "probabilistic":
+            raise ValueError(
+                "DSpark probabilistic draft sampling is not supported on the v1 "
+                "model runner; use greedy (the default) instead."
+            )
+        self.sample_from_anchor = not getattr(self.draft_model_config.hf_config, "dspark_bonus_anchor", False)
+        if self.sample_from_anchor:
+            self.num_query_per_req = self.num_speculative_tokens
+        else:
+            self.num_query_per_req = 1 + self.num_speculative_tokens
+        if is_310p() and not self.sample_from_anchor:
+            # The 310P draft attention route pins the query block to K, and the
+            # expansion fallback below is only validated for the anchor-first
+            # layout. A bonus-anchor checkpoint would silently shift every slot
+            # and token index by one instead of failing, so refuse up front.
+>           raise NotImplementedError(
+                "DSpark with dspark_bonus_anchor=True is not supported on 310P; "
+                "only the anchor-first layout (num_query_per_req == "
+                "num_speculative_tokens) is validated on this device."
+            )
+E           NotImplementedError: DSpark with dspark_bonus_anchor=True is not supported on 310P; only the anchor-first layout (num_query_per_req == num_speculative_tokens) is validated on this device.
+
+vllm_ascend/spec_decode/dspark_proposer.py:50: NotImplementedError
+============================================================================================ warnings summary =============================================================================================
+../../../../../usr/local/python3.12.13/lib/python3.12/site-packages/torch/jit/_script.py:362: 14 warnings
+  /usr/local/python3.12.13/lib/python3.12/site-packages/torch/jit/_script.py:362: DeprecationWarning: `torch.jit.script_method` is deprecated. Please switch to `torch.compile` or `torch.export`.
+    warnings.warn(
+
+tests/ut/_310p/test_model_runner_310p.py::test_model_forward_updates_mtp_full_graph_params_before_replay
+  /usr/local/python3.12.13/lib/python3.12/multiprocessing/popen_fork.py:66: DeprecationWarning: This process (pid=32156) is multi-threaded, use of fork() may lead to deadlocks in the child.
+    self.pid = os.fork()
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+========================================================================================= short test summary info =========================================================================================
+FAILED tests/ut/_310p/attention/test_custom_fused_infer_attention_310p.py::TestFiaOpResolution::test_missing_op_fails_loud_without_fallback - AttributeError: <module 'torch.ops._C_ascend' from 'torch.ops'> does not have the attribute 'npu_custom_fused_infer_attention_out'
+FAILED tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestDSparkDispatch::test_metadata_matches_dspark_layout - AttributeError: 'AscendDSparkProposer' object has no attribute 'num_query_per_req'
+FAILED tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestDSparkDispatch::test_multi_group_is_refused_on_310p - AttributeError: 'AscendDSparkProposer' object has no attribute 'num_query_per_req'
+FAILED tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestDSparkDispatch::test_non_310p_still_launches_triton - AttributeError: 'AscendDSparkProposer' object has no attribute 'num_query_per_req'
+FAILED tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestDSparkDispatch::test_single_group_calls_helper_once_with_dspark_semantics - AttributeError: 'AscendDSparkProposer' object has no attribute 'num_query_per_req'
+FAILED tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestDSparkDispatch::test_slot_mapping_matches_the_verified_helper - AttributeError: 'AscendDSparkProposer' object has no attribute 'num_query_per_req'
+FAILED tests/ut/_310p/spec_decode/test_parallel_drafting_inputs_310p.py::TestProfileRopeFlagCoverage::test_dspark_profile_covers_context_and_query - AttributeError: 'AscendDSparkProposer' object has no attribute 'num_query_per_req'
+FAILED tests/ut/spec_decode/test_dspark_proposer.py::TestDSparkPositionsFullUnderMultiDp::test_positions_not_pre_sliced[0] - AttributeError: 'module' object at vllm_ascend.spec_decode.dspark_proposer has no attribute 'copy_and_expand_dflash_and_dspark_inputs_kernel_single_grid'
+FAILED tests/ut/spec_decode/test_dspark_proposer.py::TestDSparkPositionsFullUnderMultiDp::test_positions_not_pre_sliced[8] - AttributeError: 'module' object at vllm_ascend.spec_decode.dspark_proposer has no attribute 'copy_and_expand_dflash_and_dspark_inputs_kernel_single_grid'
+FAILED tests/ut/spec_decode/test_dspark_proposer.py::TestDSparkPositionsFullUnderMultiDp::test_positions_not_pre_sliced[32] - AttributeError: 'module' object at vllm_ascend.spec_decode.dspark_proposer has no attribute 'copy_and_expand_dflash_and_dspark_inputs_kernel_single_grid'
+FAILED tests/ut/spec_decode/test_dspark_proposer.py::TestDSparkPositionsFullUnderMultiDp::test_positions_full_and_padded_for_dsa[8] - AttributeError: 'module' object at vllm_ascend.spec_decode.dspark_proposer has no attribute 'copy_and_expand_dflash_and_dspark_inputs_kernel_single_grid'
+FAILED tests/ut/spec_decode/test_dspark_proposer.py::TestDSparkPositionsFullUnderMultiDp::test_positions_full_and_padded_for_dsa[32] - AttributeError: 'module' object at vllm_ascend.spec_decode.dspark_proposer has no attribute 'copy_and_expand_dflash_and_dspark_inputs_kernel_single_grid'
+FAILED tests/ut/spec_decode/test_dspark_proposer.py::TestDSparkInitialization::test_configures_anchor_sampling[hf_config1-False-4] - NotImplementedError: DSpark with dspark_bonus_anchor=True is not supported on 310P; only the anchor-first layout (num_query_per_req == num_speculative_tokens) is validated on this device.
+========================================================================= 13 failed, 158 passed, 2 skipped, 15 warnings in 6.51s ==========================================================================
