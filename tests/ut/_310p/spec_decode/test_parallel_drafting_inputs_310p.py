@@ -618,7 +618,12 @@ class TestDSparkDispatch(TestBase):
         self.assertEqual(out_cad.num_actual_tokens, 2 * self.Q_PER_REQ)
         self.assertEqual(out_cad.num_input_tokens, 2 * self.Q_PER_REQ)
         self.assertEqual(out_cad.max_query_len, self.Q_PER_REQ)
-        self.assertEqual(out_cad.positions.shape[0], 2 * self.Q_PER_REQ)
+        # positions is handed over whole, not sliced to num_query_total: the
+        # attention backend slices it to num_input_tokens, which is DP-padded and
+        # can exceed the local query count. A pre-slice here reads out of bounds
+        # under multi-DP, so assert identity rather than length.
+        self.assertIs(out_cad.positions, proposer.positions)
+        self.assertGreaterEqual(out_cad.positions.shape[0], num_query_total)
         self.assertIs(out_cad.causal, False)
         self.assertIsNone(out_cad.attn_mask)
         self.assertEqual(out_cad.attn_state, AscendAttentionState.ChunkedPrefill)
