@@ -332,7 +332,12 @@ class TestFiaOpResolution(TestBase):
         # A wheel built for a non-310P SOC imports fine but carries no such
         # symbol. That must stop the run, not silently reroute to the causal
         # split-fuse kernel.
-        with mock_patch.object(torch.ops._C_ascend, "npu_custom_fused_infer_attention_out", None):
+        # create=True because torch.ops._C_ascend resolves lazily: in a plain UT
+        # process the C extension may not be loaded, so the attribute does not
+        # exist yet and patch.object would fail before the assertion ran.
+        with mock_patch.object(
+            torch.ops._C_ascend, "npu_custom_fused_infer_attention_out", None, create=True
+        ):
             with self.assertRaisesRegex(RuntimeError, "no fallback"):
                 fia_mod._fia_op()
 

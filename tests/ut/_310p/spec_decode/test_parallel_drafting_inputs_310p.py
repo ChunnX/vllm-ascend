@@ -492,6 +492,9 @@ def make_dspark_proposer(*, num_spec=7, num_groups=1, kv_spec_block_size=BLOCK_S
 
     p = AscendDSparkProposer.__new__(AscendDSparkProposer)
     p.num_speculative_tokens = num_spec
+    # Anchor-first layout: the only one 310P covers, so q == K rather than 1 + K.
+    p.sample_from_anchor = True
+    p.num_query_per_req = num_spec
     p.device = torch.device("cpu")
     p.parallel_drafting_token_id = MASK_ID
     p.kernel_block_size = BLOCK_SIZE
@@ -682,6 +685,10 @@ class TestProfileRopeFlagCoverage(TestBase):
         p = cls.__new__(cls)
         p.model = self._fake_model(seen)
         p.num_speculative_tokens = num_spec
+        # Only DSpark reads this attribute; DFlash derives 1 + K locally. The
+        # anchor-first value is the one 310P covers.
+        p.sample_from_anchor = True
+        p.num_query_per_req = num_spec
         p.max_query_tokens = 64
         p.use_cuda_graph = False
         p.vllm_config = SimpleNamespace()
@@ -779,3 +786,62 @@ class TestProfileRopeFlagCoverage(TestBase):
             with proposer._profile_rope_context():
                 self.assertFalse(_flag_now(), "non-310P must not enable the 310P drafting flag")
         self.assertFalse(_flag_now())
+
+
+class TestBonusAnchorRefusedOn310p(TestBase):
+    """310P covers only the anchor-first DSpark layout.
+
+    With ``dspark_bonus_anchor=True`` a request queries 1 + K positions instead
+    of K. The 310P expansion fallback and the FIA route both assume q == K, and
+    the mismatch does not raise anywhere -- it shifts every slot and token index
+    by one and silently returns wrong tokens. So construction must refuse it.
+    """
+
+    NUM_SPEC = 7
+    MAX_BATCH = 4
+
+    def _init_proposer(self, *, bonus_anchor, on_310p):
+        from vllm_ascend.spec_decode.dspark_proposer import AscendDSparkProposer
+
+        hf_config = SimpleNamespace(dspark_bonus_anchor=True) if bonus_anchor else SimpleNamespace()
+        draft_model_config = SimpleNamespace(hf_config=hf_config, get_hidden_size=lambda: 8)
+        vllm_config = SimpleNamespace(
+            speculative_config=SimpleNamespace(
+                draft_sample_method="greedy",
+                draft_model_config=draft_model_config,
+            )
+        )
+
+        def parent_init(proposer, cfg, device, runner=None):
+            del runner
+            proposer.draft_model_config = cfg.speculative_config.draft_model_config
+            proposer.num_speculative_tokens = self.NUM_SPEC
+            proposer.max_batch_size = self.MAX_BATCH
+            proposer.max_num_tokens = 64
+            proposer.dtype = torch.float32
+            proposer.device = device
+            proposer.hidden_size = 8
+            proposer.hidden_states = torch.empty(0)
+            proposer._dflash_hidden_states = torch.empty(0)
+
+        with (
+            mock_patch.object(AscendDSparkProposer.__base__, "__init__", parent_init),
+            mock_patch("vllm_ascend.spec_decode.dspark_proposer.is_310p", return_value=on_310p),
+        ):
+            return AscendDSparkProposer(vllm_config, torch.device("cpu"))
+
+    def test_bonus_anchor_is_refused_on_310p(self):
+        with self.assertRaisesRegex(NotImplementedError, "dspark_bonus_anchor"):
+            self._init_proposer(bonus_anchor=True, on_310p=True)
+
+    def test_bonus_anchor_is_allowed_off_310p(self):
+        """The guard is device-scoped: other devices keep upstream's layout."""
+        proposer = self._init_proposer(bonus_anchor=True, on_310p=False)
+        self.assertFalse(proposer.sample_from_anchor)
+        self.assertEqual(proposer.num_query_per_req, 1 + self.NUM_SPEC)
+
+    def test_anchor_first_is_accepted_on_310p(self):
+        """The guard is layout-scoped: it must not reject the supported case."""
+        proposer = self._init_proposer(bonus_anchor=False, on_310p=True)
+        self.assertTrue(proposer.sample_from_anchor)
+        self.assertEqual(proposer.num_query_per_req, self.NUM_SPEC)
