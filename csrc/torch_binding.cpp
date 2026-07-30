@@ -2088,8 +2088,8 @@ TORCH_LIBRARY_EXPAND(CONCAT(_C, _ascend), ops)
 
     ops.def(
         "npu_custom_fused_infer_attention_v310(Tensor query, "
-        "                                       Tensor key, "
-        "                                       Tensor value, *, "
+        "                                       Tensor[] key, "
+        "                                       Tensor[] value, *, "
         "                                       Tensor? attn_mask=None, "
         "                                       SymInt[]? actual_seq_lengths_q=None, "
         "                                       SymInt[]? actual_seq_lengths_kv=None, "

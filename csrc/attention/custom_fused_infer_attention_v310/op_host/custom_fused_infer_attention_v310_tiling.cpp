@@ -69,12 +69,28 @@ ge::graphStatus CustomFIATiling::ConvertContext(gert::TilingContext &context, In
     ifaContext.query.shape = context.GetInputShape(QUERY_INPUT_INDEX);
     ifaContext.key.desc = context.GetInputDesc(KEY_INPUT_INDEX);
     ifaContext.key.shape = context.GetInputShape(KEY_INPUT_INDEX);
+    OPS_ERR_IF((ifaContext.query.shape == nullptr) || (ifaContext.key.shape == nullptr),
+               OPS_LOG_E(context.GetNodeName(), "shape of query or shape of key is null."), return ge::GRAPH_FAILED);
+    auto batchOfQuery = ifaContext.query.shape->GetStorageShape().GetDim(0);
+    auto batchOfKey = ifaContext.key.shape->GetStorageShape().GetDim(0);
+    if (batchOfQuery != batchOfKey) {
+        ifaContext.kCache.resize(batchOfQuery);
+        ifaContext.vCache.resize(batchOfQuery);
+        for (int64_t size = 0; size < batchOfQuery; ++size) {
+            ifaContext.kCache[size] =
+                const_cast<gert::StorageShape *>(context.GetDynamicInputShape(KEY_INPUT_INDEX, size));
+            ifaContext.vCache[size] =
+                const_cast<gert::StorageShape *>(context.GetDynamicInputShape(VALUE_INPUT_INDEX, size));
+        }
+    } else {
+        ifaContext.kCache.resize(1);
+        ifaContext.vCache.resize(1);
+        ifaContext.kCache[0] = const_cast<gert::StorageShape *>(context.GetDynamicInputShape(KEY_INPUT_INDEX, 0));
+        ifaContext.vCache[0] = const_cast<gert::StorageShape *>(context.GetDynamicInputShape(VALUE_INPUT_INDEX, 0));
+    }
+
     ifaContext.value.desc = context.GetInputDesc(VALUE_INPUT_INDEX);
     ifaContext.value.shape = context.GetInputShape(VALUE_INPUT_INDEX);
-    OPS_ERR_IF((ifaContext.query.shape == nullptr) || (ifaContext.key.shape == nullptr) ||
-                   (ifaContext.value.shape == nullptr),
-               OPS_LOG_E(context.GetNodeName(), "shape of query, key, or value is null."),
-               return ge::GRAPH_FAILED);
     ifaContext.attnMask.desc = context.GetOptionalInputDesc(ATTN_MASK_INPUT_INDEX);
     ifaContext.attnMask.tensor = context.GetOptionalInputTensor(ATTN_MASK_INPUT_INDEX);
     ifaContext.attenOut.desc = context.GetOutputDesc(OUTPUT_INDEX);
@@ -309,13 +325,13 @@ ge::graphStatus CustomFIATiling::ParseTndVarlenParams(const gert::Shape& qShape)
 
 ge::graphStatus CustomFIATiling::ParsePagedAttentionParams()
 {
-    if (context_->key.shape == nullptr) {
-        OPS_LOG_E(context_->opName, "The key cache shape is null in paged attention.");
+    if (context_->kCache.empty()) {
+        OPS_LOG_E(context_->opName, "The Key cache is empty in pa situation.");
         return ge::GRAPH_FAILED;
     }
 
     maxBlockNumPerBatch_ = static_cast<uint32_t>(context_->blockTable.tensor->GetStorageShape().GetDim(1));
-    totalBlockNum_ = static_cast<uint32_t>(context_->key.shape->GetStorageShape().GetDim(0));
+    totalBlockNum_ = static_cast<uint32_t>(context_->kCache[0]->GetStorageShape().GetDim(0));
 
     return ge::GRAPH_SUCCESS;
 }
@@ -494,6 +510,8 @@ IFA_EXTERN_C ge::graphStatus TilingIncreFlashAttention(gert::TilingContext *cont
                                           .blockSize = nullptr,
                                           .innerPrecise = nullptr,
                                           .workSpaces = nullptr,
+                                          .kCache = {nullptr},
+                                          .vCache = {nullptr},
                                           .tilingKey = 0,
                                           .blockDim = 0};
     if (CustomFIATiling::ConvertContext(*context, ifaContext) != ge::GRAPH_SUCCESS) {

@@ -69,32 +69,11 @@ ge::graphStatus CustomFIATiling::CheckBaseInputsNull()
     return ge::GRAPH_SUCCESS;
 }
 
-bool CustomFIATiling::IsSupportFormat(const ge::Format format)
-{
-    return format == ge::FORMAT_ND || format == ge::FORMAT_NCHW;
-}
-
 ge::graphStatus CustomFIATiling::CheckInputParameterFormat()
 {
-    auto qFormat = context_->query.desc->GetOriginFormat();
-    auto kFormat = context_->key.desc->GetOriginFormat();
-    auto vFormat = context_->value.desc->GetOriginFormat();
-
-    OPS_ERR_IF(
-        (!IsSupportFormat(qFormat)), OPS_LOG_E(
-            context_->opName, "Query format %d should be ND", qFormat), return ge::GRAPH_FAILED);
-    OPS_ERR_IF(
-        (!IsSupportFormat(kFormat)), OPS_LOG_E(
-            context_->opName, "Key format %d should be ND", kFormat), return ge::GRAPH_FAILED);
-    OPS_ERR_IF(
-        (!IsSupportFormat(vFormat)), OPS_LOG_E(
-            context_->opName, "Value format %d should be ND", vFormat), return ge::GRAPH_FAILED);
-    if (context_->attnMask.desc != nullptr) {
-        auto mFormat = context_->attnMask.desc->GetOriginFormat();
-        OPS_ERR_IF((!IsSupportFormat(mFormat)),
-                OPS_LOG_E(context_->opName, "attn_mask format should be ND"),
-                return ge::GRAPH_FAILED);
-    }
+    // No format whitelist: the kernel only cares about storage shape dimensions,
+    // not the origin format tag.  Accepting all formats allows callers to pass
+    // NZ-layout tensors (with either ND or NZ metadata) without being rejected.
     return ge::GRAPH_SUCCESS;
 }
 
@@ -106,6 +85,20 @@ ge::graphStatus CustomFIATiling::CheckCustomFIABaseParams()
 
     OPS_ERR_IF((numKvHeads_ == 0 || numHeads_ % numKvHeads_ != 0),
         OPS_LOG_E(context_->opName, "kvHead is invalid."),
+        return ge::GRAPH_FAILED);
+
+    OPS_ERR_IF((context_->kCache.empty()),
+        OPS_LOG_E(context_->opName, "kCache is null."),
+        return ge::GRAPH_FAILED);
+    OPS_ERR_IF((context_->kCache[0] == nullptr),
+        OPS_LOG_E(context_->opName, "kCache[0] shape is null."),
+        return ge::GRAPH_FAILED);
+
+    OPS_ERR_IF((context_->vCache.empty()),
+        OPS_LOG_E(context_->opName, "vCache is null."),
+        return ge::GRAPH_FAILED);
+    OPS_ERR_IF((context_->vCache[0] == nullptr),
+        OPS_LOG_E(context_->opName, "vCache[0] shape is null."),
         return ge::GRAPH_FAILED);
 
     return ge::GRAPH_SUCCESS;
@@ -228,8 +221,8 @@ ge::graphStatus CustomFIATiling::CheckCustomFIAKvShapeAndToken(const gert::Stora
 ge::graphStatus CustomFIATiling::ProcessCheckCustomFIAInput()
 {
     const gert::StorageShape *queryShape = context_->query.shape;
-    const gert::StorageShape *keyShape = context_->key.shape;
-    const gert::StorageShape *valueShape = context_->value.shape;
+    const gert::StorageShape *keyShape = context_->kCache[0];
+    const gert::StorageShape *valueShape = context_->vCache[0];
 
     if (CheckCustomFIABaseParams() != ge::GRAPH_SUCCESS ||
         CheckCustomFIAInputDtype() != ge::GRAPH_SUCCESS ||

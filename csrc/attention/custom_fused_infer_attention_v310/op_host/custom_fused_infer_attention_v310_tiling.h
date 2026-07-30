@@ -67,6 +67,8 @@ struct IncreFlashAttentionContext {
     const uint32_t *innerPrecise;
 
     size_t *workSpaces;
+    std::vector<gert::StorageShape *> kCache;
+    std::vector<gert::StorageShape *> vCache;
     uint64_t tilingKey;
     uint32_t blockDim;
 };
@@ -120,7 +122,6 @@ private:
                                             const gert::StorageShape *keyShape,
                                             const gert::StorageShape *valueShape);
 
-    bool IsSupportFormat(const ge::Format format);
 
     ge::graphStatus GenTilingKey();
 

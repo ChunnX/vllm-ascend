@@ -18,7 +18,7 @@
 namespace vllm_ascend {
 
 at::Tensor npu_custom_fused_infer_attention_v310(
-    const at::Tensor &query, const at::Tensor &key, const at::Tensor &value,
+    const at::Tensor &query, at::TensorList key, at::TensorList value,
     const c10::optional<at::Tensor> &attn_mask,
     c10::OptionalArrayRef<c10::SymInt> actual_seq_lengths_q,
     c10::OptionalArrayRef<c10::SymInt> actual_seq_lengths_kv,

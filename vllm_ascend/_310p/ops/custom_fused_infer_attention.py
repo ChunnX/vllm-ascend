@@ -82,7 +82,8 @@ def custom_fused_infer_attention_v310(
 
     Args:
         query: query tensor.
-        key / value: key/value cache tensors.
+        key / value: key/value (single) cache tensors; passed as single-element
+            lists to the dynamic-list inputs of the custom op.
         attn_mask: optional attention mask.
         actual_seq_lengths_q / actual_seq_lengths_kv: optional per-batch actual
             sequence lengths.
@@ -99,8 +100,8 @@ def custom_fused_infer_attention_v310(
     """
     return torch.ops._C_ascend.npu_custom_fused_infer_attention_v310(
         query,
-        key,
-        value,
+        [key],
+        [value],
         attn_mask=attn_mask,
         actual_seq_lengths_q=actual_seq_lengths_q,
         actual_seq_lengths_kv=actual_seq_lengths_kv,
