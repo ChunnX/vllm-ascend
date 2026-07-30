@@ -24,7 +24,7 @@ from vllm.v1.attention.backends.registry import (  # type: ignore
     register_backend,
 )
 
-from vllm_ascend._310p.attention.custom_fused_infer_attention import (
+from vllm_ascend._310p.attention.parallel_draft_attention import (
     FIA_SUPPORTED_METHODS,
     forward_parallel_draft_fia,
 )

@@ -9,7 +9,7 @@
  */
 
 /*!
- * \file custom_fused_infer_attention_proto.cpp
+ * \file custom_fused_infer_attention_v310_proto.cpp
  * \brief
  */
 
@@ -33,7 +33,7 @@ static constexpr uint32_t IFA_INPUT_ACTUAL_SEQ_LENGTHS_KV_INDEX = 5;
 
 static ge::graphStatus InferShapeIncreFlashAttention(gert::InferShapeContext *context)
 {
-    OPS_LOG_D(context->GetNodeName(), "Enter CustomFusedInferAttention inferShape impl.");
+    OPS_LOG_D(context->GetNodeName(), "Enter CustomFusedInferAttentionV310 inferShape impl.");
     // query shape
     const gert::Shape *queryShape = context->GetInputShape(IFA_QUERY_INDEX);
     OPS_LOG_E_IF_NULL(context, queryShape, return ge::GRAPH_FAILED)
@@ -74,19 +74,19 @@ static ge::graphStatus InferShapeIncreFlashAttention(gert::InferShapeContext *co
         return ge::GRAPH_FAILED;
     }
 
-    OPS_LOG_D(context->GetNodeName(), "CustomFusedInferAttention inferShape end.");
+    OPS_LOG_D(context->GetNodeName(), "CustomFusedInferAttentionV310 inferShape end.");
     return ge::GRAPH_SUCCESS;
 }
 
 static ge::graphStatus InferDataTypeIncreFlashAttention(gert::InferDataTypeContext *context)
 {
-    OPS_LOG_D(context->GetNodeName(), "Enter CustomFusedInferAttention inferDataType impl.");
+    OPS_LOG_D(context->GetNodeName(), "Enter CustomFusedInferAttentionV310 inferDataType impl.");
     context->SetOutputDataType(IFA_ATTENTION_OUT_INDEX, ge::DT_FLOAT16);
-    OPS_LOG_D(context->GetNodeName(), "CustomFusedInferAttention inferDataType end.");
+    OPS_LOG_D(context->GetNodeName(), "CustomFusedInferAttentionV310 inferDataType end.");
     return ge::GRAPH_SUCCESS;
 }
 
-IMPL_OP_INFERSHAPE(CustomFusedInferAttention)
+IMPL_OP_INFERSHAPE(CustomFusedInferAttentionV310)
     .InferShape(InferShapeIncreFlashAttention)
     .InferDataType(InferDataTypeIncreFlashAttention)
     .InputsDataDependency({IFA_INPUT_ACTUAL_SEQ_LENGTHS_Q_INDEX})

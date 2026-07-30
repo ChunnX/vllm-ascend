@@ -15,11 +15,11 @@
  */
 
 /*!
- * \file custom_fused_infer_attention_tiling_data.h
+ * \file custom_fused_infer_attention_v310_tiling_data.h
  * \brief
  */
-#ifndef CUSTOM_FUSED_INFER_ATTENTION_TILING_DATA_H_
-#define CUSTOM_FUSED_INFER_ATTENTION_TILING_DATA_H_
+#ifndef ADN_FUSED_INFER_ATTENTION_TILING_DATA_H_
+#define ADN_FUSED_INFER_ATTENTION_TILING_DATA_H_
 
 #include <cstdint>
 #include "register/tilingdata_base.h"
@@ -56,14 +56,14 @@ BEGIN_TILING_DATA_DEF(IncreFlashAttentionTilingDataV2)
 TILING_DATA_FIELD_DEF_STRUCT(IncreFlashAttentionBaseParams, tilingBase);
 TILING_DATA_FIELD_DEF_STRUCT(IncreFlashAttentionSplitCoreParams, tilingPerCore);
 END_TILING_DATA_DEF
-REGISTER_TILING_DATA_CLASS(CustomFusedInferAttention, IncreFlashAttentionTilingDataV2)
+REGISTER_TILING_DATA_CLASS(CustomFusedInferAttentionV310, IncreFlashAttentionTilingDataV2)
 
 BEGIN_TILING_DATA_DEF(IncreFlashAttentionTilingAtbDataV2)
 TILING_DATA_FIELD_DEF_STRUCT(IncreFlashAttentionBaseParams, tilingBase);
 TILING_DATA_FIELD_DEF_STRUCT(IncreFlashAttentionSplitCoreParams, tilingPerCore);
 END_TILING_DATA_DEF
-REGISTER_TILING_DATA_CLASS(CustomFusedInferAttention_30000000000200000, IncreFlashAttentionTilingAtbDataV2)
-REGISTER_TILING_DATA_CLASS(CustomFusedInferAttention_30000000000200001, IncreFlashAttentionTilingAtbDataV2)
+REGISTER_TILING_DATA_CLASS(CustomFusedInferAttentionV310_30000000000200000, IncreFlashAttentionTilingAtbDataV2)
+REGISTER_TILING_DATA_CLASS(CustomFusedInferAttentionV310_30000000000200001, IncreFlashAttentionTilingAtbDataV2)
 
 } // namespace optiling
-#endif // CUSTOM_FUSED_INFER_ATTENTION_TILING_DATA_H_
+#endif // ADN_FUSED_INFER_ATTENTION_TILING_DATA_H_

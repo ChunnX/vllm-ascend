@@ -49,25 +49,28 @@ def expected_queries_per_request(method):
 
 
 def _fia_op():
-    """Resolve the in-tree custom FIA op, or explain what is missing.
+    """Resolve the custom FIA op wrapper, or explain what is missing.
 
-    The kernel ships in this repo's ``csrc`` and is registered under
-    ``torch.ops._C_ascend`` by ``vllm_ascend.vllm_ascend_C``. It is built only
-    for the ascend310 SOC branch, so a wheel produced for another target will
-    import fine and simply not carry the symbol.
+    The kernel ships in this repo's ``csrc`` and is registered as
+    ``torch.ops._C_ascend.npu_custom_fused_infer_attention_v310``. It is built
+    only for the ascend310 SOC branch, so a wheel produced for another target
+    imports fine and simply does not carry the symbol.
     """
-    op = getattr(torch.ops._C_ascend, "npu_custom_fused_infer_attention_out", None)
-    if op is None:
+    if not hasattr(torch.ops._C_ascend, "npu_custom_fused_infer_attention_v310"):
         raise RuntimeError(
             "DFlash/DSpark non-causal draft attention on 310P needs "
-            "torch.ops._C_ascend.npu_custom_fused_infer_attention_out, which is not "
+            "torch.ops._C_ascend.npu_custom_fused_infer_attention_v310, which is not "
             "registered. Reinstall vllm-ascend built for a 310P SOC "
-            "(SOC_VERSION=ascend310p) so csrc/attention/custom_fused_infer_attention "
-            "is compiled in. There is no fallback: sending this path to the causal "
-            "split-fuse kernel would return plausible but wrong numbers, so this "
-            "fails instead."
+            "(SOC_VERSION=ascend310p1) so "
+            "csrc/attention/custom_fused_infer_attention_v310 is compiled in. There "
+            "is no fallback: sending this path to the causal split-fuse kernel would "
+            "return plausible but wrong numbers, so this fails instead."
         )
-    return op
+    from vllm_ascend._310p.ops.custom_fused_infer_attention import (
+        custom_fused_infer_attention_v310,
+    )
+
+    return custom_fused_infer_attention_v310
 
 
 def validate_fia_scope(*, vllm_config, query, key_cache, value_cache, num_heads, num_kv_heads, head_size):
@@ -163,7 +166,7 @@ def forward_parallel_draft_fia(self, query, attn_metadata, output):
     round's entire query block. Never pass the 310P compressed split-fuse mask here,
     and never synthesize an all-zero causal mask to imitate it.
     """
-    fia_out = _fia_op()
+    fia_op = _fia_op()
 
     num_tokens = int(attn_metadata.num_actual_tokens)
     query_slice = query[:num_tokens]
@@ -240,19 +243,13 @@ def forward_parallel_draft_fia(self, query, attn_metadata, output):
         )
         self._fia_scope_validated = True
 
-    # The op writes straight into the caller's buffer, so it needs the output as a
-    # TND view of the same storage. `view` raises rather than silently copying if
-    # the slice is not contiguous, which is what we want -- a copy here would be
-    # written to and then discarded.
-    output_tnd = output_slice.view(num_tokens, self.num_heads, self.head_size)
-
-    # The `_out` overload asserts output shape/dtype/device against query on the
-    # C++ side, so there is nothing left to re-check here.
-    fia_out(
+    # The op allocates its own output and has no `out=` overload, so this path
+    # eats one copy. Do not add an `_out` variant locally to avoid it: the ABI is
+    # owned by the shared op, and forking it here is how the two drift.
+    fia_out = fia_op(
         query_tnd,
-        [key_cache],
-        [value_cache],
-        output_tnd,
+        key_cache,
+        value_cache,
         attn_mask=None,
         actual_seq_lengths_q=q_lens,
         actual_seq_lengths_kv=kv_lens,
@@ -264,4 +261,15 @@ def forward_parallel_draft_fia(self, query, attn_metadata, output):
         scale_value=self.scale,
         inner_precise=2,
     )
+
+    # The op's contract is "output has the same shape as query". Check that rather
+    # than numel against the possibly flat output slice: a numel match would also
+    # accept a transposed or mis-headed result.
+    if tuple(fia_out.shape) != tuple(query_tnd.shape) or fia_out.dtype != query_tnd.dtype:
+        raise RuntimeError(
+            f"custom FIA returned {tuple(fia_out.shape)}/{fia_out.dtype}, expected the "
+            f"query shape {tuple(query_tnd.shape)}/{query_tnd.dtype}"
+        )
+
+    output_slice.copy_(fia_out.reshape(output_slice.shape))
     return output

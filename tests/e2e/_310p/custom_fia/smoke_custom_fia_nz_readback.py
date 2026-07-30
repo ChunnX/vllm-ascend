@@ -60,11 +60,11 @@ def require_env():
         import vllm_ascend.vllm_ascend_C  # noqa: F401
     except Exception as exc:
         sys.exit(f"the vllm-ascend C extension could not be imported ({exc}).")
-    if not hasattr(torch.ops._C_ascend, "npu_custom_fused_infer_attention"):
+    if not hasattr(torch.ops._C_ascend, "npu_custom_fused_infer_attention_v310"):
         sys.exit(
-            "torch.ops._C_ascend.npu_custom_fused_infer_attention is not registered. "
-            "Reinstall vllm-ascend built for a 310P SOC (SOC_VERSION=ascend310p) so "
-            "csrc/attention/custom_fused_infer_attention is compiled in.\n"
+            "torch.ops._C_ascend.npu_custom_fused_infer_attention_v310 is not registered. "
+            "Reinstall vllm-ascend built for a 310P SOC (SOC_VERSION=ascend310p1) so "
+            "csrc/attention/custom_fused_infer_attention_v310 is compiled in.\n"
             "This gate cannot be skipped -- the adapter has no fallback path."
         )
 
@@ -200,10 +200,10 @@ def run_case(name, q_lens, kv_lens, *, value_builder=None, assert_accuracy=True,
 
     # The functional overload, not `_out`: this gate is about what the kernel
     # returns, so it must not be handed a buffer that could mask a partial write.
-    out = torch.ops._C_ascend.npu_custom_fused_infer_attention(
+    out = torch.ops._C_ascend.npu_custom_fused_infer_attention_v310(
         query.to(DEVICE),
-        [key_cache],
-        [value_cache],
+        key_cache,
+        value_cache,
         attn_mask=None,
         actual_seq_lengths_q=list(q_lens),
         actual_seq_lengths_kv=list(kv_lens),

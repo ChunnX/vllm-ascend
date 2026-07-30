@@ -15,15 +15,15 @@
  */
 
 /*!
- * \file custom_fused_infer_attention.cpp
+ * \file custom_fused_infer_attention_v310.cpp
  * \brief
  */
 #include "register/op_def_registry.h"
 
 namespace ops {
-class CustomFusedInferAttention : public OpDef {
+class CustomFusedInferAttentionV310 : public OpDef {
 public:
-    CustomFusedInferAttention(const char *name) : OpDef(name)
+    CustomFusedInferAttentionV310(const char *name) : OpDef(name)
     {
         this->Input("query")
             .ParamType(REQUIRED)
@@ -31,12 +31,12 @@ public:
             .Format({ge::FORMAT_ND})
             .UnknownShapeFormat({ge::FORMAT_ND});
         this->Input("key")
-            .ParamType(DYNAMIC)
+            .ParamType(REQUIRED)
             .DataType({ge::DT_FLOAT16})
             .Format({ge::FORMAT_ND})
             .UnknownShapeFormat({ge::FORMAT_ND});
         this->Input("value")
-            .ParamType(DYNAMIC)
+            .ParamType(REQUIRED)
             .DataType({ge::DT_FLOAT16})
             .Format({ge::FORMAT_ND})
             .UnknownShapeFormat({ge::FORMAT_ND});
@@ -85,5 +85,5 @@ public:
         this->AICore().AddConfig("ascend310p", config_310p);
     }
 };
-OP_ADD(CustomFusedInferAttention);
+OP_ADD(CustomFusedInferAttentionV310);
 } // namespace ops

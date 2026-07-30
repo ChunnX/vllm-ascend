@@ -15,12 +15,12 @@
  */
 
 /*!
- * \file custom_fused_infer_attention_tiling_check.cc
+ * \file custom_fused_infer_attention_v310_tiling_check.cc
  * \brief
  */
 
-#include "custom_fused_infer_attention_tiling.h"
-#include "custom_fused_infer_attention_tiling_base.h"
+#include "custom_fused_infer_attention_v310_tiling.h"
+#include "custom_fused_infer_attention_v310_tiling_base.h"
 #include <graph/utils/type_utils.h>
 #include "error/ops_error.h"
 
@@ -106,20 +106,6 @@ ge::graphStatus CustomFIATiling::CheckCustomFIABaseParams()
 
     OPS_ERR_IF((numKvHeads_ == 0 || numHeads_ % numKvHeads_ != 0),
         OPS_LOG_E(context_->opName, "kvHead is invalid."),
-        return ge::GRAPH_FAILED);
-
-    OPS_ERR_IF((context_->kCache.empty()),
-        OPS_LOG_E(context_->opName, "kCache is null."),
-        return ge::GRAPH_FAILED);
-    OPS_ERR_IF((context_->kCache[0] == nullptr),
-        OPS_LOG_E(context_->opName, "kCache[0] shape is null."),
-        return ge::GRAPH_FAILED);
-
-    OPS_ERR_IF((context_->vCache.empty()),
-        OPS_LOG_E(context_->opName, "vCache is null."),
-        return ge::GRAPH_FAILED);
-    OPS_ERR_IF((context_->vCache[0] == nullptr),
-        OPS_LOG_E(context_->opName, "vCache[0] shape is null."),
         return ge::GRAPH_FAILED);
 
     return ge::GRAPH_SUCCESS;
@@ -242,8 +228,8 @@ ge::graphStatus CustomFIATiling::CheckCustomFIAKvShapeAndToken(const gert::Stora
 ge::graphStatus CustomFIATiling::ProcessCheckCustomFIAInput()
 {
     const gert::StorageShape *queryShape = context_->query.shape;
-    const gert::StorageShape *keyShape = context_->kCache[0];
-    const gert::StorageShape *valueShape = context_->vCache[0];
+    const gert::StorageShape *keyShape = context_->key.shape;
+    const gert::StorageShape *valueShape = context_->value.shape;
 
     if (CheckCustomFIABaseParams() != ge::GRAPH_SUCCESS ||
         CheckCustomFIAInputDtype() != ge::GRAPH_SUCCESS ||

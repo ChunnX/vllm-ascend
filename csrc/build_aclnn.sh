@@ -83,10 +83,10 @@ if [[ "$SOC_VERSION" =~ ^ascend310 ]]; then
 
     CUSTOM_OPS_ARRAY=(
         "causal_conv1d_v310"
-        "custom_fused_infer_attention"
         "recurrent_gated_delta_rule_v310"
         "chunk_fwd_o"
         "chunk_gated_delta_rule_fwd_h"
+        "custom_fused_infer_attention_v310"
     )
     CUSTOM_OPS=$(IFS=';'; echo "${CUSTOM_OPS_ARRAY[*]}")
     SOC_ARG="ascend310p"

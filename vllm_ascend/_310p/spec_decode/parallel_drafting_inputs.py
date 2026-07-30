@@ -22,7 +22,7 @@ import torch
 # size" is checked against it rather than against each other: cross-checking
 # three sources only proves they agree, not that they equal the value the custom
 # FIA kernel was validated at.
-from vllm_ascend._310p.attention.custom_fused_infer_attention import FIA_BLOCK_SIZE
+from vllm_ascend._310p.attention.parallel_draft_attention import FIA_BLOCK_SIZE
 
 
 def resolve_310p_block_size(proposer) -> int:

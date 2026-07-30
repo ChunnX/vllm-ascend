@@ -15,7 +15,7 @@
  */
 
 /*!
- * \file custom_fused_infer_attention_tiling.h
+ * \file custom_fused_infer_attention_v310_tiling.h
  * \brief
  */
 #ifndef AIR_CXX_RUNTIME_V2_OP_IMPL_INCREFLASHATTENTIONSCORE_NEW_H_
@@ -25,8 +25,8 @@
 #include <vector>
 #include "exe_graph/runtime/tiling_context.h"
 #include "exe_graph/runtime/tiling_parse_context.h"
-#include "custom_fused_infer_attention_tiling_base.h"
-#include "custom_fused_infer_attention_tiling_data.h"
+#include "custom_fused_infer_attention_v310_tiling_base.h"
+#include "custom_fused_infer_attention_v310_tiling_data.h"
 
 #ifdef ASCENDC_OP_TEST
 #define IFA_EXTERN_C extern "C"
@@ -67,8 +67,6 @@ struct IncreFlashAttentionContext {
     const uint32_t *innerPrecise;
 
     size_t *workSpaces;
-    std::vector<gert::StorageShape *> kCache;
-    std::vector<gert::StorageShape *> vCache;
     uint64_t tilingKey;
     uint32_t blockDim;
 };
@@ -138,7 +136,7 @@ private:
     uint32_t headDim_ = 0;
     uint32_t batchSize_ = 0;
     IfaLayout inputLayout_ = IfaLayout::BSH_BSND;
-    uint32_t tSeqSize_ = 1; // TND格式T轴长度
+    uint32_t tSeqSize_ = 1; // Length of the T axis in TND layout.
 
     ge::DataType inputQType_ = ge::DT_FLOAT16;
     ge::DataType inputKvType_ = ge::DT_FLOAT16;

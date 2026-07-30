@@ -15,12 +15,12 @@
  */
 
 /*!
- * \file custom_fused_infer_attention_tiling.cc
+ * \file custom_fused_infer_attention_v310_tiling.cc
  * \brief
  */
 
-#include "custom_fused_infer_attention_tiling.h"
-#include "custom_fused_infer_attention_tiling_base.h"
+#include "custom_fused_infer_attention_v310_tiling.h"
+#include "custom_fused_infer_attention_v310_tiling_base.h"
 #include <vector>
 #include <graph/utils/type_utils.h>
 #include "tiling/platform/platform_ascendc.h"
@@ -60,7 +60,7 @@ ge::graphStatus CustomFIATiling::GenTilingKey()
 ge::graphStatus CustomFIATiling::ConvertContext(gert::TilingContext &context, IncreFlashAttentionContext &ifaContext)
 {
     if (context.GetNodeName() == nullptr) {
-        OPS_LOG_E("CustomFusedInferAttention", "opName got from TilingContext is nullptr");
+        OPS_LOG_E("CustomFusedInferAttentionV310", "opName got from TilingContext is nullptr");
         return ge::GRAPH_FAILED;
     }
     ifaContext.opName = context.GetNodeName();
@@ -69,28 +69,12 @@ ge::graphStatus CustomFIATiling::ConvertContext(gert::TilingContext &context, In
     ifaContext.query.shape = context.GetInputShape(QUERY_INPUT_INDEX);
     ifaContext.key.desc = context.GetInputDesc(KEY_INPUT_INDEX);
     ifaContext.key.shape = context.GetInputShape(KEY_INPUT_INDEX);
-    OPS_ERR_IF((ifaContext.query.shape == nullptr) || (ifaContext.key.shape == nullptr),
-               OPS_LOG_E(context.GetNodeName(), "shape of query or shape of key is null."), return ge::GRAPH_FAILED);
-    auto batchOfQuery = ifaContext.query.shape->GetStorageShape().GetDim(0);
-    auto batchOfKey = ifaContext.key.shape->GetStorageShape().GetDim(0);
-    if (batchOfQuery != batchOfKey) {
-        ifaContext.kCache.resize(batchOfQuery);
-        ifaContext.vCache.resize(batchOfQuery);
-        for (int64_t size = 0; size < batchOfQuery; ++size) {
-            ifaContext.kCache[size] =
-                const_cast<gert::StorageShape *>(context.GetDynamicInputShape(KEY_INPUT_INDEX, size));
-            ifaContext.vCache[size] =
-                const_cast<gert::StorageShape *>(context.GetDynamicInputShape(VALUE_INPUT_INDEX, size));
-        }
-    } else {
-        ifaContext.kCache.resize(1);
-        ifaContext.vCache.resize(1);
-        ifaContext.kCache[0] = const_cast<gert::StorageShape *>(context.GetDynamicInputShape(KEY_INPUT_INDEX, 0));
-        ifaContext.vCache[0] = const_cast<gert::StorageShape *>(context.GetDynamicInputShape(VALUE_INPUT_INDEX, 0));
-    }
-
     ifaContext.value.desc = context.GetInputDesc(VALUE_INPUT_INDEX);
     ifaContext.value.shape = context.GetInputShape(VALUE_INPUT_INDEX);
+    OPS_ERR_IF((ifaContext.query.shape == nullptr) || (ifaContext.key.shape == nullptr) ||
+                   (ifaContext.value.shape == nullptr),
+               OPS_LOG_E(context.GetNodeName(), "shape of query, key, or value is null."),
+               return ge::GRAPH_FAILED);
     ifaContext.attnMask.desc = context.GetOptionalInputDesc(ATTN_MASK_INPUT_INDEX);
     ifaContext.attnMask.tensor = context.GetOptionalInputTensor(ATTN_MASK_INPUT_INDEX);
     ifaContext.attenOut.desc = context.GetOutputDesc(OUTPUT_INDEX);
@@ -122,12 +106,12 @@ ge::graphStatus CustomFIATiling::RunCustomFIATiling(IncreFlashAttentionContext &
 {
     this->context_ = &context;
 
-    // step 1. 初始化硬件平台的相关信息。
+    // Step 1: Initialize hardware-platform information.
     if (InitPlatformInfo() != ge::GRAPH_SUCCESS) {
         return ge::GRAPH_FAILED;
     }
 
-    // step 2. 检查条件，决定是否满足走该算子的条件
+    // Step 2: Check whether the custom operator can handle this input.
     if (CheckIfShouldRunCustomFIA()) {
         return CustomFIATilingProcess();
     }
@@ -163,19 +147,19 @@ ge::graphStatus CustomFIATiling::InitPlatformInfo()
 
 ge::graphStatus CustomFIATiling::ParseTilingAttributes()
 {
-    // 1. 解析基础属性
+    // 1. Parse basic attributes.
     numHeads_ = *context_->numHeads;
     numKvHeads_ = (*context_->kvHeadNums == 0) ? numHeads_ : *context_->kvHeadNums;
     blockSize_ = *context_->blockSize;
     
-    // 2. 解析数据类型
+    // 2. Parse data types.
     inputQType_ = context_->query.desc->GetDataType();
     inputKvType_ = context_->key.desc->GetDataType();
     
-    // 3. 解析 BatchSize
+    // 3. Parse the batch size.
     batchSize_ = static_cast<uint32_t>(context_->blockTable.tensor->GetStorageShape().GetDim(0));
 
-    // 4. 解析 HeadDim
+    // 4. Parse the head dimension.
     const auto& qShape = context_->query.shape->GetStorageShape();
     const auto dimNum = qShape.GetDimNum();
     if (dimNum > 0) {
@@ -185,7 +169,7 @@ ge::graphStatus CustomFIATiling::ParseTilingAttributes()
         return ge::GRAPH_FAILED;
     }
 
-    // 5. 解析 query Layout 布局
+    // 5. Parse the query layout.
     const std::string layout(context_->layOut);
     if (layout == "BSND") {
         inputLayout_ = IfaLayout::BSND;
@@ -216,19 +200,19 @@ bool CustomFIATiling::CheckIfShouldRunCustomFIA()
         return false;
     }
 
-    // 关键input的非空检查
+    // Check required inputs for null pointers.
     if (CheckBaseInputsNull() != ge::GRAPH_SUCCESS) {
         OPS_LOG_E(context_->opName, "Base inputs check failed.");
         return false;
     }
 
-    // 解析并初始化算子属性 (提取 Tiling 所需的基础状态)
+    // Parse operator attributes and initialize the base state required by tiling.
     if (ParseTilingAttributes() != ge::GRAPH_SUCCESS) {
         OPS_LOG_E(context_->opName, "Failed to parse tiling attributes.");
         return false;
     }
 
-    // 校验4：业务强规则校验 (拦截不支持的功能、入参和数据类型)
+    // Check 4: Enforce supported features, inputs, and data types.
     if (CheckInputFormatAndLimits() != ge::GRAPH_SUCCESS) {
         OPS_LOG_E(context_->opName, "Input format and limits check failed.");
         return false;
@@ -264,7 +248,7 @@ ge::graphStatus TilingCustomFIAAdapter(gert::TilingContext *context, IncreFlashA
 
 void CustomFIATiling::ParseMask()
 {
-    // 默认使能compress mask，若需调试，使用MASK_NORM
+    // Enable the compressed mask by default; use MASK_NORM for debugging.
     attenMaskFlag_ = (context_->attnMask.tensor != nullptr) ? IfaMaskType::MASK_COMPRESS : IfaMaskType::NO_MASK;
     if (attenMaskFlag_) {
         OPS_LOG_D(context_->opName, "attenMaskFlag_:%d", attenMaskFlag_);
@@ -325,20 +309,20 @@ ge::graphStatus CustomFIATiling::ParseTndVarlenParams(const gert::Shape& qShape)
 
 ge::graphStatus CustomFIATiling::ParsePagedAttentionParams()
 {
-    if (context_->kCache.empty()) {
-        OPS_LOG_E(context_->opName, "The Key cache is empty in pa situation.");
+    if (context_->key.shape == nullptr) {
+        OPS_LOG_E(context_->opName, "The key cache shape is null in paged attention.");
         return ge::GRAPH_FAILED;
     }
 
     maxBlockNumPerBatch_ = static_cast<uint32_t>(context_->blockTable.tensor->GetStorageShape().GetDim(1));
-    totalBlockNum_ = static_cast<uint32_t>(context_->kCache[0]->GetStorageShape().GetDim(0));
+    totalBlockNum_ = static_cast<uint32_t>(context_->key.shape->GetStorageShape().GetDim(0));
 
     return ge::GRAPH_SUCCESS;
 }
 
 ge::graphStatus CustomFIATiling::CustomFIAParamGet()
 {
-    // 1. 获取基础简单属性
+    // 1. Read basic attributes.
     scaleValue_ = *context_->scaleValue;
     if (headDim_ == 256) {
         seqStepQ_ = DEFAULT_QUERY_SEQ_STEP_HEAD_DIM_256;
@@ -348,22 +332,22 @@ ge::graphStatus CustomFIATiling::CustomFIAParamGet()
 
     const auto &qShape = context_->query.shape->GetStorageShape();
 
-    // 2. 根据不同的 Layout 解析并强校验专属属性
+    // 2. Parse and strictly validate layout-specific attributes.
     if (inputLayout_ == IfaLayout::TND) {
         if (ParseTndVarlenParams(qShape) != ge::GRAPH_SUCCESS) {
             return ge::GRAPH_FAILED;
         }
     } else if (inputLayout_ == IfaLayout::BSND) {
-        // BSND 模式：S 维度在 index 1
+        // In BSND layout, the S dimension is at index 1.
         qTokens_ = static_cast<uint32_t>(qShape.GetDim(DIM_NUM_ONE));
     }
 
-    // 3. 解析 Paged Attention 专属的 KV Cache 属性
+    // 3. Parse paged-attention KV-cache attributes.
     if (ParsePagedAttentionParams() != ge::GRAPH_SUCCESS) {
         return ge::GRAPH_FAILED;
     }
 
-    // 4. 解析 Mask 属性
+    // 4. Parse mask attributes.
     ParseMask();
     
     return ge::GRAPH_SUCCESS;
@@ -491,7 +475,7 @@ ge::graphStatus CustomFIATiling::CustomFIATilingProcess()
 
 IFA_EXTERN_C ge::graphStatus TilingIncreFlashAttention(gert::TilingContext *context)
 {
-    OPS_ERR_IF(context == nullptr, OPS_REPORT_VECTOR_INNER_ERR("CustomFusedInferAttention", "Context is nullptr."),
+    OPS_ERR_IF(context == nullptr, OPS_REPORT_VECTOR_INNER_ERR("CustomFusedInferAttentionV310", "Context is nullptr."),
                return ge::GRAPH_FAILED);
     IncreFlashAttentionContext ifaContext{.opName = nullptr,
                                           .platformInfo = nullptr,
@@ -510,8 +494,6 @@ IFA_EXTERN_C ge::graphStatus TilingIncreFlashAttention(gert::TilingContext *cont
                                           .blockSize = nullptr,
                                           .innerPrecise = nullptr,
                                           .workSpaces = nullptr,
-                                          .kCache = {nullptr},
-                                          .vCache = {nullptr},
                                           .tilingKey = 0,
                                           .blockDim = 0};
     if (CustomFIATiling::ConvertContext(*context, ifaContext) != ge::GRAPH_SUCCESS) {

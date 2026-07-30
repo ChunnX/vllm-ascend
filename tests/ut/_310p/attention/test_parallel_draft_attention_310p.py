@@ -19,10 +19,10 @@ from unittest.mock import patch as mock_patch
 import torch
 
 from tests.ut.base import TestBase
-from vllm_ascend._310p.attention import custom_fused_infer_attention as fia_mod
+from vllm_ascend._310p.attention import parallel_draft_attention as fia_mod
 from vllm_ascend.utils import ACL_FORMAT_FRACTAL_NZ
 
-FIA_MOD = "vllm_ascend._310p.attention.custom_fused_infer_attention"
+FIA_MOD = "vllm_ascend._310p.attention.parallel_draft_attention"
 
 NUM_HEADS = 16
 NUM_KV_HEADS = 4
@@ -83,22 +83,23 @@ def make_metadata(*, q_lens=None, kv_lens=None, block_cols=4, block_dtype=torch.
 
 
 class _FakeFia:
-    """Stands in for npu_custom_fused_infer_attention_out.
+    """Stands in for custom_fused_infer_attention_v310.
 
     The real op is only registered in a 310P-targeted build, so CI hosts never
     have it. Records the positional tensors alongside the kwargs so the call
-    contract can be asserted on either.
+    contract can be asserted on either. Like the real op it allocates its own
+    output rather than writing into a caller buffer.
     """
 
     def __init__(self, out_builder=None):
         self.calls = []
         self._out_builder = out_builder
 
-    def __call__(self, query, key, value, output, **kwargs):
-        self.calls.append(dict(kwargs, query=query, key=key, value=value, output=output))
+    def __call__(self, query, key, value, **kwargs):
+        self.calls.append(dict(kwargs, query=query, key=key, value=value))
         if self._out_builder is not None:
-            output.copy_(self._out_builder(self.calls[-1]))
-        return output
+            return self._out_builder(self.calls[-1])
+        return torch.zeros_like(query)
 
 
 def run_forward(impl=None, md=None, fia=None, num_tokens=None):
@@ -148,9 +149,8 @@ class TestFiaCallContract(TestBase):
     def test_caches_are_passed_by_reference(self):
         impl = make_impl()
         _, fia, _ = run_forward(impl=impl)
-        # The op takes TensorList; a one-element list is the paged K/V contract.
-        self.assertIs(fia.calls[0]["key"][0], impl.key_cache)
-        self.assertIs(fia.calls[0]["value"][0], impl.value_cache)
+        self.assertIs(fia.calls[0]["key"], impl.key_cache)
+        self.assertIs(fia.calls[0]["value"], impl.value_cache)
 
     def test_head_counts_and_scale(self):
         _, fia, _ = run_forward()
@@ -332,27 +332,24 @@ class TestFiaOpResolution(TestBase):
         # A wheel built for a non-310P SOC imports fine but carries no such
         # symbol. That must stop the run, not silently reroute to the causal
         # split-fuse kernel.
-        # create=True because torch.ops._C_ascend resolves lazily: in a plain UT
-        # process the C extension may not be loaded, so the attribute does not
-        # exist yet and patch.object would fail before the assertion ran.
-        with mock_patch.object(
-            torch.ops._C_ascend, "npu_custom_fused_infer_attention_out", None, create=True
-        ):
+        # Swap the whole namespace for an empty one rather than patching the
+        # attribute: torch.ops._C_ascend resolves lazily, so the attribute may
+        # legitimately not exist yet and patch.object would fail on setup.
+        with mock_patch.object(torch.ops, "_C_ascend", SimpleNamespace()):
             with self.assertRaisesRegex(RuntimeError, "no fallback"):
                 fia_mod._fia_op()
 
 
-class TestFiaOutputAliasing(TestBase):
-    def test_op_writes_through_to_the_caller_buffer(self):
-        """The op is the `_out` overload, so the tensor handed to it must alias
-        the caller's output. If the adapter ever passes a fresh tensor or a copy,
-        the kernel's result is written somewhere that is then thrown away, and
-        the caller silently keeps zeros."""
-        marker = 0.25
-        result, fia, output = run_forward(fia=_FakeFia(lambda call: torch.full_like(call["query"], marker)))
-        n = BATCH * DFLASH_Q
-        passed_out = fia.calls[0]["output"]
-        self.assertEqual(tuple(passed_out.shape), (n, NUM_HEADS, HEAD_DIM))
-        self.assertIs(passed_out._base, output, "output must be a view of the caller's buffer")
-        self.assertTrue(bool((output[:n] == marker).all()))
-        self.assertIs(result, output)
+class TestFiaReturnHandling(TestBase):
+    def test_mismatched_return_shape_is_refused(self):
+        def bad_shape(call):
+            q = call["query"]
+            # Same element count, wrong layout -- numel alone would accept this.
+            return torch.zeros(q.shape[0], q.shape[2], q.shape[1], dtype=q.dtype)
+
+        with self.assertRaisesRegex(RuntimeError, "expected the query shape"):
+            run_forward(fia=_FakeFia(bad_shape))
+
+    def test_mismatched_return_dtype_is_refused(self):
+        with self.assertRaisesRegex(RuntimeError, "expected the query shape"):
+            run_forward(fia=_FakeFia(lambda call: torch.zeros_like(call["query"], dtype=torch.float32)))

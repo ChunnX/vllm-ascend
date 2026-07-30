@@ -16,6 +16,7 @@
 #ifndef UNPAD_PAGED_ATTENTION_DECODER_H
 #define UNPAD_PAGED_ATTENTION_DECODER_H
 
+#include "custom_fia_mem.h"
 #include "common.h"
 #include "common_func.h"
 #include "simd.h"
@@ -35,6 +36,15 @@ constexpr int32_t LOCAL_STORAGE_BUFFER_SIZE = 4096;
 
 constexpr int32_t MASK_TYPE_NORMAL = 1;
 constexpr int32_t MASK_TYPE_COMPRESSED = 2;
+
+// PingFlag (0) and PongFlag (1) select the two event IDs in each ping-pong event pair.
+// Event IDs are scoped by the source/destination pipeline pair, so different directions may reuse the same base ID.
+// MTE1 -> MTE2: MTE1 has consumed K from L1, allowing MTE2 to refill the corresponding K buffer.
+constexpr uint32_t L1_K_REUSE_EVENT_BASE = 4;
+// MTE2 -> MTE1: MTE2 has loaded V into L1, allowing MTE1 to consume the corresponding V buffer.
+constexpr uint32_t L1_V_READY_EVENT_BASE = 4;
+// MTE1 -> MTE2: MTE1 has consumed V from L1, allowing MTE2 to refill the corresponding V buffer.
+constexpr uint32_t L1_V_REUSE_EVENT_BASE = 6;
 
 template <CalcMode DECODE_MODE = CalcMode::CALC_MODE_DEFAULT>
 class PagedAttentionDecoder {
@@ -107,10 +117,10 @@ public:
     __aicore__ inline void ExpandToBlockHalf(AscendC::LocalTensor<half> dstTensor,
                                             AscendC::LocalTensor<half> srcTensor, int32_t len)
     {
-        // 给srcTensor做扩展用，给每个block复制16份
+        // Expand srcTensor by copying each block 16 times.
         const uint32_t BLOCK_TWO = 2;
         const uint32_t BLOCK_NUM = 8;
-        // (len,) -> len / 16 个 (16, 16)
+        // (len,) -> len / 16 blocks of shape (16, 16)
         for (int32_t vaddsIdx = 0; vaddsIdx < BLOCK_TWO; ++vaddsIdx) {
             adds_v<ArchType::ASCEND_V200, half>(
                 dstTensor[vaddsIdx * BLOCK_NUM * BLOCK_SIZE_I],
@@ -140,22 +150,22 @@ public:
         uint32_t ll_pre_line_index = 5;
         uint32_t gl_pre_line_index = 7;
 
-        lsUbufOffset = 0; // 初始化为两个UB_UINT8_BLOCK_SIZE的偏移量
-        lpUbufOffset = 0; // 初始化为两个UB_UINT8_BLOCK_SIZE的偏移量
-        ls32UbufOffset = ls32_pre_block_index * UB_UINT8_BLOCK_SIZE_I; // 初始化为两个UB_UINT8_BLOCK_SIZE的偏移量
-        loUbufOffset = ls32_pre_block_index * UB_UINT8_BLOCK_SIZE_I; // 初始化为两个UB_UINT8_BLOCK_SIZE的偏移量
-        lmUbufOffset = lm_pre_block_index * UB_UINT8_BLOCK_SIZE_I; // 初始化为一个UB_UINT8_LINE_SIZE的偏移量
-        // 初始化为一个UB_UINT8_LINE_SIZE的偏移量
+        lsUbufOffset = 0; // Initialize at an offset of two UB_UINT8_BLOCK_SIZE units.
+        lpUbufOffset = 0; // Initialize at an offset of two UB_UINT8_BLOCK_SIZE units.
+        ls32UbufOffset = ls32_pre_block_index * UB_UINT8_BLOCK_SIZE_I; // Offset by two UB_UINT8_BLOCK_SIZE units.
+        loUbufOffset = ls32_pre_block_index * UB_UINT8_BLOCK_SIZE_I; // Offset by two UB_UINT8_BLOCK_SIZE units.
+        lmUbufOffset = lm_pre_block_index * UB_UINT8_BLOCK_SIZE_I; // Offset by one UB_UINT8_LINE_SIZE unit.
+        // Offset by one UB_UINT8_LINE_SIZE unit.
         hmUbufOffset = lm_pre_block_index * UB_UINT8_BLOCK_SIZE_I + hm_pre_line_index * UB_UINT8_LINE_SIZE_I;
-        // 初始化为一个UB_UINT8_LINE_SIZE的偏移量
+        // Offset by one UB_UINT8_LINE_SIZE unit.
         gmUbufOffset = lm_pre_block_index * UB_UINT8_BLOCK_SIZE_I + gm_pre_line_index * UB_UINT8_LINE_SIZE_I;
-        // 初始化为两个UB_UINT8_LINE_SIZE的偏移量
+        // Offset by two UB_UINT8_LINE_SIZE units.
         dmUbufOffset = lm_pre_block_index * UB_UINT8_BLOCK_SIZE_I + dm_pre_line_index * UB_UINT8_LINE_SIZE_I;
-        // 初始化为两个UB_UINT8_LINE_SIZE的偏移量
+        // Offset by two UB_UINT8_LINE_SIZE units.
         llUbufOffset = lm_pre_block_index * UB_UINT8_BLOCK_SIZE_I + ll_pre_line_index * UB_UINT8_LINE_SIZE_I;
-        // 初始化为二十五个UB_UINT8_LINE_SIZE的偏移量
+        // Offset by 25 UB_UINT8_LINE_SIZE units.
         glUbufOffset = lm_pre_block_index * UB_UINT8_BLOCK_SIZE_I + gl_pre_line_index * UB_UINT8_LINE_SIZE_I;
-        tvUbufOffset = tv_pre_block_index * UB_UINT8_BLOCK_SIZE_I; // 初始化为一个UB_UINT8_LINE_SIZE的偏移量
+        tvUbufOffset = tv_pre_block_index * UB_UINT8_BLOCK_SIZE_I; // Offset by one UB_UINT8_LINE_SIZE unit.
         goUbufOffset = go_pre_block_index * UB_UINT8_BLOCK_SIZE_I;
     }
 
@@ -176,22 +186,22 @@ public:
         uint32_t gm_line_index = 6;
         uint32_t gl_line_index = 16;
 
-        lsUbufOffset = 0; // 初始化为两个DEC_UB_UINT8_BLOCK_SIZE的偏移量
-        lpUbufOffset = lp_dec_block_index * DEC_UB_UINT8_BLOCK_SIZE; // 初始化为两个DEC_UB_UINT8_BLOCK_SIZE的偏移量
-        ls32UbufOffset = ls_dec_block_index * DEC_UB_UINT8_BLOCK_SIZE; // 初始化为四个DEC_UB_UINT8_BLOCK_SIZE的偏移量
-        maskUbufOffset = mask_dec_block_index * DEC_UB_UINT8_BLOCK_SIZE; // 初始化为两个DEC_UB_UINT8_BLOCK_SIZE的偏移量
+        lsUbufOffset = 0; // Initialize at an offset of two DEC_UB_UINT8_BLOCK_SIZE units.
+        lpUbufOffset = lp_dec_block_index * DEC_UB_UINT8_BLOCK_SIZE; // Offset by two DEC_UB_UINT8_BLOCK_SIZE units.
+        ls32UbufOffset = ls_dec_block_index * DEC_UB_UINT8_BLOCK_SIZE; // Offset by four DEC_UB_UINT8_BLOCK_SIZE units.
+        maskUbufOffset = mask_dec_block_index * DEC_UB_UINT8_BLOCK_SIZE; // Offset by two DEC_UB_UINT8_BLOCK_SIZE units.
         loUbufOffset = lo_dec_block_index * DEC_UB_UINT8_BLOCK_SIZE;
-        lmUbufOffset = lm_block_index * UB_UINT8_BLOCK_SIZE_I; // 初始化为一个UB_UINT8_LINE_SIZE的偏移量
-        // 初始化为一个UB_UINT8_LINE_SIZE的偏移量
+        lmUbufOffset = lm_block_index * UB_UINT8_BLOCK_SIZE_I; // Offset by one UB_UINT8_LINE_SIZE unit.
+        // Offset by one UB_UINT8_LINE_SIZE unit.
         hmUbufOffset = lm_block_index * UB_UINT8_BLOCK_SIZE_I + hm_line_index * UB_UINT8_LINE_SIZE_I;
-        // 初始化为两个UB_UINT8_LINE_SIZE的偏移量
+        // Offset by two UB_UINT8_LINE_SIZE units.
         dmUbufOffset = lm_block_index * UB_UINT8_BLOCK_SIZE_I + dm_line_index * UB_UINT8_LINE_SIZE_I;
-        // 初始化为两个UB_UINT8_LINE_SIZE的偏移量
+        // Offset by two UB_UINT8_LINE_SIZE units.
         llUbufOffset = lm_block_index * UB_UINT8_BLOCK_SIZE_I + ll_line_index * UB_UINT8_LINE_SIZE_I;
-        // 初始化为二十六个UB_UINT8_LINE_SIZE的偏移量
+        // Offset by 26 UB_UINT8_LINE_SIZE units.
         gmUbufOffset = lm_block_index * UB_UINT8_BLOCK_SIZE_I + gm_line_index * UB_UINT8_LINE_SIZE_I;
-        tvUbufOffset = tv_block_index * UB_UINT8_BLOCK_SIZE_I; // 初始化为十六个UB_UINT8_LINE_SIZE的偏移量
-        // 初始化为十六个UB_UINT8_LINE_SIZE的偏移量
+        tvUbufOffset = tv_block_index * UB_UINT8_BLOCK_SIZE_I; // Offset by 16 UB_UINT8_LINE_SIZE units.
+        // Offset by 16 UB_UINT8_LINE_SIZE units.
         glUbufOffset = tv_block_index * UB_UINT8_BLOCK_SIZE_I + gl_line_index * UB_UINT8_LINE_SIZE_I;
         goUbufOffset = go_block_index * UB_UINT8_BLOCK_SIZE_I;
     }
@@ -321,7 +331,7 @@ private:
     AscendC::GlobalTensor<half> gmSrcMTensor;
     AscendC::GlobalTensor<half> gmDstOTensor;
 
-    AsdopsBuffer<ArchType::ASCEND_V200> buf;
+    FiaV200Buffer buf;
 
     uint32_t l1qBufAddrOffset = 0;
     uint32_t l1kBufAddrOffset = 2 * UB_UINT8_BLOCK_SIZE_I;
@@ -383,7 +393,7 @@ private:
     uint64_t dstoOffset = 0;
     uint64_t srcmOffset = 0;
 
-    // For compress mask，用于计算当前qblock的第一个q的因果偏移量。
+    // For a compressed mask, record the causal offset of the first query in the current query block.
     int32_t compressMaskRowPing = 0;
     int32_t compressMaskRowPong = 0;
 
@@ -523,11 +533,7 @@ __aicore__ inline void PagedAttentionDecoder<CalcMode::CALC_MODE_DEFAULT>::MoveQ
     }
 
     SET_FLAG(MTE1, M, PingFlag);
-#if __CCE_AICORE__ == 100
-    WAIT_FLAG(MTE1, MTE2, PingFlag + 2);
-#else
-    WAIT_FLAG(MTE1, MTE2, PingFlag + 4);
-#endif
+    WAIT_FLAG(MTE1, MTE2, L1_K_REUSE_EVENT_BASE + PingFlag);
     if (initKV) {
         gm_to_l1<ArchType::ASCEND_V200, half, DataFormatT::NZ, DataFormatT::NZ>(
             l1kPingBufTensor,
@@ -541,11 +547,7 @@ __aicore__ inline void PagedAttentionDecoder<CalcMode::CALC_MODE_DEFAULT>::MoveQ
         l0bBufTensor[PingFlag * L0AB_HALF_BUF_SIZE_I],
         l1kPingBufTensor,
         0, fk * fn / CUBE_MATRIX_SIZE_I, 0, 1, 0, 0);
-#if __CCE_AICORE__ == 100
-    SET_FLAG(MTE1, MTE2, PingFlag + 2);
-#else
-    SET_FLAG(MTE1, MTE2, PingFlag + 4);
-#endif
+    SET_FLAG(MTE1, MTE2, L1_K_REUSE_EVENT_BASE + PingFlag);
     SET_FLAG(MTE1, M, PingFlag + 2);
 }
 
@@ -574,11 +576,7 @@ __aicore__ inline void PagedAttentionDecoder<CalcMode::CALC_MODE_DEFAULT>::MoveQ
     }
 
     SET_FLAG(MTE1, M, PongFlag);
-#if __CCE_AICORE__ == 100
-    WAIT_FLAG(MTE1, MTE2, PongFlag + 2);
-#else
-    WAIT_FLAG(MTE1, MTE2, PongFlag + 4);
-#endif
+    WAIT_FLAG(MTE1, MTE2, L1_K_REUSE_EVENT_BASE + PongFlag);
     if (initKV) {
         gm_to_l1<ArchType::ASCEND_V200, half, DataFormatT::NZ, DataFormatT::NZ>(
             l1kPongBufTensor,
@@ -593,11 +591,7 @@ __aicore__ inline void PagedAttentionDecoder<CalcMode::CALC_MODE_DEFAULT>::MoveQ
         l1kPongBufTensor,
         0, fk * bn / CUBE_MATRIX_SIZE_I, 0, 1, 0, 0);
     SET_FLAG(MTE1, M, PongFlag + 2);
-#if __CCE_AICORE__ == 100
-    SET_FLAG(MTE1, MTE2, PongFlag + 2);
-#else
-    SET_FLAG(MTE1, MTE2, PongFlag + 4);
-#endif
+    SET_FLAG(MTE1, MTE2, L1_K_REUSE_EVENT_BASE + PongFlag);
 }
 
 template<>
@@ -607,22 +601,14 @@ __aicore__ inline void PagedAttentionDecoder<CalcMode::CALC_MODE_DEFAULT>::Calcu
     const uint32_t initKV,
     AscendC::LocalTensor<half> &l1vPingBufTensor)
 {
-#if __CCE_AICORE__ == 100
-    WAIT_FLAG(MTE1, MTE2, PingFlag + 2);
-#else
-    WAIT_FLAG(MTE1, MTE2, PingFlag + 6);
-#endif
+    WAIT_FLAG(MTE1, MTE2, L1_V_REUSE_EVENT_BASE + PingFlag);
     if (initKV) {
         gm_to_l1<ArchType::ASCEND_V200, half, DataFormatT::NZ, DataFormatT::NZ>(
             l1vPingBufTensor,
             gmSrcVTensor[srcvOffset],
             fn, blockSize, fn, fk, fk, fk);
     }
-#if __CCE_AICORE__ == 100
-    SET_FLAG(MTE2, MTE1, PingFlag + 2);
-#else
-    SET_FLAG(MTE2, MTE1, PingFlag + 4);
-#endif
+    SET_FLAG(MTE2, MTE1, L1_V_READY_EVENT_BASE + PingFlag);
     WAIT_FLAG(MTE1, M, PingFlag + 2);
     WAIT_FLAG(MTE1, M, PingFlag);
     WAIT_FLAG(V, M, PingFlag);
@@ -636,11 +622,7 @@ __aicore__ inline void PagedAttentionDecoder<CalcMode::CALC_MODE_DEFAULT>::Calcu
     SET_FLAG(M, V, PingFlag);
     SET_FLAG(M, MTE1, PingFlag);
     SET_FLAG(M, MTE1, PingFlag + 2);
-#if __CCE_AICORE__ == 100
-    WAIT_FLAG(MTE2, MTE1, PingFlag + 2);
-#else
-    WAIT_FLAG(MTE2, MTE1, PingFlag + 4);
-#endif
+    WAIT_FLAG(MTE2, MTE1, L1_V_READY_EVENT_BASE + PingFlag);
     WAIT_FLAG(M, MTE1, PingFlag + 2);
     if (fk == 16) {
         l1_to_l0_b<ArchType::ASCEND_V200, half, 1, DataFormatT::VECTOR, DataFormatT::VECTOR>(
@@ -655,11 +637,7 @@ __aicore__ inline void PagedAttentionDecoder<CalcMode::CALC_MODE_DEFAULT>::Calcu
                 0, fk / BLOCK_SIZE_I, 0, fn / BLOCK_SIZE_I, 0, 0);
         }
     }
-#if __CCE_AICORE__ == 100
-    SET_FLAG(MTE1, MTE2, PingFlag + 2);
-#else
-    SET_FLAG(MTE1, MTE2, PingFlag + 6);
-#endif
+    SET_FLAG(MTE1, MTE2, L1_V_REUSE_EVENT_BASE + PingFlag);
     SET_FLAG(MTE1, M, PingFlag + 2);
 }
 
@@ -670,22 +648,14 @@ __aicore__ inline void PagedAttentionDecoder<CalcMode::CALC_MODE_DEFAULT>::Calcu
     const uint32_t initKV,
     AscendC::LocalTensor<half> &l1vPongBufTensor)
 {
-#if __CCE_AICORE__ == 100
-    WAIT_FLAG(MTE1, MTE2, PongFlag + 2);
-#else
-    WAIT_FLAG(MTE1, MTE2, PongFlag + 6);
-#endif
+    WAIT_FLAG(MTE1, MTE2, L1_V_REUSE_EVENT_BASE + PongFlag);
     if (initKV) {
         gm_to_l1<ArchType::ASCEND_V200, half, DataFormatT::NZ, DataFormatT::NZ>(
             l1vPongBufTensor,
             gmSrcVTensor[srcvOffset1],
             bn, blockSize, bn, fk, fk, fk);
     }
-#if __CCE_AICORE__ == 100
-    SET_FLAG(MTE2, MTE1, PongFlag + 2);
-#else
-    SET_FLAG(MTE2, MTE1, PongFlag + 4);
-#endif
+    SET_FLAG(MTE2, MTE1, L1_V_READY_EVENT_BASE + PongFlag);
     WAIT_FLAG(MTE1, M, PongFlag + 2);
     WAIT_FLAG(MTE1, M, PongFlag);
     WAIT_FLAG(V, M, PongFlag);
@@ -699,11 +669,7 @@ __aicore__ inline void PagedAttentionDecoder<CalcMode::CALC_MODE_DEFAULT>::Calcu
     SET_FLAG(M, V, PongFlag);
     SET_FLAG(M, MTE1, PongFlag);
     SET_FLAG(M, MTE1, PongFlag + 2);
-#if __CCE_AICORE__ == 100
-    WAIT_FLAG(MTE2, MTE1, PongFlag + 2);
-#else
-    WAIT_FLAG(MTE2, MTE1, PongFlag + 4);
-#endif
+    WAIT_FLAG(MTE2, MTE1, L1_V_READY_EVENT_BASE + PongFlag);
     WAIT_FLAG(M, MTE1, PongFlag + 2);
     if (fk == 16) {
         l1_to_l0_b<ArchType::ASCEND_V200, half, true, DataFormatT::VECTOR, DataFormatT::VECTOR>(
@@ -718,11 +684,7 @@ __aicore__ inline void PagedAttentionDecoder<CalcMode::CALC_MODE_DEFAULT>::Calcu
                 0, fk / BLOCK_SIZE_I, 0, bn / BLOCK_SIZE_I, 0, 0);
         }
     }
-#if __CCE_AICORE__ == 100
-    SET_FLAG(MTE1, MTE2, PongFlag + 2);
-#else
-    SET_FLAG(MTE1, MTE2, PongFlag + 6);
-#endif
+    SET_FLAG(MTE1, MTE2, L1_V_REUSE_EVENT_BASE + PongFlag);
     SET_FLAG(MTE1, M, PongFlag + 2);
 }
 
@@ -824,7 +786,7 @@ __aicore__ inline void PagedAttentionDecoder<CalcMode::CALC_MODE_DEFAULT>::Calcu
             hmUbufTensor,
             1, 1, 1, 1, 8, 8, 8);
         PIPE_BARRIER(V);
-        // fm*2是因为返回了value和index, 310P不支持配置ONLY_VALUE
+        // Use fm * 2 because both values and indices are returned; 310P does not support ONLY_VALUE.
         ub_to_ub<ArchType::ASCEND_V200, half>(
             gmUbufTensor[gmUOffset],
             hmUbufTensor,
@@ -833,7 +795,7 @@ __aicore__ inline void PagedAttentionDecoder<CalcMode::CALC_MODE_DEFAULT>::Calcu
         ExpandToBlockHalf(tvUbufTensor, hmUbufTensor, fm * 2);
     } else {
         initGgDm = 0;
-        // fm*2是因为返回了value和index, 310P不支持配置ONLY_VALUE
+        // Use fm * 2 because both values and indices are returned; 310P does not support ONLY_VALUE.
         ub_to_ub<ArchType::ASCEND_V200, half>(
             gmUbufTensor[gmUOffset],
             lmUbufTensor,
@@ -1123,7 +1085,7 @@ __aicore__ inline void PagedAttentionDecoder<CalcMode::CALC_MODE_DEFAULT>::Calcu
             PIPE_BARRIER(V);
             SetVectorMask<int8_t>(0xffffffffffffffff, 0xffffffffffffffff);
         }
-        // dstRepStride填2是为了和cmax保持一致，max会多返回一个索引，这样更新rowsum时才可以对应相乘
+        // Set dstRepStride to 2 to match cmax, because max also returns an index needed to update row sums.
         cadd_v<ArchType::ASCEND_V200, float>(
             llUbufTensor[PongFlag * UB_FLOAT_LINE_SIZE_I],
             ls32UbufTensor[PongFlag * LOCAL_STORAGE_BUFFER_SIZE],
@@ -1327,12 +1289,12 @@ __aicore__ inline void PagedAttentionDecoder<CalcMode::CALC_MODE_DEFAULT>::Updat
         ExpandToBlockHalf(tvUbufTensor, dmUbufTensor[PingFlag * UB_HALF_LINE_SIZE_I], 2 * fm);
 
         // (fm, 16) -> (fm, fk)
-        // 往后放，这样half->float可以原地转
+        // Place it later in the buffer so the half-to-float conversion can run in place.
         if (fk < VECTOR_SIZE_I) {
             SetMask(fk % VECTOR_SIZE_I);
         }
         for (uint32_t mIdx = 0; mIdx < mActual; mIdx++) {
-            // *2是因为max结果有value和idx两部分
+            // Multiply by 2 because the max result contains both value and index parts.
             adds_v<ArchType::ASCEND_V200, half>(
                 tvUbufTensor[L0AB_HALF_BUF_SIZE_I - fm * fk + mIdx * fk],
                 tvUbufTensor[mIdx * BLOCK_SIZE_I * 2],
@@ -1530,31 +1492,31 @@ __aicore__ inline void PagedAttentionDecoder<CalcMode::CALC_MODE_DEFAULT>::Norma
 
 template<>
 __aicore__ inline void PagedAttentionDecoder<CalcMode::CALC_MODE_DEFAULT>::ProcessKvBlockPair(
-    // fm      : 对齐后的 Q 块长度，mActual 向上对齐到 16。用于分配缓冲区大小和循环边界。
+    // fm      : Aligned Q-block length. mActual is rounded up to 16 for buffer sizing and loop bounds.
     const uint32_t fm,
-    // fn      : 对齐后的第一个 KV 块长度，n0Actual 向上对齐到 16。定义第一块 QK^T 矩阵的列数。
+    // fn      : Aligned first KV-block length. n0Actual is rounded up to 16 and defines the first QK^T width.
     const uint32_t fn,
-    // fk      : 对齐后的头维度（head_dim），向上对齐到 16。决定输出矩阵的列数。
+    // fk      : Head dimension rounded up to 16. It determines the output matrix width.
     const uint32_t fk,
-    // bn      : 对齐后的第二个 KV 块长度，n1Actual 向上对齐到 16。当 n1Actual > 0 时有效。
+    // bn      : Aligned second KV-block length. n1Actual is rounded up to 16; valid when n1Actual > 0.
     const uint32_t bn,
-    // mActual : 当前 Q 块的真实 token 数量（无 padding），控制所有行方向向量操作的实际循环次数。
+    // mActual : Actual token count in the current Q block without padding; controls row-wise vector loops.
     const uint32_t mActual,
-    // n0Actual: 第一个 KV 块的真实 token 数量。用于计算矩阵乘法的 K 范围以及 softmax 的有效列数。
+    // n0Actual: Actual token count in the first KV block; defines the matmul K range and valid softmax columns.
     const uint32_t n0Actual,
-    // n1Actual: 第二个 KV 块的真实 token 数量。如果当前迭代不存在第二块，则传入 0。
+    // n1Actual: Actual token count in the second KV block, or 0 when this iteration has no second block.
     const uint32_t n1Actual,
-    // maskType: Attention Mask 开关。非 0 时启用 mask 加法，将预先加载的 mask 加到 score 上。
+    // maskType: Attention-mask switch. A nonzero value adds the preloaded mask to the attention scores.
     const uint32_t maskType,
-    // initKVE : 结束标志。当该 KV 块被共享组内最后一个 Q 头处理完毕时置 1，允许释放 KV 缓冲区。
+    // initKVE : End flag. Set to 1 after the last Q head processes this KV block, allowing buffer release.
     const uint32_t initKVE,
-    // headOffset: 当前 Q 头在 GQA 组内的偏移（0 ~ groupNum-1）。用于计算 Q、mask、输出等 UB 偏移地址。
+    // headOffset: Q-head offset in the GQA group [0, groupNum - 1], used for Q, mask, and output UB offsets.
     const uint32_t headOffset,
-    // initKV   : 是否需要从 GM 加载 K/V 到 L1。组内第一个 Q 头为 1（加载），后续 Q 头复用为 0。
+    // initKV   : Whether K/V must be loaded from GM to L1. The first Q head loads; later heads reuse.
     const uint32_t initKV,
-    // localTor : 局部缩放因子（通常为 1/sqrt(d)），当 scaleType 非 0 时使用。
+    // localTor : Local scale, usually 1/sqrt(d), used when scaleType is nonzero.
     half localTor,
-    // scaleType: 缩放选择标志。0 使用全局 tor；非 0 使用传入的 localTor。
+    // scaleType: Scale selector. Use the global tor for 0 and the provided localTor otherwise.
     const uint32_t scaleType)
 {
     if (scaleType == 0) {
@@ -1789,13 +1751,10 @@ protected:
         SET_FLAG(MTE1, MTE2, EVENT_ID1);
         SET_FLAG(MTE1, MTE2, EVENT_ID2);
         SET_FLAG(MTE1, MTE2, EVENT_ID3);
-    #if __CCE_AICORE__ == 100
-    #else
         SET_FLAG(MTE1, MTE2, EVENT_ID4);
         SET_FLAG(MTE1, MTE2, EVENT_ID5);
         SET_FLAG(MTE1, MTE2, EVENT_ID6);
         SET_FLAG(MTE1, MTE2, EVENT_ID7);
-    #endif
     }
 
     __aicore__ inline void FinalizePipelineEvents()
@@ -1804,13 +1763,10 @@ protected:
         WAIT_FLAG(MTE1, MTE2, EVENT_ID1);
         WAIT_FLAG(MTE1, MTE2, EVENT_ID2);
         WAIT_FLAG(MTE1, MTE2, EVENT_ID3);
-    #if __CCE_AICORE__ == 100
-    #else
         WAIT_FLAG(MTE1, MTE2, EVENT_ID4);
         WAIT_FLAG(MTE1, MTE2, EVENT_ID5);
         WAIT_FLAG(MTE1, MTE2, EVENT_ID6);
         WAIT_FLAG(MTE1, MTE2, EVENT_ID7);
-    #endif
         WAIT_FLAG(V, MTE1, EVENT_ID0);
         WAIT_FLAG(V, MTE1, EVENT_ID1);
         WAIT_FLAG(MTE1, MTE3, EVENT_ID0);
@@ -1929,7 +1885,7 @@ __aicore__ inline void PagedAttentionDecoderMask<IFAT>::ProcessAssignedTasks(
     
     uint64_t strideKV = blockSize_ * embeddingSize_;
 
-    // 跳过开头的空 Batch
+    // Skip empty batches at the beginning.
     while (curBatch < numTokens_ && qBlkNumCurBatch == 0) {
         if (!AdvanceToNextBatch(curBatch, qBlkNumByCurBatch, qBlkNumCurBatch, promptLenCurBatch, contextLenCurBatch, qSeqBlockNum)) {
             return;
@@ -1941,7 +1897,7 @@ __aicore__ inline void PagedAttentionDecoderMask<IFAT>::ProcessAssignedTasks(
             if (!AdvanceToNextBatch(curBatch, qBlkNumByCurBatch, qBlkNumCurBatch, promptLenCurBatch, contextLenCurBatch, qSeqBlockNum)) {
                 return;
             }
-            // 处理连续的空 Batch
+            // Skip consecutive empty batches.
             while (curBatch < numTokens_ && qBlkNumCurBatch == 0) {
                 if (!AdvanceToNextBatch(curBatch, qBlkNumByCurBatch, qBlkNumCurBatch, promptLenCurBatch, contextLenCurBatch, qSeqBlockNum)) {
                     return;
@@ -1973,7 +1929,7 @@ __aicore__ inline void PagedAttentionDecoderMask<IFAT>::ProcessAssignedTasks(
                 kvOffset1 = numBlocksId1 * blockSize_ * kvHeads_ * embeddingSize_ + kvHeadOffset;
             }
 
-            // 计算causal边界，用于计算compress mask场景下每一个q所对应的有效长度。
+            // Compute the causal boundary used to derive each query's valid length with a compressed mask.
             int32_t historyKvLen = static_cast<int32_t>(contextLenCurBatch) - static_cast<int32_t>(promptLenCurBatch);
             int32_t qGlobalIdxBase = static_cast<int32_t>(qSeqBlockIdx * seqStepQ_);
             int32_t kvStart0 = static_cast<int32_t>(nIdx * blockSize_);
@@ -2009,7 +1965,7 @@ __aicore__ inline void PagedAttentionDecoderMask<IFAT>::ProcessAssignedTasks(
                 uint32_t initKV = (headOffset == 0) ? 1 : 0;
                 uint32_t initKVE = (warpO && headOffset == repeatLen - 1) ? 1 : 0;
 
-                // NOTE(Shengyi): 这里保持传正常mask的offset进去，兼容非压缩mask逻辑。若使用压缩mask特性，maskOffset不会被使用。
+                // NOTE(Shengyi): Keep passing the normal-mask offset for compatibility. Compressed masks ignore it.
                 pa.Init(qOffset, kvOffset0, kvOffset0, kvOffset1, kvOffset1, maskOffset, qOffset, initG, warpO,
                         maskKvLen_, numHeads_, cmRowPing, cmRowPong);
                 pa.ProcessKvBlockPair(roundM, roundN0, roundK, roundN1, mActual, n0Actual, n1Actual, maskType_, initKVE,

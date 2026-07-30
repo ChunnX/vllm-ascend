@@ -15,7 +15,7 @@
  */
 
 /*!
- * \file custom_fused_infer_attention.cpp
+ * \file custom_fused_infer_attention_v310.cpp
  * \brief
  */
 
@@ -37,7 +37,7 @@ using namespace AscendC;
     } while (0)
 
 
-extern "C" __global__ __aicore__ void custom_fused_infer_attention_FIAS(
+extern "C" __global__ __aicore__ void custom_fused_infer_attention_v310_FIAS(
     __gm__ uint8_t *query, __gm__ uint8_t *key, __gm__ uint8_t *value, __gm__ uint8_t *attnMask,
     __gm__ uint8_t *actualSeqLengthsQ, __gm__ uint8_t *actualSeqLengths,
     __gm__ uint8_t *blocktable, __gm__ uint8_t *attentionOut,
@@ -69,13 +69,13 @@ extern "C" __global__ __aicore__ void custom_fused_infer_attention_FIAS(
 }
 
 extern "C" __global__ __aicore__ void
-custom_fused_infer_attention(
+custom_fused_infer_attention_v310(
     __gm__ uint8_t *query, __gm__ uint8_t *key, __gm__ uint8_t *value, __gm__ uint8_t *attnMask,
     __gm__ uint8_t *actualSeqLengthsQ, __gm__ uint8_t *actualSeqLengthsKv,
     __gm__ uint8_t *blocktable, __gm__ uint8_t *attentionOut,
     __gm__ uint8_t *workspace, __gm__ uint8_t *tiling)
 {
-    custom_fused_infer_attention_FIAS(
+    custom_fused_infer_attention_v310_FIAS(
         query, key, value, attnMask, actualSeqLengthsQ, actualSeqLengthsKv, blocktable,
         attentionOut, workspace, tiling);
 }

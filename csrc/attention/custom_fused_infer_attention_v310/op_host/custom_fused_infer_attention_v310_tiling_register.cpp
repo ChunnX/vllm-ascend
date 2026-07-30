@@ -15,21 +15,22 @@
  */
 
 /*!
- * \file common.h
+ * \file custom_fused_infer_attention_v310_tiling.cc
  * \brief
  */
- 
-#ifndef INCLUDE_COMMON_H
-#define INCLUDE_COMMON_H
 
-#define CONST_2 2
+#include "custom_fused_infer_attention_v310_tiling.h"
+#include "register/op_def_registry.h"
 
-#define SET_FLAG(trigger, waiter, e) AscendC::SetFlag<AscendC::HardEvent::trigger##_##waiter>((e))
-#define WAIT_FLAG(trigger, waiter, e) AscendC::WaitFlag<AscendC::HardEvent::trigger##_##waiter>((e))
-#define PIPE_BARRIER(pipe) AscendC::PipeBarrier<PIPE_##pipe>()
-
-#ifndef FORCE_INLINE
-#define FORCE_INLINE inline __attribute__((always_inline))
-#endif
-
-#endif
+using namespace ge;
+namespace optiling {
+ge::graphStatus TilingPrepareForIncreFlashAttention(gert::TilingParseContext *context)
+{
+    (void)context;
+    return ge::GRAPH_SUCCESS;
+}
+IMPL_OP_OPTILING(CustomFusedInferAttentionV310)
+    .Tiling(TilingIncreFlashAttention)
+    .TilingParse<IncreFlashAttentionCompileInfo>(TilingPrepareForIncreFlashAttention)
+    .TilingInputsDataDependency({5}, {gert::TilingPlacement::TILING_ON_HOST, gert::TilingPlacement::TILING_ON_AICPU});
+} // namespace optiling

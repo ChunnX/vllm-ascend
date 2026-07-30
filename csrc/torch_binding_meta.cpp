@@ -583,43 +583,6 @@ at::Tensor npu_causal_conv1d_310_meta(
     return output;
 }
 
-at::Tensor npu_custom_fused_infer_attention_meta(
-    const at::Tensor& query,
-    at::TensorList key,
-    at::TensorList value,
-    const c10::optional<at::Tensor>& attn_mask,
-    c10::OptionalArrayRef<c10::SymInt> actual_seq_lengths_q,
-    c10::OptionalArrayRef<c10::SymInt> actual_seq_lengths_kv,
-    const c10::optional<at::Tensor>& block_table,
-    int64_t num_heads,
-    double scale_value,
-    c10::string_view input_layout,
-    int64_t num_key_value_heads,
-    int64_t block_size,
-    int64_t inner_precise)
-{
-    return at::empty_symint(query.sym_sizes(), query.options());
-}
-
-at::Tensor npu_custom_fused_infer_attention_out_meta(
-    const at::Tensor& query,
-    at::TensorList key,
-    at::TensorList value,
-    at::Tensor& output,
-    const c10::optional<at::Tensor>& attn_mask,
-    c10::OptionalArrayRef<c10::SymInt> actual_seq_lengths_q,
-    c10::OptionalArrayRef<c10::SymInt> actual_seq_lengths_kv,
-    const c10::optional<at::Tensor>& block_table,
-    int64_t num_heads,
-    double scale_value,
-    c10::string_view input_layout,
-    int64_t num_key_value_heads,
-    int64_t block_size,
-    int64_t inner_precise)
-{
-    return output;
-}
-
 at::Tensor npu_recurrent_gated_delta_rule_310_meta(
     const at::Tensor& query,
     const at::Tensor& key,
@@ -635,6 +598,19 @@ at::Tensor npu_recurrent_gated_delta_rule_310_meta(
 {
 
     at::Tensor output = at::empty_symint(value.sym_sizes(), value.options());
+    return output;
+}
+
+at::Tensor npu_custom_fused_infer_attention_v310_meta(
+    const at::Tensor &query, const at::Tensor &key, const at::Tensor &value,
+    const c10::optional<at::Tensor> &attn_mask,
+    c10::OptionalArrayRef<c10::SymInt> actual_seq_lengths_q,
+    c10::OptionalArrayRef<c10::SymInt> actual_seq_lengths_kv,
+    const c10::optional<at::Tensor> &block_table,
+    int64_t num_heads, double scale_value, c10::string_view input_layout,
+    int64_t num_key_value_heads, int64_t block_size, int64_t inner_precise)
+{
+    at::Tensor output = at::empty_symint(query.sym_sizes(), query.options());
     return output;
 }
 
@@ -1586,11 +1562,10 @@ namespace {
 TORCH_LIBRARY_IMPL_EXPAND(CONCAT(_C, _ascend), Meta, ops) {
     // causal_conv1d_310
     ops.impl("npu_causal_conv1d_310", &vllm_ascend::meta::npu_causal_conv1d_310_meta);
-    // Custom FIA paged attention
-    ops.impl("npu_custom_fused_infer_attention", &vllm_ascend::meta::npu_custom_fused_infer_attention_meta);
-    ops.impl("npu_custom_fused_infer_attention_out", &vllm_ascend::meta::npu_custom_fused_infer_attention_out_meta);
     // npu_recurrent_gated_delta_rule_310
     ops.impl("npu_recurrent_gated_delta_rule_310", &vllm_ascend::meta::npu_recurrent_gated_delta_rule_310_meta);
+    // npu_custom_fused_infer_attention_v310
+    ops.impl("npu_custom_fused_infer_attention_v310", &vllm_ascend::meta::npu_custom_fused_infer_attention_v310_meta);
     // chunk_gated_delta_rule_fwd_h
     ops.impl("chunk_gated_delta_rule_fwd_h", &vllm_ascend::meta::chunk_gated_delta_rule_fwd_h_meta);
     // chunk_fwd_o
