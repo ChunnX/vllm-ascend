@@ -72,12 +72,15 @@ def _fia_op():
             "is no fallback: sending this path to the causal split-fuse kernel would "
             "return plausible but wrong numbers, so this fails instead."
         )
-    # The op directly, not the wrapper in _310p/ops: that wrapper still declares
-    # `key: torch.Tensor` while the registered schema takes `Tensor[]`, so it
-    # cannot currently be called. The operator's own passing test
-    # (tests/ut/_310p/ops/test_custom_fia.py) goes through torch.ops for the
-    # same reason.
-    return torch.ops._C_ascend.npu_custom_fused_infer_attention_v310
+    # Go through the op's own wrapper rather than torch.ops: it takes K/V as
+    # single tensors and wraps them into the one-element lists the `Tensor[]`
+    # schema wants, and it carries @allow_in_graph. Calling torch.ops here would
+    # duplicate that marshalling in a second place.
+    from vllm_ascend._310p.ops.custom_fused_infer_attention import (
+        custom_fused_infer_attention_v310,
+    )
+
+    return custom_fused_infer_attention_v310
 
 
 def validate_fia_scope(*, vllm_config, query, key_cache, value_cache, num_heads, num_kv_heads, head_size):
@@ -262,10 +265,8 @@ def forward_parallel_draft_fia(self, query, attn_metadata, output):
     # owned by the shared op, and forking it here is how the two drift.
     fia_out = fia_op(
         query_tnd,
-        # `Tensor[]` in the registered schema (ParamType DYNAMIC): a one-element
-        # list is the paged K/V contract, matching the operator's own test.
-        [key_cache],
-        [value_cache],
+        key_cache,
+        value_cache,
         attn_mask=None,
         actual_seq_lengths_q=q_lens,
         actual_seq_lengths_kv=kv_lens,

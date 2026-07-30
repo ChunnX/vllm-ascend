@@ -146,12 +146,13 @@ class TestFiaCallContract(TestBase):
         _, fia, _ = run_forward()
         self.assertEqual(fia.calls[0]["actual_seq_lengths_kv"], KV_LENS)
 
-    def test_caches_are_passed_as_one_element_lists(self):
-        """The registered schema takes `Tensor[]`; a bare tensor does not dispatch."""
+    def test_caches_are_passed_by_reference(self):
+        """Single tensors: the op wrapper is what wraps them into the one-element
+        lists the `Tensor[]` schema wants, so the adapter must not pre-wrap."""
         impl = make_impl()
         _, fia, _ = run_forward(impl=impl)
-        self.assertIs(fia.calls[0]["key"][0], impl.key_cache)
-        self.assertIs(fia.calls[0]["value"][0], impl.value_cache)
+        self.assertIs(fia.calls[0]["key"], impl.key_cache)
+        self.assertIs(fia.calls[0]["value"], impl.value_cache)
 
     def test_head_counts_and_scale(self):
         _, fia, _ = run_forward()
