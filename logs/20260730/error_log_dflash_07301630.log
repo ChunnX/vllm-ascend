@@ -1,0 +1,125 @@
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004] WorkerProc hit an exception.
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004] Traceback (most recent call last):
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm/vllm/v1/executor/multiproc_executor.py", line 996, in worker_busy_loop
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]     output = func(*args, **kwargs)
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]              ^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]   File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]     return func(*args, **kwargs)
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm-ascend/vllm_ascend/worker/worker.py", line 657, in sample_tokens
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]     return self.model_runner.sample_tokens(grammar_output)
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]   File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]     return func(*args, **kwargs)
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm-ascend/vllm_ascend/worker/model_runner_v1.py", line 2550, in sample_tokens
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]     propose_draft_token_ids(sampler_output.sampled_token_ids)
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm-ascend/vllm_ascend/worker/model_runner_v1.py", line 2490, in propose_draft_token_ids
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]     self._draft_token_ids = self.propose_draft_token_ids(
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm-ascend/vllm_ascend/worker/model_runner_v1.py", line 1882, in propose_draft_token_ids
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]     draft_token_ids = self.drafter._propose(
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]                       ^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm-ascend/vllm_ascend/spec_decode/llm_base_proposer.py", line 1043, in _propose
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]     draft_token_ids = run_draft()
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]                       ^^^^^^^^^^^
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm-ascend/vllm_ascend/_310p/spec_decode/llm_base_proposer_310.py", line 46, in _run_merged_draft
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]     result = _original_run_merged_draft(
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm-ascend/vllm_ascend/spec_decode/llm_base_proposer.py", line 1095, in _run_merged_draft
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]     ret_hidden_states = self.model(**model_kwargs)
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]                         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]   File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1776, in _wrapped_call_impl
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]     return self._call_impl(*args, **kwargs)
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]   File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1787, in _call_impl
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]     return forward_call(*args, **kwargs)
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm/vllm/model_executor/models/qwen3_dflash.py", line 710, in forward
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]     return self.model(input_ids, positions, inputs_embeds)
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm/vllm/compilation/decorators.py", line 520, in __call__
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]     return self.aot_compiled_fn(self, *args, **kwargs)
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]   File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/_dynamo/aot_compile.py", line 124, in __call__
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]     return self.fn(*args, **kwargs)
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm/vllm/model_executor/models/qwen3_dflash.py", line 594, in forward
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]     def forward(
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm/vllm/compilation/caching.py", line 217, in __call__
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]     return self.optimized_call(*args, **kwargs)
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]   File "<string>", line 5, in execution_fn
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm/vllm/compilation/piecewise_backend.py", line 380, in __call__
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]     return range_entry.runnable(*args)
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]   File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/_dynamo/eval_frame.py", line 1181, in _fn
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]     return fn(*args, **kwargs)
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]   File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/_functorch/aot_autograd.py", line 1148, in forward
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]     return compiled_fn(full_args)
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]   File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py", line 357, in runtime_wrapper
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]     all_outs = call_func_at_runtime_with_args(
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]   File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/_functorch/_aot_autograd/utils.py", line 134, in call_func_at_runtime_with_args
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]     out = normalize_as_list(f(args))
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]                             ^^^^^^^
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]   File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py", line 531, in wrapper
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]     return compiled_fn(runtime_args)
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]   File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py", line 729, in inner_fn
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]     outs = compiled_fn(args)
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]   File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/_functorch/_aot_autograd/utils.py", line 108, in g
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]     return f(*args)
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]            ^^^^^^^^
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]   File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/fx/graph_module.py", line 936, in call_wrapped
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]     return self._wrapped_call(self, *args, **kwargs)
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]   File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/fx/graph_module.py", line 455, in __call__
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]     raise e
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]   File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/fx/graph_module.py", line 442, in __call__
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]     return super(self.cls, obj).__call__(*args, **kwargs)  # type: ignore[misc]
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]   File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1776, in _wrapped_call_impl
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]     return self._call_impl(*args, **kwargs)
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]   File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1787, in _call_impl
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]     return forward_call(*args, **kwargs)
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]   File "<eval_with_key>.18 from /usr/local/python3.12.13/lib/python3.12/site-packages/torch/fx/experimental/proxy_tensor.py:1507 in wrapped", line 64, in forward
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]     auto_functionalized_v2 = torch.ops.higher_order.auto_functionalized_v2(torch.ops.vllm.unified_attention_with_output.default, query = view_12, key = view_14, value = view_15, layer_name = 'model.layers.36.self_attn.attn', output_scale = None, kv_cache_dummy_dep = None, _output_base_index = 0, _output_size = (arg1_1, 8, 128), _output_stride = (1024, 128, 1), _output_storage_offset = 0, _output_block_scale_base_index = None, _all_bases = [empty]);  view_12 = view_14 = view_15 = empty = None
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]   File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/_higher_order_ops/auto_functionalize.py", line 401, in __call__
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]     return super().__call__(_mutable_op, **kwargs)
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]   File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/_ops.py", line 510, in __call__
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]     return self.dispatch(dispatch_key_set.highestPriorityTypeId(), *args, **kwargs)
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]   File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/_ops.py", line 360, in dispatch
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]     return kernel(*args, **kwargs)
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]   File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/_higher_order_ops/auto_functionalize.py", line 871, in auto_functionalized_v2_dense
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]     out = call_op(
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]           ^^^^^^^^
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]   File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/_higher_order_ops/utils.py", line 1118, in call_op
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]     return op(*args, **kwargs)
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]   File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch/_ops.py", line 819, in __call__
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]     return self._op(*args, **kwargs)
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm/vllm/model_executor/layers/attention/kv_transfer_utils.py", line 40, in wrapper
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]     return func(*args, **kwargs)
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm/vllm/model_executor/layers/attention/attention.py", line 830, in unified_attention_with_output
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]     self.impl.forward(
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm-ascend/vllm_ascend/attention/attention_v1.py", line 1566, in forward
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]     attn_output = self.forward_impl(query, key, value, kv_cache, attn_metadata, output_padded)
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm-ascend/vllm_ascend/_310p/attention/attention_v1.py", line 365, in forward_impl
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]     return forward_parallel_draft_adn(self, query, attn_metadata, output)
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]   File "/vllm-workspace/vllm-ascend/vllm_ascend/_310p/attention/adn_fused_infer_attention.py", line 224, in forward_parallel_draft_adn
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004]     raise RuntimeError(
+(Worker_TP1 pid=106085) ERROR 07-30 07:23:50 [multiproc_executor.py:1004] RuntimeError: dflash expects every request to query 9 positions, got [16]. A cumulative-endpoint tensor was most likely passed instead of raw per-request lengths.
