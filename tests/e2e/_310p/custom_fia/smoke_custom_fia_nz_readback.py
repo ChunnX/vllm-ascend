@@ -214,8 +214,8 @@ def run_case(name, q_lens, kv_lens, *, value_builder=None, assert_accuracy=True,
     # returns, so it must not be handed a buffer that could mask a partial write.
     out = torch.ops._C_ascend.npu_custom_fused_infer_attention_v310(
         query.to(DEVICE),
-        [key_cache],
-        [value_cache],
+        key_cache,
+        value_cache,
         attn_mask=None,
         actual_seq_lengths_q=list(q_lens),
         actual_seq_lengths_kv=list(kv_lens),

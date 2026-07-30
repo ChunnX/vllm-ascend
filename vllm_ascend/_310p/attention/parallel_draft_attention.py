@@ -72,10 +72,9 @@ def _fia_op():
             "is no fallback: sending this path to the causal split-fuse kernel would "
             "return plausible but wrong numbers, so this fails instead."
         )
-    # Go through the op's own wrapper rather than torch.ops: it takes K/V as
-    # single tensors and wraps them into the one-element lists the `Tensor[]`
-    # schema wants, and it carries @allow_in_graph. Calling torch.ops here would
-    # duplicate that marshalling in a second place.
+    # Go through the op's own wrapper rather than torch.ops: it carries
+    # @allow_in_graph and is the entry point the operator owns, so a future
+    # signature change lands in one place instead of every call site.
     from vllm_ascend._310p.ops.custom_fused_infer_attention import (
         custom_fused_infer_attention_v310,
     )

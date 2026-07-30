@@ -147,8 +147,7 @@ class TestFiaCallContract(TestBase):
         self.assertEqual(fia.calls[0]["actual_seq_lengths_kv"], KV_LENS)
 
     def test_caches_are_passed_by_reference(self):
-        """Single tensors: the op wrapper is what wraps them into the one-element
-        lists the `Tensor[]` schema wants, so the adapter must not pre-wrap."""
+        """The caches go through untouched: no wrapping, no copy, no reformat."""
         impl = make_impl()
         _, fia, _ = run_forward(impl=impl)
         self.assertIs(fia.calls[0]["key"], impl.key_cache)
