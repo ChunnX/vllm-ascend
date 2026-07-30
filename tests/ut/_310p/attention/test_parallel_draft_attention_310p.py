@@ -146,11 +146,12 @@ class TestFiaCallContract(TestBase):
         _, fia, _ = run_forward()
         self.assertEqual(fia.calls[0]["actual_seq_lengths_kv"], KV_LENS)
 
-    def test_caches_are_passed_by_reference(self):
+    def test_caches_are_passed_as_one_element_lists(self):
+        """The registered schema takes `Tensor[]`; a bare tensor does not dispatch."""
         impl = make_impl()
         _, fia, _ = run_forward(impl=impl)
-        self.assertIs(fia.calls[0]["key"], impl.key_cache)
-        self.assertIs(fia.calls[0]["value"], impl.value_cache)
+        self.assertIs(fia.calls[0]["key"][0], impl.key_cache)
+        self.assertIs(fia.calls[0]["value"][0], impl.value_cache)
 
     def test_head_counts_and_scale(self):
         _, fia, _ = run_forward()
@@ -277,6 +278,16 @@ class TestFiaScopeValidation(TestBase):
         self.assertEqual(len(fia.calls), 1)
         self.assertEqual(fia.calls[0]["num_heads"], 8)
         self.assertEqual(fia.calls[0]["num_key_value_heads"], 2)
+
+    def test_too_many_per_rank_heads_is_refused(self):
+        """Qwen3-8B is 32 query heads, so TP=1 lands outside the envelope the
+        operator's own test covers (1..16). Refuse rather than run untested."""
+        self._expect_refusal(
+            "exceeds the 16 this scope covers",
+            num_heads=32,
+            num_kv_heads=8,
+            cache=make_cache(num_kv_heads=8),
+        )
 
     def test_illegal_gqa_is_refused(self):
         # 17 query heads do not divide evenly by 4 KV heads.

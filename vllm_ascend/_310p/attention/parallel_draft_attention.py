@@ -28,8 +28,14 @@ from vllm_ascend.utils import ACL_FORMAT_FRACTAL_NZ
 # head layout comes from its checkpoint. head_dim is bounded to <= 128 by the
 # fixed 128-token block through the kernel's head_dim * block_size <= 16384 rule.
 FIA_BLOCK_SIZE = 128
-FIA_MAX_HEAD_DIM = 256  # the kernel's own ceiling
-FIA_MAX_HEAD_DIM_X_BLOCK = 16384  # the kernel's own ceiling; with block=128 this caps head_dim at 128
+# The first two are enforced by the operator's own tiling check
+# (custom_fused_infer_attention_v310_tiling_check.cpp: headDim <= 256 and
+# headDim * blockSize <= 128 * 128). The head count is not a kernel limit; it is
+# the envelope the operator's unit test covers (num_heads in 1..16, MHA and GQA),
+# so it is where this scope stops rather than where the kernel does.
+FIA_MAX_HEAD_DIM = 256
+FIA_MAX_HEAD_DIM_X_BLOCK = 16384  # with block=128 this caps head_dim at 128
+FIA_MAX_NUM_HEADS = 16
 FIA_SUPPORTED_METHODS = {"dflash": 8, "dspark": 7}  # method -> num_speculative_tokens
 # These are the architecture strings in the checkpoint's config.json (the vLLM
 # registry keys), NOT the model class names. hf_config.architectures holds the
@@ -66,11 +72,12 @@ def _fia_op():
             "is no fallback: sending this path to the causal split-fuse kernel would "
             "return plausible but wrong numbers, so this fails instead."
         )
-    from vllm_ascend._310p.ops.custom_fused_infer_attention import (
-        custom_fused_infer_attention_v310,
-    )
-
-    return custom_fused_infer_attention_v310
+    # The op directly, not the wrapper in _310p/ops: that wrapper still declares
+    # `key: torch.Tensor` while the registered schema takes `Tensor[]`, so it
+    # cannot currently be called. The operator's own passing test
+    # (tests/ut/_310p/ops/test_custom_fia.py) goes through torch.ops for the
+    # same reason.
+    return torch.ops._C_ascend.npu_custom_fused_infer_attention_v310
 
 
 def validate_fia_scope(*, vllm_config, query, key_cache, value_cache, num_heads, num_kv_heads, head_size):
@@ -113,6 +120,13 @@ def validate_fia_scope(*, vllm_config, query, key_cache, value_cache, num_heads,
         )
     if num_kv_heads <= 0 or num_heads % num_kv_heads != 0:
         raise RuntimeError(f"invalid GQA layout: {num_heads} query heads / {num_kv_heads} KV heads")
+    if num_heads > FIA_MAX_NUM_HEADS:
+        # Qwen3-8B is 32 query heads, so TP=1 lands outside the covered envelope
+        # while TP=2 (16) and TP=4 (8) are inside it.
+        raise RuntimeError(
+            f"per-rank query heads {num_heads} exceeds the {FIA_MAX_NUM_HEADS} this scope "
+            f"covers; raise the tensor-parallel size so each rank holds fewer heads"
+        )
     if (num_kv_heads * head_size) % 16 != 0:
         raise RuntimeError(
             f"NZ alignment: num_kv_heads * head_dim = {num_kv_heads * head_size} must be a "
@@ -248,8 +262,10 @@ def forward_parallel_draft_fia(self, query, attn_metadata, output):
     # owned by the shared op, and forking it here is how the two drift.
     fia_out = fia_op(
         query_tnd,
-        key_cache,
-        value_cache,
+        # `Tensor[]` in the registered schema (ParamType DYNAMIC): a one-element
+        # list is the paged K/V contract, matching the operator's own test.
+        [key_cache],
+        [value_cache],
         attn_mask=None,
         actual_seq_lengths_q=q_lens,
         actual_seq_lengths_kv=kv_lens,
