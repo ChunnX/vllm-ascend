@@ -56,10 +56,22 @@ def require_env():
         import torch_npu  # noqa: F401
     except ImportError:
         sys.exit("torch_npu is unavailable: this script must run on the 310P host.")
+    # Not a bare `import vllm_ascend.vllm_ascend_C`: that registers the torch
+    # bindings but leaves ASCEND_CUSTOM_OPP_PATH unset, so CANN then looks for
+    # aclnnCustomFusedInferAttentionV310 in the built-in libopapi.so and fails at
+    # call time with the symbol missing -- registration succeeds, execution does
+    # not. enable_custom_op() runs bootstrap_custom_op_env(), which prepends the
+    # vendor path. Under vLLM this happens in AscendPlatform.import_kernels();
+    # a standalone script has to do it itself.
     try:
-        import vllm_ascend.vllm_ascend_C  # noqa: F401
+        from vllm_ascend.utils import enable_custom_op
     except Exception as exc:
-        sys.exit(f"the vllm-ascend C extension could not be imported ({exc}).")
+        sys.exit(f"vllm_ascend could not be imported ({exc}).")
+    if not enable_custom_op():
+        sys.exit(
+            "enable_custom_op() returned False: custom ops are disabled in this "
+            "environment (VLLM_BATCH_INVARIANT, or an A5 device). This gate needs them."
+        )
     if not hasattr(torch.ops._C_ascend, "npu_custom_fused_infer_attention_v310"):
         sys.exit(
             "torch.ops._C_ascend.npu_custom_fused_infer_attention_v310 is not registered. "
