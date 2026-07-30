@@ -15,11 +15,23 @@ if (BUILD_OPEN_PROJECT)
     )
 endif()
 
+# This kernel owns its event synchronization explicitly (the SET_FLAG/WAIT_FLAG
+# pairs in unpad_paged_attention_decoder.h). Automatic synchronization inserts
+# its own barriers and changes the pipeline ordering, which this kernel does not
+# support -- the operator repo builds it with auto-sync off.
 add_ops_compile_options(
     OP_NAME CustomFusedInferAttentionV310
-    OPTIONS --cce-auto-sync=on
+    OPTIONS --cce-auto-sync=off
             -Wno-deprecated-declarations
             -Werror
+)
+
+# 310p1 codegen: the kernel is large enough to need expanded jumps.
+add_ops_compile_options(
+    OP_NAME CustomFusedInferAttentionV310
+    COMPUTE_UNIT ascend310p1
+    OPTIONS -mllvm
+            -cce-aicore-jump-expand=true
 )
 
 if (NOT BUILD_OPS_RTY_KERNEL)
