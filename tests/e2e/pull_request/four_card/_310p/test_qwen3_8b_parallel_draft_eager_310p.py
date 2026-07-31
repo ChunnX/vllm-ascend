@@ -123,10 +123,23 @@ def test_dspark_tp4_eager_acceptance():
     for output in outputs:
         print(f"Prompt: {output.prompt!r}, Generated text: {output.outputs[0].text!r}")
 
+    num_drafts = sum(m.value for m in metrics if m.name == "vllm:spec_decode_num_drafts")
     acceptance_per_pos = calculate_acceptance_per_pos(metrics, NUM_SPECULATIVE_TOKENS, Counter, Vector)
     golden = BASELINES[METHOD]
+    print(f"num_drafts={num_drafts}")
     print(f"acceptance_per_pos={acceptance_per_pos}")
     print(f"golden={golden}")
+
+    # The sample size is the denominator of every number below, and this prompt
+    # hits EOS long before max_tokens, so it is small -- BASELINES is itself
+    # quantised to fifths, the fingerprint of a five-draft run. Assert it rather
+    # than leave it invisible: if a change makes generation stop after one step,
+    # the vector collapses to 0s or 1s and would pass or fail for the wrong
+    # reason. Widen the workload, not this floor, to make the numbers mean more.
+    assert num_drafts >= 5, (
+        f"only {num_drafts} draft steps; the per-position rates below are too "
+        f"coarse to compare against anything"
+    )
 
     # Every position is gated, not just position 0. The 310P-specific machinery
     # (context KV precompute, per-layer drafting RoPE, query slot mapping,
