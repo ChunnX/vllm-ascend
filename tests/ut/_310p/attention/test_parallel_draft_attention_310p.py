@@ -125,12 +125,31 @@ class TestFiaCallContract(TestBase):
         _, fia, _ = run_forward()
         self.assertIsNone(fia.calls[0]["attn_mask"])
 
-    def test_precision_and_layout_flags(self):
+    def test_layout_flags(self):
         _, fia, _ = run_forward()
         kwargs = fia.calls[0]
-        self.assertEqual(kwargs["inner_precise"], 2)
         self.assertEqual(kwargs["input_layout"], "TND")
         self.assertEqual(kwargs["block_size"], BLOCK_SIZE)
+        # The wrapper takes no inner_precise; passing one is a TypeError.
+        self.assertNotIn("inner_precise", kwargs)
+
+    def test_every_wrapper_argument_is_passed_explicitly(self):
+        """Nothing may fall back to a wrapper default.
+
+        The defaults are upstream's to change -- input_layout's already moved
+        from "BSH" to "BSND" -- and a silent move there changes our numerics with
+        no test failing anywhere.
+        """
+        import inspect
+
+        from vllm_ascend._310p.ops.custom_fused_infer_attention import (
+            custom_fused_infer_attention_v310,
+        )
+
+        accepted = set(inspect.signature(custom_fused_infer_attention_v310).parameters)
+        _, fia, _ = run_forward()
+        # query/key/value go positionally; the fake records them by name.
+        self.assertEqual(accepted, set(fia.calls[0]))
 
     def test_q_lens_are_raw_not_cumulative(self):
         md = make_metadata()

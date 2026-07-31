@@ -275,7 +275,10 @@ def forward_parallel_draft_fia(self, query, attn_metadata, output):
         block_size=FIA_BLOCK_SIZE,
         input_layout="TND",
         scale_value=self.scale,
-        inner_precise=2,
+        # inner_precise is not a wrapper argument: it pins it to 2 internally.
+        # Every other value is passed explicitly rather than left to a default,
+        # so a change to the wrapper's defaults cannot move our numerics silently
+        # -- input_layout's default already went from "BSH" to "BSND".
     )
 
     # The op's contract is "output has the same shape as query". Check that rather
