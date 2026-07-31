@@ -14,8 +14,21 @@
 # limitations under the License.
 """DSpark parallel-draft E2E on Atlas 300I (310P), TP=4, eager.
 
+This mirrors the A2 test (one_card/spec_decode/test_dspark.py) deliberately:
+same checkpoints, same prompt through the same chat template, same max_tokens,
+same acceptance helper and the same per-position tolerance. Acceptance depends
+heavily on how the prompt is formatted -- the drafter is tuned on instruct-style
+input, and a raw continuation prompt produces a much steeper curve -- so a
+comparison against BASELINES only means anything if these match. Only what 310P
+forces is allowed to differ:
+
+* fp16 rather than the A2 default: the custom FIA kernel is fp16-only here
+* block_size 128: the 310P kernel block selection covers no other value
+* eager: validate_fia_scope refuses graph mode, so no cudagraph_mode=PIECEWISE
+* TP=4 rather than 1, which shards heads and does not change the numerics
+
 Scope note: the target deployment only has the DSpark checkpoint, so this covers
-DSpark (K=7) at TP=4. DFlash end-to-end is deferred for lack of a checkpoint; its
+DSpark (K=7). DFlash end-to-end is deferred for lack of a checkpoint; its
 q=9 / skip-anchor layout keeps its CPU unit tests and the DFlash q=9 case in the
 Phase 0 NZ readback gate.
 
@@ -33,60 +46,29 @@ import pytest
 os.environ.setdefault("VLLM_USE_V2_MODEL_RUNNER", "0")
 os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
 
+from transformers import AutoTokenizer  # noqa: E402
+from vllm import SamplingParams  # noqa: E402
+from vllm.v1.metrics.reader import Counter, Vector  # noqa: E402
+
 from tests.e2e.conftest import VllmRunner  # noqa: E402
-from tests.e2e.pull_request.one_card.spec_decode.utils import BASELINES, DSPARK  # noqa: E402
-
-# Same checkpoints the A2 dspark E2E uses, so the per-position acceptance
-# baseline below is comparable. Override with QWEN3_8B_PATH /
-# DSPARK_QWEN3_8B_PATH to point the four TP ranks at pre-fetched local copies.
-MAIN_MODEL = os.environ.get("QWEN3_8B_PATH", DSPARK["dspark"]["main"])
-SPEC_MODEL = os.environ.get("DSPARK_QWEN3_8B_PATH", DSPARK["dspark"]["spec"])
-NUM_SPECULATIVE_TOKENS = 7  # DSpark block7
-# Per-position acceptance measured by the repo's own dspark E2E on the same
-# checkpoints. 310P/fp16 will not reproduce it exactly, so it is applied with a
-# tolerance below rather than as an equality.
-ACCEPTANCE_BASELINE = BASELINES["dspark"]
-# How far below the A2 baseline a position may fall before this is a regression.
-# Wide enough to absorb the fp16/device difference, narrow enough that the tail
-# collapsing (the failure mode this test exists to catch) still trips it.
-ACCEPTANCE_TOLERANCE = 0.25
-
-PROMPTS = [
-    "Hello, my name is",
-    "The capital of France is",
-    "Explain in one sentence why the sky is blue:",
-]
-MAX_TOKENS = 64
-
-# fp16 is required by the custom FIA kernel; block_size must be 128 (the default 16 breaks the 310P
-# kernel block selection); eager because 310P dense runs eager here.
-COMMON = dict(
-    max_model_len=4096,
-    dtype="float16",
-    tensor_parallel_size=4,
-    block_size=128,
-    enforce_eager=True,
-    distributed_executor_backend="mp",
-    enable_prefix_caching=False,
-    disable_log_stats=False,
-    max_num_seqs=256,
-    gpu_memory_utilization=0.8,
+from tests.e2e.pull_request.one_card.spec_decode.utils import (  # noqa: E402
+    BASELINES,
+    DSPARK,
+    calculate_acceptance_per_pos,
 )
 
+METHOD = "dspark"
+NUM_SPECULATIVE_TOKENS = 7  # DSpark block7
 
-def _drafts_and_accepted(metrics):
-    """Raw draft/acceptance counts from the engine metrics."""
-    num_drafts = 0
-    total_accepted = 0
-    accepted_per_pos = [0] * NUM_SPECULATIVE_TOKENS
-    for metric in metrics:
-        if metric.name == "vllm:spec_decode_num_drafts":
-            num_drafts += metric.value
-        elif metric.name == "vllm:spec_decode_num_accepted_tokens_per_pos":
-            for pos in range(len(metric.values)):
-                accepted_per_pos[pos] += metric.values[pos]
-                total_accepted += metric.values[pos]
-    return num_drafts, total_accepted, accepted_per_pos
+# Same checkpoints as the A2 test. Override to point the four TP ranks at
+# pre-fetched local copies so they do not race to download.
+MAIN_MODEL = os.environ.get("QWEN3_8B_PATH", DSPARK[METHOD]["main"])
+SPEC_MODEL = os.environ.get("DSPARK_QWEN3_8B_PATH", DSPARK[METHOD]["spec"])
+
+# The A2 test's tolerance, applied one-sided. Upstream uses abs(a - b) < 0.1,
+# which also fails when acceptance improves; as a port gate only the downside
+# matters, and a regression is what this is here to catch.
+ACCEPTANCE_TOLERANCE = 0.1
 
 
 def _missing(path):
@@ -100,63 +82,63 @@ def _missing(path):
     reason=f"model path not found (MAIN_MODEL={MAIN_MODEL}, SPEC_MODEL={SPEC_MODEL}); "
     "set QWEN3_8B_PATH / DSPARK_QWEN3_8B_PATH",
 )
-def test_dspark_tp4_eager_matches_baseline_and_accepts():
-    # Baseline: identical config, no speculation.
-    with VllmRunner(MAIN_MODEL, **COMMON) as llm:
-        baseline = llm.generate_greedy(PROMPTS, MAX_TOKENS)
-    baseline_ids = [tuple(ids) for ids, _ in baseline]
+def test_dspark_tp4_eager_acceptance():
+    tokenizer = AutoTokenizer.from_pretrained(MAIN_MODEL, trust_remote_code=True)
+    sampling_params = SamplingParams(temperature=0, ignore_eos=False, max_tokens=256)
 
-    # Speculative: DSpark drafter, same target and config.
+    # Chat-formatted, as on A2. A raw continuation prompt measures something else.
+    prompts = [
+        tokenizer.apply_chat_template(
+            [{"role": "user", "content": "Hello, your name is"}],
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=False,
+        )
+    ]
+
     speculative_config = {
-        "method": "dspark",
+        "method": METHOD,
         "model": SPEC_MODEL,
         "num_speculative_tokens": NUM_SPECULATIVE_TOKENS,
         "draft_tensor_parallel_size": 4,
     }
-    with VllmRunner(MAIN_MODEL, speculative_config=speculative_config, **COMMON) as llm:
-        spec = llm.generate_greedy(PROMPTS, MAX_TOKENS)
+
+    with VllmRunner(
+        MAIN_MODEL,
+        max_model_len=4096,
+        dtype="float16",
+        tensor_parallel_size=4,
+        block_size=128,
+        enforce_eager=True,
+        distributed_executor_backend="mp",
+        enable_prefix_caching=False,
+        disable_log_stats=False,
+        max_num_seqs=256,
+        gpu_memory_utilization=0.8,
+        speculative_config=speculative_config,
+    ) as llm:
+        outputs = llm.model.generate(prompts, sampling_params)
         metrics = llm.model.get_metrics()
-    spec_ids = [tuple(ids) for ids, _ in spec]
 
-    num_drafts, total_accepted, accepted_per_pos = _drafts_and_accepted(metrics)
-    per_pos_rate = [a / num_drafts for a in accepted_per_pos] if num_drafts else []
-    print(f"num_drafts={num_drafts} total_accepted={total_accepted}")
-    print(f"acceptance_per_pos={per_pos_rate}")
+    for output in outputs:
+        print(f"Prompt: {output.prompt!r}, Generated text: {output.outputs[0].text!r}")
 
-    # Token-match summary, recorded but not the hard gate -- see below.
-    exact = sum(1 for b, s in zip(baseline_ids, spec_ids) if b == s)
-    for i, (b, s) in enumerate(zip(baseline_ids, spec_ids)):
-        if b != s:
-            first = next(k for k in range(min(len(b), len(s))) if b[k] != s[k])
-            print(f"prompt {i}: diverges at index {first} ({b[first]} vs {s[first]}), "
-                  f"common prefix {first}/{min(len(b), len(s))}")
-    print(f"exact token match: {exact}/{len(baseline_ids)} prompts")
+    acceptance_per_pos = calculate_acceptance_per_pos(metrics, NUM_SPECULATIVE_TOKENS, Counter, Vector)
+    golden = BASELINES[METHOD]
+    print(f"acceptance_per_pos={acceptance_per_pos}")
+    print(f"golden={golden}")
 
-    # Correctness is judged on acceptance, not token identity. Greedy speculative
-    # decoding is output-lossless only in exact arithmetic: the target verifies
-    # K+1 tokens per step (a chunked-prefill-shaped batch) whereas the baseline
-    # decodes one token per step, and floating-point non-associativity flips the
-    # argmax at borderline logits, cascading into a different continuation. The
-    # repo's own dspark E2E asserts acceptance rate for the same reason. Note the
-    # decisive point: a *broken* drafter would make the output MATCH the baseline
-    # (every draft rejected -> pure target decode), so a divergence like this is
-    # evidence the drafter is accepted into multi-token verify steps, i.e. working.
-    assert num_drafts > 0, "no drafts were produced; speculation did not run"
-    assert total_accepted > 0, "no draft tokens were accepted"
-
-    # Every position is gated against the A2 baseline for the same checkpoints.
-    # Checking the whole vector rather than only position 0 is what makes this a
-    # correctness test: the 310P-specific machinery (context KV precompute,
-    # per-layer drafting RoPE, query slot mapping, non-causal FIA over the query
-    # block) shows up as a decaying tail while position 0 -- the target's own
-    # bonus token -- still looks healthy.
-    assert len(per_pos_rate) == len(ACCEPTANCE_BASELINE), (
-        f"expected {len(ACCEPTANCE_BASELINE)} positions, got {len(per_pos_rate)}"
-    )
-    floors = [round(b - ACCEPTANCE_TOLERANCE, 4) for b in ACCEPTANCE_BASELINE]
-    low = [i for i, (rate, floor) in enumerate(zip(per_pos_rate, floors)) if rate < floor]
+    # Every position is gated, not just position 0. The 310P-specific machinery
+    # (context KV precompute, per-layer drafting RoPE, query slot mapping,
+    # non-causal FIA over the query block) shows up as a decaying tail while
+    # position 0 -- the target's own bonus token -- still looks healthy.
+    low = [
+        i
+        for i, (rate, ref) in enumerate(zip(acceptance_per_pos, golden))
+        if rate < ref - ACCEPTANCE_TOLERANCE
+    ]
     assert not low, (
-        f"acceptance below the dspark baseline at positions {low}: "
-        f"got {[round(r, 4) for r in per_pos_rate]}, floor {floors} "
-        f"(baseline {ACCEPTANCE_BASELINE} - {ACCEPTANCE_TOLERANCE})"
+        f"acceptance below the A2 baseline at positions {low}: "
+        f"got {[round(r, 4) for r in acceptance_per_pos]}, golden {golden}, "
+        f"tolerance {ACCEPTANCE_TOLERANCE}"
     )
