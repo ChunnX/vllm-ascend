@@ -16,8 +16,10 @@
 
 import torch
 import torch_npu
+from vllm.forward_context import is_forward_context_available
 
 from vllm_ascend._310p.attention.metadata_builder import get_query_lens_cpu
+from vllm_ascend.ascend_forward_context import _EXTRA_CTX
 from vllm_ascend.utils import ACL_FORMAT_FRACTAL_NZ
 
 # The configuration this path covers. TP is deliberately not pinned: it slices
@@ -148,8 +150,12 @@ def validate_fia_scope(*, vllm_config, query, key_cache, value_cache, num_heads,
                 f"for {method}."
             )
 
-    if not vllm_config.model_config.enforce_eager:
-        raise RuntimeError("this scope is eager-only; ACLGraph is validated separately")
+    # No engine-wide eager requirement. "Target in ACLGraph, drafter eager" is a
+    # legitimate and desirable configuration, and model_config.enforce_eager
+    # describes the engine, not this route -- gating on it would reject that
+    # configuration for a constraint that only applies here. The real constraint
+    # is checked per call in forward_parallel_draft_fia: this op must never be
+    # inside a capture.
 
     # Per-rank head layout, constrained structurally rather than by a fixed count.
     # TP is not checked: it only shards these heads across ranks and does not
@@ -245,6 +251,23 @@ def forward_parallel_draft_fia(self, query, attn_metadata, output):
         )
     q_lens = raw_q_lens.tolist()
     kv_lens = attn_metadata.seq_lens_list
+
+    # This op must never be captured into an ACLGraph. Its actual_seq_lengths_q /
+    # _kv are host SymInt[] read at dispatch, so a captured graph would freeze
+    # one step's lengths and replay them for every later step -- plausible
+    # numbers, silently wrong. Checked here, at the moment it would happen,
+    # rather than inferred from configuration: "target in graph, drafter eager"
+    # stays legal, and anything that later pulls the drafter into a capture trips
+    # this instead of producing bad tokens.
+    #
+    # is_forward_context_available() must short-circuit: reading _EXTRA_CTX with
+    # no forward context raises "Forward context is not set".
+    if is_forward_context_available() and _EXTRA_CTX.capturing:
+        raise RuntimeError(
+            "310P parallel draft attention was reached during ACLGraph capture. "
+            "This op reads host sequence lengths at dispatch and cannot be captured; "
+            "the drafter must stay eager. Capturing the target model is supported."
+        )
 
     method = getattr(self.vllm_config.speculative_config, "method", None)
     if method not in FIA_SUPPORTED_METHODS:

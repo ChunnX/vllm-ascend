@@ -286,8 +286,16 @@ class TestFiaScopeValidation(TestBase):
     def test_unsupported_architecture_is_refused(self):
         self._expect_refusal("outside this scope", vllm_config=make_vllm_config(arch="LlamaForCausalLM"))
 
-    def test_graph_mode_is_refused(self):
-        self._expect_refusal("eager-only", vllm_config=make_vllm_config(eager=False))
+    def test_target_in_graph_mode_is_allowed(self):
+        """model_config.enforce_eager describes the engine, not this route.
+
+        "Target in ACLGraph, drafter eager" is the configuration we want, so an
+        engine-wide eager requirement here would reject it for a constraint that
+        only applies to this op. What must not happen is captured separately, in
+        TestFiaCaptureGuard.
+        """
+        _, fia, _ = run_forward(impl=make_impl(vllm_config=make_vllm_config(eager=False)))
+        self.assertEqual(len(fia.calls), 1)
 
     def test_tp4_layout_is_allowed(self):
         """TP only shards heads; the per-rank layout is what is checked. Qwen3-8B
@@ -489,3 +497,47 @@ class TestFiaSpeculativeTokenScope(TestBase):
         impl = make_impl(vllm_config=make_vllm_config(num_spec=16, block_size=16))
         with self.assertRaisesRegex(RuntimeError, "diffusion block holds"):
             run_forward(impl=impl, md=make_metadata(q_lens=[9] * BATCH))
+
+
+class TestFiaCaptureGuard(TestBase):
+    """This op must never end up inside an ACLGraph capture.
+
+    Its actual_seq_lengths_q / _kv are host SymInt[] read at dispatch, so a
+    captured graph would freeze one step's lengths and replay them for every
+    later step -- plausible numbers, silently wrong. The guard fires at the
+    moment it would happen rather than inferring from configuration, so the
+    supported split (target captured, drafter eager) stays legal.
+    """
+
+    def _run_with_ctx(self, *, available, capturing):
+        ctx = SimpleNamespace(capturing=capturing)
+        with (
+            mock_patch(f"{FIA_MOD}.is_forward_context_available", return_value=available),
+            mock_patch(f"{FIA_MOD}._EXTRA_CTX", ctx),
+        ):
+            return run_forward()
+
+    def test_capture_is_refused(self):
+        with self.assertRaisesRegex(RuntimeError, "during ACLGraph capture"):
+            self._run_with_ctx(available=True, capturing=True)
+
+    def test_replay_is_allowed(self):
+        """Replay sets capturing False; only capture is the problem."""
+        _, fia, _ = self._run_with_ctx(available=True, capturing=False)
+        self.assertEqual(len(fia.calls), 1)
+
+    def test_extra_ctx_is_not_read_without_a_forward_context(self):
+        """Reading _EXTRA_CTX with no forward context raises "Forward context is
+        not set", so the availability check has to short-circuit. Locked with an
+        object that detonates on any attribute access."""
+
+        class _Detonator:
+            def __getattr__(self, name):
+                raise AssertionError(f"_EXTRA_CTX.{name} read without a forward context")
+
+        with (
+            mock_patch(f"{FIA_MOD}.is_forward_context_available", return_value=False),
+            mock_patch(f"{FIA_MOD}._EXTRA_CTX", _Detonator()),
+        ):
+            _, fia, _ = run_forward()
+        self.assertEqual(len(fia.calls), 1)
