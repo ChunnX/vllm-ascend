@@ -36,7 +36,12 @@ FIA_BLOCK_SIZE = 128
 FIA_MAX_HEAD_DIM = 256
 FIA_MAX_HEAD_DIM_X_BLOCK = 16384  # with block=128 this caps head_dim at 128
 FIA_MAX_NUM_HEADS = 16
-FIA_SUPPORTED_METHODS = {"dflash": 8, "dspark": 7}  # method -> num_speculative_tokens
+# method -> the num_speculative_tokens values validated on this device. A set,
+# not a single value: DFlash's public checkpoint (block_size 16) recommends
+# K=15, while the Ascend MRV1 DFlash tests use K=8, and both run. Deliberately
+# not "whatever speculative_config says" -- that would silently admit shapes
+# nobody has measured.
+FIA_SUPPORTED_METHODS = {"dflash": {8, 15}, "dspark": {7}}
 # These are the architecture strings in the checkpoint's config.json (the vLLM
 # registry keys), NOT the model class names. hf_config.architectures holds the
 # former: the registry maps "DFlashDraftModel" -> DFlashQwen3ForCausalLM and
@@ -45,13 +50,12 @@ FIA_SUPPORTED_METHODS = {"dflash": 8, "dspark": 7}  # method -> num_speculative_
 FIA_SUPPORTED_ARCHITECTURES = {"DFlashDraftModel", "Qwen3DSparkModel"}
 
 
-def expected_queries_per_request(method):
+def expected_queries_per_request(method, num_speculative_tokens):
     """Queries each request issues per draft step.
 
     DFlash prepends an anchor to the K mask tokens, DSpark does not.
     """
-    num_spec = FIA_SUPPORTED_METHODS[method]
-    return num_spec + 1 if method == "dflash" else num_spec
+    return num_speculative_tokens + 1 if method == "dflash" else num_speculative_tokens
 
 
 def _fia_op():
@@ -91,18 +95,48 @@ def validate_fia_scope(*, vllm_config, query, key_cache, value_cache, num_heads,
             f"custom FIA draft attention only covers {sorted(FIA_SUPPORTED_METHODS)}, got {method}"
         )
     expected_k = FIA_SUPPORTED_METHODS[method]
-    if spec_config.num_speculative_tokens != expected_k:
+    if spec_config.num_speculative_tokens not in expected_k:
         raise RuntimeError(
-            f"{method} is only validated at num_speculative_tokens={expected_k}, got "
-            f"{spec_config.num_speculative_tokens}"
+            f"{method} is only validated at num_speculative_tokens in {sorted(expected_k)}, "
+            f"got {spec_config.num_speculative_tokens}"
         )
 
-    architectures = getattr(spec_config.draft_model_config.hf_config, "architectures", None) or []
+    hf_config = spec_config.draft_model_config.hf_config
+    architectures = getattr(hf_config, "architectures", None) or []
     arch = architectures[0] if architectures else None
     if arch not in FIA_SUPPORTED_ARCHITECTURES:
         raise RuntimeError(
             f"draft architecture {arch} is outside this scope "
             f"({sorted(FIA_SUPPORTED_ARCHITECTURES)})"
+        )
+
+    # This route passes attn_mask=None, which the kernel maps to NO_MASK: every
+    # query row sees the whole [0, kv_len) range. That is only correct for a
+    # drafter whose layers are all full non-causal attention. A causal or
+    # sliding-window checkpoint would still run and return plausible numbers, so
+    # refuse it here rather than discover it as an accuracy loss.
+    layer_types = getattr(hf_config, "layer_types", None)
+    if layer_types is not None and any(t != "full_attention" for t in layer_types):
+        raise RuntimeError(
+            f"this route sends attn_mask=None (non-causal); draft layer_types "
+            f"{sorted(set(layer_types))} include something other than full_attention"
+        )
+    if getattr(hf_config, "use_sliding_window", False) or getattr(hf_config, "sliding_window", None):
+        raise RuntimeError(
+            "this route sends attn_mask=None (non-causal); the draft checkpoint "
+            "requests sliding-window attention, which it cannot express"
+        )
+    if getattr(getattr(hf_config, "dflash_config", None), "causal", False):
+        raise RuntimeError("this route sends attn_mask=None; the draft checkpoint asks for causal attention")
+
+    # DFlash's diffusion block bounds K: the checkpoint emits at most
+    # block_size - 1 speculative tokens after the anchor. Not to be confused with
+    # the CLI --block-size, which is the 310P KV page size (FIA_BLOCK_SIZE).
+    diffusion_block = getattr(hf_config, "block_size", None)
+    if method == "dflash" and diffusion_block and spec_config.num_speculative_tokens > diffusion_block - 1:
+        raise RuntimeError(
+            f"num_speculative_tokens={spec_config.num_speculative_tokens} exceeds what the "
+            f"checkpoint's diffusion block allows ({diffusion_block} - 1)"
         )
 
     if not vllm_config.model_config.enforce_eager:
@@ -206,7 +240,26 @@ def forward_parallel_draft_fia(self, query, attn_metadata, output):
     method = getattr(self.vllm_config.speculative_config, "method", None)
     if method not in FIA_SUPPORTED_METHODS:
         raise RuntimeError(f"custom FIA draft attention reached with unsupported method {method}")
-    expected_q = expected_queries_per_request(method)
+
+    # Scope first, shapes second. The q-len check below assumes the configuration
+    # is in scope, so if K is out of scope it reports a wrong q-len and blames the
+    # metadata -- which is what an out-of-scope K=15 DFlash run used to hit,
+    # pointing at cumulative endpoints instead of at the K it was launched with.
+    if not self._fia_scope_validated:
+        validate_fia_scope(
+            vllm_config=self.vllm_config,
+            query=query_slice.reshape(num_tokens, self.num_heads, self.head_size),
+            key_cache=self.key_cache,
+            value_cache=self.value_cache,
+            num_heads=self.num_heads,
+            num_kv_heads=self.num_kv_heads,
+            head_size=self.head_size,
+        )
+        self._fia_scope_validated = True
+
+    expected_q = expected_queries_per_request(
+        method, self.vllm_config.speculative_config.num_speculative_tokens
+    )
     if any(q != expected_q for q in q_lens):
         raise RuntimeError(
             f"{method} expects every request to query {expected_q} positions, got {q_lens}. "
@@ -246,18 +299,6 @@ def forward_parallel_draft_fia(self, query, attn_metadata, output):
     key_cache = self.key_cache
     value_cache = self.value_cache
     query_tnd = query_slice.reshape(num_tokens, self.num_heads, self.head_size)
-
-    if not self._fia_scope_validated:
-        validate_fia_scope(
-            vllm_config=self.vllm_config,
-            query=query_tnd,
-            key_cache=key_cache,
-            value_cache=value_cache,
-            num_heads=self.num_heads,
-            num_kv_heads=self.num_kv_heads,
-            head_size=self.head_size,
-        )
-        self._fia_scope_validated = True
 
     # The op allocates its own output and has no `out=` overload, so this path
     # eats one copy. Do not add an `_out` variant locally to avoid it: the ABI is

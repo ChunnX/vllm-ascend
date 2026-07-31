@@ -34,12 +34,18 @@ DFLASH_Q = 9  # K + 1
 KV_LENS = [200, 133, 65]
 
 
-def make_vllm_config(*, method="dflash", num_spec=8, arch="DFlashDraftModel", eager=True, tp=2):
+def make_vllm_config(*, method="dflash", num_spec=8, arch="DFlashDraftModel", eager=True, tp=2, **hf):
+    """`hf` sets extra hf_config fields the scope validator reads.
+
+    Absent ones fall back to getattr defaults, which is what the real
+    Qwen3DSpark checkpoint looks like -- it carries none of the DFlash
+    diffusion/attention keys.
+    """
     return SimpleNamespace(
         speculative_config=SimpleNamespace(
             method=method,
             num_speculative_tokens=num_spec,
-            draft_model_config=SimpleNamespace(hf_config=SimpleNamespace(architectures=[arch])),
+            draft_model_config=SimpleNamespace(hf_config=SimpleNamespace(architectures=[arch], **hf)),
         ),
         model_config=SimpleNamespace(enforce_eager=eager),
         parallel_config=SimpleNamespace(tensor_parallel_size=tp),
@@ -275,7 +281,7 @@ class TestFiaScopeValidation(TestBase):
             )
 
     def test_unexpected_k_is_refused(self):
-        self._expect_refusal("only validated at num_speculative_tokens=8", vllm_config=make_vllm_config(num_spec=5))
+        self._expect_refusal("only validated at num_speculative_tokens in \[8, 15\]", vllm_config=make_vllm_config(num_spec=5))
 
     def test_unsupported_architecture_is_refused(self):
         self._expect_refusal("outside this scope", vllm_config=make_vllm_config(arch="LlamaForCausalLM"))
@@ -383,3 +389,68 @@ class TestFiaReturnHandling(TestBase):
     def test_mismatched_return_dtype_is_refused(self):
         with self.assertRaisesRegex(RuntimeError, "expected the query shape"):
             run_forward(fia=_FakeFia(lambda call: torch.zeros_like(call["query"], dtype=torch.float32)))
+
+
+class TestFiaNonCausalScopeLocks(TestBase):
+    """This route sends attn_mask=None, which the kernel maps to NO_MASK.
+
+    That is only correct for a drafter whose attention is full and non-causal.
+    A causal or sliding-window checkpoint would still run and return plausible
+    numbers, so each of these has to be refused at startup rather than found
+    later as an accuracy loss.
+
+    The public z-lab/Qwen3-8B-DFlash-b16 checkpoint satisfies all of them:
+    use_sliding_window False, sliding_window None, five full_attention layers.
+    """
+
+    def _refuse(self, pattern, **hf):
+        with self.assertRaisesRegex(RuntimeError, pattern):
+            run_forward(impl=make_impl(vllm_config=make_vllm_config(**hf)))
+
+    def test_sliding_window_layer_is_refused(self):
+        self._refuse(
+            "other than full_attention",
+            layer_types=["full_attention", "sliding_attention"],
+        )
+
+    def test_use_sliding_window_flag_is_refused(self):
+        self._refuse("sliding-window attention", use_sliding_window=True)
+
+    def test_sliding_window_size_is_refused(self):
+        self._refuse("sliding-window attention", sliding_window=4096)
+
+    def test_causal_dflash_config_is_refused(self):
+        self._refuse("causal attention", dflash_config=SimpleNamespace(causal=True))
+
+    def test_all_full_attention_is_accepted(self):
+        # The real checkpoint's layer_types; must not be caught by the above.
+        _, fia, _ = run_forward(
+            impl=make_impl(vllm_config=make_vllm_config(layer_types=["full_attention"] * 5))
+        )
+        self.assertEqual(len(fia.calls), 1)
+
+
+class TestFiaSpeculativeTokenScope(TestBase):
+    def test_k15_is_accepted_for_dflash(self):
+        """The public checkpoint recommends K=15, i.e. 16 query rows."""
+        q = 16
+        impl = make_impl(vllm_config=make_vllm_config(num_spec=15, block_size=16))
+        _, fia, _ = run_forward(impl=impl, md=make_metadata(q_lens=[q] * BATCH))
+        self.assertEqual(fia.calls[0]["actual_seq_lengths_q"], [q] * BATCH)
+
+    def test_k_beyond_the_diffusion_block_is_refused(self):
+        """block_size 16 emits at most 15 tokens after the anchor. Not to be
+        confused with the KV page size, which is FIA_BLOCK_SIZE."""
+        with self.assertRaisesRegex(RuntimeError, "diffusion block"):
+            run_forward(impl=make_impl(vllm_config=make_vllm_config(num_spec=15, block_size=8)))
+
+    def test_scope_is_checked_before_query_length(self):
+        """An out-of-scope K must be reported as such.
+
+        The q-len check assumes the configuration is in scope, so when it ran
+        first an out-of-scope K=15 surfaced as "expects 9 positions, got 16" and
+        blamed the metadata for carrying cumulative endpoints.
+        """
+        impl = make_impl(vllm_config=make_vllm_config(num_spec=5))
+        with self.assertRaisesRegex(RuntimeError, "only validated at num_speculative_tokens"):
+            run_forward(impl=impl, md=make_metadata(q_lens=[6] * BATCH))
