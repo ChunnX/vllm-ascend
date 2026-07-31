@@ -281,7 +281,7 @@ class TestFiaScopeValidation(TestBase):
             )
 
     def test_unexpected_k_is_refused(self):
-        self._expect_refusal("only validated at num_speculative_tokens in \[8, 15\]", vllm_config=make_vllm_config(num_spec=5))
+        self._expect_refusal("must be >= 1", vllm_config=make_vllm_config(num_spec=0))
 
     def test_unsupported_architecture_is_refused(self):
         self._expect_refusal("outside this scope", vllm_config=make_vllm_config(arch="LlamaForCausalLM"))
@@ -431,26 +431,61 @@ class TestFiaNonCausalScopeLocks(TestBase):
 
 
 class TestFiaSpeculativeTokenScope(TestBase):
-    def test_k15_is_accepted_for_dflash(self):
-        """The public checkpoint recommends K=15, i.e. 16 query rows."""
-        q = 16
-        impl = make_impl(vllm_config=make_vllm_config(num_spec=15, block_size=16))
-        _, fia, _ = run_forward(impl=impl, md=make_metadata(q_lens=[q] * BATCH))
-        self.assertEqual(fia.calls[0]["actual_seq_lengths_q"], [q] * BATCH)
+    """K is not a fixed list: the kernel tiles the query dimension, so the only
+    real ceiling is the draft checkpoint's own diffusion block."""
 
-    def test_k_beyond_the_diffusion_block_is_refused(self):
-        """block_size 16 emits at most 15 tokens after the anchor. Not to be
-        confused with the KV page size, which is FIA_BLOCK_SIZE."""
-        with self.assertRaisesRegex(RuntimeError, "diffusion block"):
-            run_forward(impl=make_impl(vllm_config=make_vllm_config(num_spec=15, block_size=8)))
+    def test_k15_is_accepted_for_dflash(self):
+        """The public checkpoint's recommended K: block_size 16, so q = 16."""
+        impl = make_impl(vllm_config=make_vllm_config(num_spec=15, block_size=16))
+        _, fia, _ = run_forward(impl=impl, md=make_metadata(q_lens=[16] * BATCH))
+        self.assertEqual(fia.calls[0]["actual_seq_lengths_q"], [16] * BATCH)
+
+    def test_k8_is_accepted_for_dflash(self):
+        """Smaller than the block allows is legitimate -- the Ascend MRV1 DFlash
+        tests use K=8 against the same block-16 checkpoint."""
+        impl = make_impl(vllm_config=make_vllm_config(num_spec=8, block_size=16))
+        _, fia, _ = run_forward(impl=impl, md=make_metadata(q_lens=[9] * BATCH))
+        self.assertEqual(fia.calls[0]["actual_seq_lengths_q"], [9] * BATCH)
+
+    def test_dflash_loses_one_row_to_the_anchor(self):
+        """K=16 on a block-16 checkpoint needs 17 rows; DSpark's K=16 would fit."""
+        impl = make_impl(vllm_config=make_vllm_config(num_spec=16, block_size=16))
+        with self.assertRaisesRegex(RuntimeError, "diffusion block holds"):
+            run_forward(impl=impl, md=make_metadata(q_lens=[17] * BATCH))
+
+    def test_dspark_uses_the_whole_block(self):
+        impl = make_impl(
+            vllm_config=make_vllm_config(
+                method="dspark", num_spec=7, arch="Qwen3DSparkModel", block_size=7
+            )
+        )
+        _, fia, _ = run_forward(impl=impl, md=make_metadata(q_lens=[7] * BATCH))
+        self.assertEqual(fia.calls[0]["actual_seq_lengths_q"], [7] * BATCH)
+
+    def test_dspark_beyond_its_block_is_refused(self):
+        impl = make_impl(
+            vllm_config=make_vllm_config(
+                method="dspark", num_spec=8, arch="Qwen3DSparkModel", block_size=7
+            )
+        )
+        with self.assertRaisesRegex(RuntimeError, "diffusion block holds"):
+            run_forward(impl=impl, md=make_metadata(q_lens=[8] * BATCH))
+
+    def test_q_beyond_one_kernel_tile_is_allowed(self):
+        """seqStepQ is 32 at head_dim <= 128 and the host splits into
+        ceil(q / seqStepQ) blocks, so a query longer than one tile is tiled, not
+        rejected. Guards against reintroducing a ceiling the kernel never had."""
+        impl = make_impl(vllm_config=make_vllm_config(num_spec=39, block_size=40))
+        _, fia, _ = run_forward(impl=impl, md=make_metadata(q_lens=[40] * BATCH, block_cols=8))
+        self.assertEqual(fia.calls[0]["actual_seq_lengths_q"], [40] * BATCH)
 
     def test_scope_is_checked_before_query_length(self):
-        """An out-of-scope K must be reported as such.
+        """An out-of-scope configuration must be reported as such.
 
         The q-len check assumes the configuration is in scope, so when it ran
-        first an out-of-scope K=15 surfaced as "expects 9 positions, got 16" and
-        blamed the metadata for carrying cumulative endpoints.
+        first an out-of-scope K surfaced as a wrong q-len and blamed the metadata
+        for carrying cumulative endpoints.
         """
-        impl = make_impl(vllm_config=make_vllm_config(num_spec=5))
-        with self.assertRaisesRegex(RuntimeError, "only validated at num_speculative_tokens"):
-            run_forward(impl=impl, md=make_metadata(q_lens=[6] * BATCH))
+        impl = make_impl(vllm_config=make_vllm_config(num_spec=16, block_size=16))
+        with self.assertRaisesRegex(RuntimeError, "diffusion block holds"):
+            run_forward(impl=impl, md=make_metadata(q_lens=[9] * BATCH))

@@ -36,12 +36,17 @@ FIA_BLOCK_SIZE = 128
 FIA_MAX_HEAD_DIM = 256
 FIA_MAX_HEAD_DIM_X_BLOCK = 16384  # with block=128 this caps head_dim at 128
 FIA_MAX_NUM_HEADS = 16
-# method -> the num_speculative_tokens values validated on this device. A set,
-# not a single value: DFlash's public checkpoint (block_size 16) recommends
-# K=15, while the Ascend MRV1 DFlash tests use K=8, and both run. Deliberately
-# not "whatever speculative_config says" -- that would silently admit shapes
-# nobody has measured.
-FIA_SUPPORTED_METHODS = {"dflash": {8, 15}, "dspark": {7}}
+# num_speculative_tokens is deliberately NOT pinned to a list here. The kernel
+# tiles the query dimension -- seqStepQ is 32 for head_dim <= 128 and the host
+# splits into ceil(q / seqStepQ) blocks -- so there is no structural ceiling on
+# q, and a hardcoded list would only be a fake constraint that rejects working
+# configurations. The bound that is real comes from the draft checkpoint: its
+# `block_size` is one diffusion block, and a request cannot query more positions
+# than the block holds. Both public checkpoints sit exactly at that bound:
+#   dspark_qwen3_8b_block7  block_size 7,  K=7  -> q = K     = 7
+#   Qwen3-8B-DFlash-b16     block_size 16, K=15 -> q = K + 1 = 16
+# and smaller K is legitimate (the Ascend MRV1 DFlash tests use K=8, q=9).
+FIA_SUPPORTED_METHODS = {"dflash", "dspark"}
 # These are the architecture strings in the checkpoint's config.json (the vLLM
 # registry keys), NOT the model class names. hf_config.architectures holds the
 # former: the registry maps "DFlashDraftModel" -> DFlashQwen3ForCausalLM and
@@ -94,12 +99,9 @@ def validate_fia_scope(*, vllm_config, query, key_cache, value_cache, num_heads,
         raise RuntimeError(
             f"custom FIA draft attention only covers {sorted(FIA_SUPPORTED_METHODS)}, got {method}"
         )
-    expected_k = FIA_SUPPORTED_METHODS[method]
-    if spec_config.num_speculative_tokens not in expected_k:
-        raise RuntimeError(
-            f"{method} is only validated at num_speculative_tokens in {sorted(expected_k)}, "
-            f"got {spec_config.num_speculative_tokens}"
-        )
+    num_spec = spec_config.num_speculative_tokens
+    if num_spec < 1:
+        raise RuntimeError(f"num_speculative_tokens must be >= 1, got {num_spec}")
 
     hf_config = spec_config.draft_model_config.hf_config
     architectures = getattr(hf_config, "architectures", None) or []
@@ -129,15 +131,22 @@ def validate_fia_scope(*, vllm_config, query, key_cache, value_cache, num_heads,
     if getattr(getattr(hf_config, "dflash_config", None), "causal", False):
         raise RuntimeError("this route sends attn_mask=None; the draft checkpoint asks for causal attention")
 
-    # DFlash's diffusion block bounds K: the checkpoint emits at most
-    # block_size - 1 speculative tokens after the anchor. Not to be confused with
-    # the CLI --block-size, which is the 310P KV page size (FIA_BLOCK_SIZE).
+    # The checkpoint's diffusion block bounds the query block: one draft step
+    # issues expected_queries_per_request() rows, and they all have to fit in one
+    # block. DFlash spends one row on the anchor, DSpark does not, so the same
+    # rule caps DFlash at block_size - 1 speculative tokens and DSpark at
+    # block_size. Not to be confused with the CLI --block-size, which is the 310P
+    # KV page size (FIA_BLOCK_SIZE) and unrelated.
     diffusion_block = getattr(hf_config, "block_size", None)
-    if method == "dflash" and diffusion_block and spec_config.num_speculative_tokens > diffusion_block - 1:
-        raise RuntimeError(
-            f"num_speculative_tokens={spec_config.num_speculative_tokens} exceeds what the "
-            f"checkpoint's diffusion block allows ({diffusion_block} - 1)"
-        )
+    if diffusion_block:
+        q = expected_queries_per_request(method, num_spec)
+        if q > diffusion_block:
+            raise RuntimeError(
+                f"num_speculative_tokens={num_spec} needs {q} query rows per request, "
+                f"more than the checkpoint's diffusion block holds ({diffusion_block}). "
+                f"The ceiling is {diffusion_block - 1 if method == 'dflash' else diffusion_block} "
+                f"for {method}."
+            )
 
     if not vllm_config.model_config.enforce_eager:
         raise RuntimeError("this scope is eager-only; ACLGraph is validated separately")
