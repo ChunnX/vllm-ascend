@@ -59,6 +59,57 @@ class TestQwen3DSparkWeightLoading:
         mock_get_rotation_matrix.assert_called_once_with(rotation_path)
         mock_parent_load_weights.assert_called_once()
 
-        processed_weights = mock_parent_load_weights.call_args.args[0]
+        # The stream reaches the parent through the d2t-noting pass-through, so
+        # it arrives lazily; the real parent drains it into a dict.
+        processed_weights = list(mock_parent_load_weights.call_args.args[0])
         torch.testing.assert_close(processed_weights[0][1], expected_fc_weight)
         torch.testing.assert_close(processed_weights[1][1], non_fc_weight)
+
+
+class TestDraftIdMappingPresence:
+    """Whether the checkpoint carried ``d2t``, which its contents cannot say.
+
+    The parameter is allocated zero-filled and skipped by the loader when the
+    checkpoint has none, so an unloaded buffer is indistinguishable from the
+    legal mapping that keeps target ids ``0..K-1``. Only the weight stream
+    knows, and the proposer refuses to serve a reduced vocabulary without it.
+    """
+
+    @staticmethod
+    def _load(weights):
+        model_cls = qwen3_dspark.AscendQwen3DSparkForCausalLM
+        model = model_cls.__new__(model_cls)
+        object.__setattr__(model, "rotation_path", None)
+        with patch.object(qwen3_dspark.Qwen3DSparkForCausalLM, "load_weights") as mock_parent:
+            model.load_weights(weights)
+            # The parent consumes the stream; the flag is set on the way through.
+            list(mock_parent.call_args.args[0])
+        return model
+
+    def test_defaults_to_absent(self) -> None:
+        model_cls = qwen3_dspark.AscendQwen3DSparkForCausalLM
+        assert model_cls.has_draft_id_mapping is False
+
+    def test_records_a_present_mapping(self) -> None:
+        model = self._load([("d2t", torch.zeros(4, dtype=torch.long)), ("lm_head.weight", torch.zeros(4, 2))])
+
+        assert model.has_draft_id_mapping is True
+
+    def test_stays_absent_for_a_full_vocabulary_checkpoint(self) -> None:
+        model = self._load([("model.embed_tokens.weight", torch.zeros(4, 2))])
+
+        assert model.has_draft_id_mapping is False
+
+    def test_records_a_present_mapping_through_the_rotation_path(self) -> None:
+        model_cls = qwen3_dspark.AscendQwen3DSparkForCausalLM
+        model = model_cls.__new__(model_cls)
+        object.__setattr__(model, "rotation_path", "quarot.safetensors")
+
+        with (
+            patch.object(qwen3_dspark, "get_rotataion_matrix", return_value=torch.eye(2)),
+            patch.object(qwen3_dspark.Qwen3DSparkForCausalLM, "load_weights") as mock_parent,
+        ):
+            model.load_weights([("model.fc.weight", torch.zeros(2, 2)), ("d2t", torch.zeros(4, dtype=torch.long))])
+            list(mock_parent.call_args.args[0])
+
+        assert model.has_draft_id_mapping is True

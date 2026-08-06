@@ -338,6 +338,9 @@ Two things follow from how such a draft is trained:
   settings the engine allows (1, or the target's TP degree). A checkpoint that
   does ship its own `lm_head` (already sliced) is used as-is. A quantized target
   LM head is rejected with an error rather than silently losing its scales.
+- The `d2t` mapping is validated at load time either way, because a checkpoint
+  that declares `draft_vocab_size` but carries no mapping would otherwise serve
+  the first `draft_vocab_size` target ids and quietly propose the wrong tokens.
 - The reachable acceptance rate is capped by how much of the target's token
   distribution the draft vocabulary covers, since a token outside it can never
   be proposed. Compare `acceptance_per_pos` against the full-vocabulary baseline

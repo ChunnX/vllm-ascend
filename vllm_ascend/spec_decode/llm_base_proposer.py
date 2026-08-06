@@ -465,6 +465,11 @@ class AscendSpecDecodeBaseProposer(SpecDecodeBaseProposer):
             # logits over the wrong vocabulary, so the verifier rejects almost
             # every speculative token. Keep the draft's own lm_head in that case.
             draft_id_to_target_id = getattr(self.model, "draft_id_to_target_id", None)
+            if draft_id_to_target_id is not None:
+                # Before anything routes on the mapping, and regardless of which
+                # head the draft ends up with: a checkpoint that ships its own
+                # pruned head still reads every draft id through this table.
+                self._validate_draft_vocab_mapping()
             draft_has_own_lm_head = (draft_id_to_target_id is not None) or (
                 getattr(self.model, "has_own_lm_head", True)
             )
@@ -530,6 +535,56 @@ class AscendSpecDecodeBaseProposer(SpecDecodeBaseProposer):
             return model.get_language_model().lm_head
         return None
 
+    def _validate_draft_vocab_mapping(self) -> torch.Tensor:
+        """Check the draft's ``d2t`` table and return the target ids it keeps.
+
+        Draft id ``i`` means target id ``i + d2t[i]``, and every proposed id is
+        read through that table -- so the table has to be checked whether the
+        pruned head was derived here or shipped by the checkpoint. Returns the
+        kept ids on CPU, where the derived head also selects its rows.
+        """
+        d2t = self.model.draft_id_to_target_id
+        d2t_cpu = d2t.cpu().to(torch.long)
+        draft_vocab_size = d2t_cpu.shape[0]
+        target_vocab_size = self.vllm_config.model_config.get_vocab_size()
+        kept_target_ids = torch.arange(draft_vocab_size, dtype=torch.long) + d2t_cpu
+
+        # An unloaded mapping is all zeros, and so is the legitimate mapping that
+        # keeps target ids 0..K-1: the offsets alone cannot separate them, which
+        # is why the loader records whether the key was present at all.
+        has_draft_id_mapping = getattr(self.model, "has_draft_id_mapping", None)
+        mapping_is_missing = (
+            not has_draft_id_mapping
+            if has_draft_id_mapping is not None
+            # No loader flag to consult. Fall back to the contents and reject all
+            # zeros: an unloaded buffer proposes wrong tokens silently, whereas
+            # "the K most frequent tokens are exactly ids 0..K-1" is not a
+            # vocabulary any real tokenizer produces.
+            else not bool(d2t_cpu.any())
+        )
+        if mapping_is_missing:
+            raise ValueError(
+                f"The draft config declares draft_vocab_size={draft_vocab_size} "
+                f"(target vocabulary {target_vocab_size}) but its checkpoint "
+                "carries no d2t mapping; the draft vocabulary would silently be "
+                "read as the first draft_vocab_size target ids. Export the draft "
+                "from a run trained with draft_vocab_size."
+            )
+        if int(kept_target_ids.min()) < 0 or int(kept_target_ids.max()) >= target_vocab_size:
+            raise ValueError(
+                "The draft's d2t mapping points outside the target vocabulary "
+                f"[0, {target_vocab_size}); the checkpoint was trained against a "
+                "different target model."
+            )
+        if draft_vocab_size > 1 and not bool(torch.all(kept_target_ids[1:] > kept_target_ids[:-1])):
+            # Row selection by a t2d mask yields ascending, distinct target ids.
+            # Anything else means the offsets and the head rows disagree.
+            raise ValueError(
+                "The draft's d2t mapping is not strictly increasing, so it does "
+                "not describe an ascending selection of target vocabulary rows."
+            )
+        return kept_target_ids
+
     def _build_pruned_lm_head_from_target(self, target_lm_head: nn.Module | None) -> None:
         """Fill the draft's pruned lm_head with the target rows its d2t keeps.
 
@@ -590,42 +645,14 @@ class AscendSpecDecodeBaseProposer(SpecDecodeBaseProposer):
                 "Export the draft checkpoint with its own lm_head instead."
             )
 
-        draft_vocab_size = d2t.shape[0]
+        # Kept target ids in ascending order. Held on CPU so that selecting this
+        # rank's share costs no device synchronization and needs no boolean row
+        # indexing, which is not portable on NPU.
+        kept_target_ids = self._validate_draft_vocab_mapping()
+        draft_vocab_size = kept_target_ids.shape[0]
+        target_vocab_size = self.vllm_config.model_config.get_vocab_size()
         target_vocab_start = target_lm_head.shard_indices.org_vocab_start_index
         target_vocab_end = target_lm_head.shard_indices.org_vocab_end_index
-
-        # Kept target ids in ascending order: draft id i -> i + d2t[i]. Built on
-        # CPU so that selecting this rank's share costs no device synchronization
-        # and needs no boolean row indexing, which is not portable on NPU.
-        d2t_cpu = d2t.cpu().to(torch.long)
-        kept_target_ids = torch.arange(draft_vocab_size, dtype=torch.long) + d2t_cpu
-        target_vocab_size = self.vllm_config.model_config.get_vocab_size()
-        if not bool(d2t_cpu.any()):
-            # The model allocates d2t zero-filled and the loader skips it when
-            # the checkpoint has none, so an all-zero buffer means "no mapping
-            # was loaded" -- the same convention training uses. It would
-            # otherwise read as the perfectly in-range mapping "keep target ids
-            # 0..K-1" and start a server that proposes the wrong tokens.
-            raise ValueError(
-                f"The draft config declares draft_vocab_size={draft_vocab_size} "
-                f"(target vocabulary {target_vocab_size}) but its checkpoint "
-                "carries no d2t mapping; the draft vocabulary would silently be "
-                "read as the first draft_vocab_size target ids. Export the draft "
-                "from a run trained with draft_vocab_size."
-            )
-        if int(kept_target_ids.min()) < 0 or int(kept_target_ids.max()) >= target_vocab_size:
-            raise ValueError(
-                "The draft's d2t mapping points outside the target vocabulary "
-                f"[0, {target_vocab_size}); the checkpoint was trained against a "
-                "different target model."
-            )
-        if draft_vocab_size > 1 and not bool(torch.all(kept_target_ids[1:] > kept_target_ids[:-1])):
-            # Row selection by a t2d mask yields ascending, distinct target ids.
-            # Anything else means the offsets and the head rows disagree.
-            raise ValueError(
-                "The draft's d2t mapping is not strictly increasing, so it does "
-                "not describe an ascending selection of target vocabulary rows."
-            )
 
         local_draft_rows = torch.nonzero(
             (kept_target_ids >= target_vocab_start) & (kept_target_ids < target_vocab_end),

@@ -321,17 +321,6 @@ class TestBuildPrunedLMHead:
         with pytest.raises(ValueError, match="outside the target vocabulary"):
             proposer._build_pruned_lm_head_from_target(target_head)
 
-    def test_rejects_an_unloaded_all_zero_mapping(self):
-        """The model allocates d2t zero-filled and the loader skips it when the
-        checkpoint has none. All zeros reads as the in-range mapping "keep
-        target ids 0..K-1", so only an explicit check catches it."""
-        proposer = self._make_proposer(_StubDraftLMHead())
-        proposer.model.draft_id_to_target_id = torch.zeros_like(_D2T)
-        target_head = _StubShardedLMHead(self._target_weight(), tp_size=1, tp_rank=0)
-
-        with pytest.raises(ValueError, match="carries no d2t mapping"):
-            proposer._build_pruned_lm_head_from_target(target_head)
-
     def test_rejects_a_mapping_that_is_not_strictly_increasing(self):
         proposer = self._make_proposer(_StubDraftLMHead())
         # kept ids 1, 3, 6, 9 -> 1, 3, 3, 9: a repeated target row.
@@ -360,6 +349,55 @@ class TestBuildPrunedLMHead:
             proposer._build_pruned_lm_head_from_target(None)
 
 
+class TestValidateDraftVocabMapping:
+    """Whether the mapping is usable at all, independent of the head routing."""
+
+    @staticmethod
+    def _make_proposer(d2t, *, has_draft_id_mapping=None):
+        proposer = AscendSpecDecodeBaseProposer.__new__(AscendSpecDecodeBaseProposer)
+        proposer.method = "dspark"
+        model = SimpleNamespace(draft_id_to_target_id=d2t)
+        if has_draft_id_mapping is not None:
+            model.has_draft_id_mapping = has_draft_id_mapping
+        proposer.model = model
+        proposer.vllm_config = SimpleNamespace(model_config=SimpleNamespace(get_vocab_size=lambda: _TARGET_VOCAB_SIZE))
+        return proposer
+
+    def test_returns_the_kept_target_ids(self):
+        proposer = self._make_proposer(_D2T.clone(), has_draft_id_mapping=True)
+
+        assert proposer._validate_draft_vocab_mapping().tolist() == _KEPT_TARGET_IDS
+
+    def test_rejects_a_mapping_key_the_checkpoint_never_carried(self):
+        """The loader saw no d2t, so the zero-filled buffer is not a mapping."""
+        proposer = self._make_proposer(torch.zeros_like(_D2T), has_draft_id_mapping=False)
+
+        with pytest.raises(ValueError, match="carries no d2t mapping"):
+            proposer._validate_draft_vocab_mapping()
+
+    def test_rejects_a_loaded_mapping_that_is_out_of_range(self):
+        proposer = self._make_proposer(_D2T + _TARGET_VOCAB_SIZE, has_draft_id_mapping=True)
+
+        with pytest.raises(ValueError, match="outside the target vocabulary"):
+            proposer._validate_draft_vocab_mapping()
+
+    def test_accepts_an_all_zero_mapping_the_checkpoint_did_carry(self):
+        """d2t is all zeros for the mapping that keeps target ids 0..K-1, which
+        is a legal mapping; only the loader flag separates it from an unloaded
+        buffer, so the contents alone must not decide."""
+        proposer = self._make_proposer(torch.zeros_like(_D2T), has_draft_id_mapping=True)
+
+        assert proposer._validate_draft_vocab_mapping().tolist() == list(range(_DRAFT_VOCAB_SIZE))
+
+    def test_rejects_all_zeros_when_no_loader_flag_is_available(self):
+        """Without the flag the state is ambiguous, and the conservative read is
+        "unloaded": that failure is silent, the other is merely implausible."""
+        proposer = self._make_proposer(torch.zeros_like(_D2T))
+
+        with pytest.raises(ValueError, match="carries no d2t mapping"):
+            proposer._validate_draft_vocab_mapping()
+
+
 class TestCheckpointOwnershipDefaults:
     """``has_own_*`` must default to False, or nothing below is ever reached.
 
@@ -384,16 +422,17 @@ class TestMaybeShareLMHeadRouting:
     """Which of the three lm_head outcomes each checkpoint shape lands on."""
 
     @staticmethod
-    def _make_proposer(monkeypatch, *, draft_id_to_target_id, has_own_lm_head):
+    def _make_proposer(monkeypatch, *, draft_id_to_target_id, has_own_lm_head, has_draft_id_mapping=True):
         proposer = AscendSpecDecodeBaseProposer.__new__(AscendSpecDecodeBaseProposer)
         proposer.method = "dspark"
         proposer.model = SimpleNamespace(
             lm_head="draft-head",
             draft_id_to_target_id=draft_id_to_target_id,
             has_own_lm_head=has_own_lm_head,
+            has_draft_id_mapping=has_draft_id_mapping,
         )
         proposer.vllm_config = SimpleNamespace(
-            model_config=SimpleNamespace(is_deepseek_mla=False),
+            model_config=SimpleNamespace(is_deepseek_mla=False, get_vocab_size=lambda: _TARGET_VOCAB_SIZE),
             compilation_config=SimpleNamespace(cudagraph_mode=SimpleNamespace(has_full_cudagraphs=lambda: False)),
         )
         proposer.use_cuda_graph = False
@@ -422,6 +461,31 @@ class TestMaybeShareLMHeadRouting:
 
         assert built == []
         assert proposer.model.lm_head == "draft-head"
+
+    def test_own_lm_head_does_not_exempt_the_mapping_from_validation(self, monkeypatch):
+        """The head is kept as-is, but every proposed id is still read through
+        d2t, so a checkpoint that shipped no mapping must not start."""
+        proposer, _ = self._make_proposer(
+            monkeypatch,
+            draft_id_to_target_id=torch.zeros_like(_D2T),
+            has_own_lm_head=True,
+            has_draft_id_mapping=False,
+        )
+        target = SimpleNamespace(lm_head="target-head")
+
+        with pytest.raises(ValueError, match="carries no d2t mapping"):
+            proposer._maybe_share_lm_head(target)
+
+    def test_own_lm_head_with_a_corrupt_mapping_is_rejected(self, monkeypatch):
+        proposer, _ = self._make_proposer(
+            monkeypatch,
+            draft_id_to_target_id=_D2T + _TARGET_VOCAB_SIZE,
+            has_own_lm_head=True,
+        )
+        target = SimpleNamespace(lm_head="target-head")
+
+        with pytest.raises(ValueError, match="outside the target vocabulary"):
+            proposer._maybe_share_lm_head(target)
 
     def test_full_vocabulary_checkpoint_still_shares_the_target_head(self, monkeypatch):
         """The unpruned path, unchanged: no d2t, no own head -> share."""
