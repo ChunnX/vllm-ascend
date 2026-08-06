@@ -35,6 +35,8 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from vllm.model_executor.layers.vocab_parallel_embedding import UnquantizedEmbeddingMethod
+from vllm.model_executor.models.qwen3_dspark import Qwen3DSparkForCausalLM
 
 from vllm_ascend.spec_decode.llm_base_proposer import AscendSpecDecodeBaseProposer
 
@@ -174,20 +176,24 @@ class TestDSparkSampleBlockRemapsIds:
 class _StubShardedLMHead:
     """A vocab-sharded ``ParallelLMHead`` stand-in holding one rank's rows."""
 
-    def __init__(self, full_weight: torch.Tensor, *, tp_size: int, tp_rank: int):
+    def __init__(self, full_weight: torch.Tensor, *, tp_size: int, tp_rank: int, comm_group=None):
         vocab_size = full_weight.shape[0]
         shard = vocab_size // tp_size
         start, end = tp_rank * shard, (tp_rank + 1) * shard
         self.weight = full_weight[start:end].clone()
         self.tp_size = tp_size
+        self.comm_group = comm_group
+        # The real class, since the "is it quantized" check is an isinstance test.
+        self.quant_method = UnquantizedEmbeddingMethod()
         self.shard_indices = SimpleNamespace(org_vocab_start_index=start, org_vocab_end_index=end)
 
 
 class _StubDraftLMHead:
     """Records what ``weight_loader`` is handed, which is the full pruned head."""
 
-    def __init__(self):
+    def __init__(self, comm_group=None):
         self.weight = torch.zeros((_DRAFT_VOCAB_SIZE, _HIDDEN_SIZE))
+        self.comm_group = comm_group
         self.loaded: torch.Tensor | None = None
 
     def weight_loader(self, param: torch.Tensor, loaded_weight: torch.Tensor) -> None:
@@ -203,7 +209,7 @@ class TestBuildPrunedLMHead:
         return torch.arange(_TARGET_VOCAB_SIZE, dtype=torch.float32).unsqueeze(-1).repeat(1, _HIDDEN_SIZE)
 
     @staticmethod
-    def _make_proposer(draft_head, *, all_reduce):
+    def _make_proposer(draft_head):
         proposer = AscendSpecDecodeBaseProposer.__new__(AscendSpecDecodeBaseProposer)
         proposer.method = "dspark"
         proposer.model = SimpleNamespace(lm_head=draft_head, draft_id_to_target_id=_D2T.clone())
@@ -211,19 +217,12 @@ class TestBuildPrunedLMHead:
         return proposer
 
     @staticmethod
-    def _patch_tp_group(monkeypatch, *, world_size: int, all_reduce):
-        # One instance, so the draft/target group identity check sees the same
-        # object on both sides -- which is what it does in the real code.
-        group = SimpleNamespace(world_size=world_size, all_reduce=all_reduce, unique_name="tp")
-        monkeypatch.setattr(
-            "vllm_ascend.spec_decode.llm_base_proposer.get_tp_group",
-            lambda: group,
-        )
+    def _make_group(*, world_size: int, all_reduce=None, name: str = "tp"):
+        return SimpleNamespace(world_size=world_size, all_reduce=all_reduce, unique_name=name)
 
-    def test_single_rank_selects_the_kept_rows_in_draft_order(self, monkeypatch):
-        self._patch_tp_group(monkeypatch, world_size=1, all_reduce=None)
+    def test_single_rank_selects_the_kept_rows_in_draft_order(self):
         draft_head = _StubDraftLMHead()
-        proposer = self._make_proposer(draft_head, all_reduce=None)
+        proposer = self._make_proposer(draft_head)
         target_head = _StubShardedLMHead(self._target_weight(), tp_size=1, tp_rank=0)
 
         proposer._build_pruned_lm_head_from_target(target_head)
@@ -232,7 +231,7 @@ class TestBuildPrunedLMHead:
         expected = self._target_weight()[_KEPT_TARGET_IDS]
         assert torch.equal(draft_head.loaded, expected)
 
-    def test_sharded_ranks_contribute_disjoint_rows_that_sum_to_the_head(self, monkeypatch):
+    def test_sharded_ranks_contribute_disjoint_rows_that_sum_to_the_head(self):
         """Each rank fills only the kept ids inside its own target shard.
 
         Their sum is the full pruned head, which is what the all-reduce
@@ -249,10 +248,10 @@ class TestBuildPrunedLMHead:
                 captured.append(tensor.clone())
                 return tensor
 
-            self._patch_tp_group(monkeypatch, world_size=tp_size, all_reduce=all_reduce)
-            draft_head = _StubDraftLMHead()
-            proposer = self._make_proposer(draft_head, all_reduce=all_reduce)
-            target_head = _StubShardedLMHead(full_weight, tp_size=tp_size, tp_rank=tp_rank)
+            target_group = self._make_group(world_size=tp_size, all_reduce=all_reduce)
+            draft_head = _StubDraftLMHead(comm_group=target_group)
+            proposer = self._make_proposer(draft_head)
+            target_head = _StubShardedLMHead(full_weight, tp_size=tp_size, tp_rank=tp_rank, comm_group=target_group)
 
             proposer._build_pruned_lm_head_from_target(target_head)
 
@@ -264,41 +263,121 @@ class TestBuildPrunedLMHead:
         assert torch.equal(contributions[0][2:], torch.zeros((2, _HIDDEN_SIZE)))
         assert torch.equal(contributions[1][:2], torch.zeros((2, _HIDDEN_SIZE)))
 
-    def test_rejects_a_quantized_target_head(self, monkeypatch):
-        self._patch_tp_group(monkeypatch, world_size=1, all_reduce=None)
-        proposer = self._make_proposer(_StubDraftLMHead(), all_reduce=None)
+    def test_supports_a_rank_local_draft_head_against_a_sharded_target(self):
+        """``draft_tensor_parallel_size=1`` with a TP target.
+
+        The draft head is built inside ``patch_tensor_parallel_group`` and so
+        belongs to a rank-local group of its own. Reduction still happens over
+        the target's group, and each rank's singleton draft head receives the
+        whole reconstructed head.
+        """
+        tp_size = 2
+        full_weight = self._target_weight()
+
+        for tp_rank in range(tp_size):
+            reduced = full_weight[_KEPT_TARGET_IDS]
+
+            def all_reduce(tensor, reduced=reduced):
+                # Stand in for the other rank's contribution: the collective
+                # returns the fully reconstructed head on every participant.
+                return reduced
+
+            target_group = self._make_group(world_size=tp_size, all_reduce=all_reduce)
+            draft_head = _StubDraftLMHead(comm_group=self._make_group(world_size=1, name="tp_draft"))
+            proposer = self._make_proposer(draft_head)
+            target_head = _StubShardedLMHead(full_weight, tp_size=tp_size, tp_rank=tp_rank, comm_group=target_group)
+
+            proposer._build_pruned_lm_head_from_target(target_head)
+
+            assert draft_head.loaded is not None
+            assert torch.equal(draft_head.loaded, full_weight[_KEPT_TARGET_IDS])
+
+    def test_rejects_a_quantized_target_head(self):
+        proposer = self._make_proposer(_StubDraftLMHead())
         target_head = _StubShardedLMHead(self._target_weight(), tp_size=1, tp_rank=0)
-        target_head.weight = target_head.weight.to(torch.int8)
+        target_head.quant_method = SimpleNamespace()
 
         with pytest.raises(ValueError, match="unquantized target"):
             proposer._build_pruned_lm_head_from_target(target_head)
 
-    def test_rejects_a_mapping_outside_the_target_vocabulary(self, monkeypatch):
-        self._patch_tp_group(monkeypatch, world_size=1, all_reduce=None)
-        proposer = self._make_proposer(_StubDraftLMHead(), all_reduce=None)
+    def test_rejects_an_fp8_target_head_despite_a_floating_point_dtype(self):
+        """The failure mode a dtype test misses: FP8 rows are meaningless
+        without their scales, and would yield a wrong head of legal shape."""
+        proposer = self._make_proposer(_StubDraftLMHead())
+        target_head = _StubShardedLMHead(self._target_weight(), tp_size=1, tp_rank=0)
+        target_head.weight = target_head.weight.to(torch.float8_e4m3fn)
+        target_head.weight_scale = torch.ones(_TARGET_VOCAB_SIZE)
+        target_head.quant_method = SimpleNamespace()
+
+        assert target_head.weight.is_floating_point()
+        with pytest.raises(ValueError, match="unquantized target"):
+            proposer._build_pruned_lm_head_from_target(target_head)
+
+    def test_rejects_a_mapping_outside_the_target_vocabulary(self):
+        proposer = self._make_proposer(_StubDraftLMHead())
         proposer.model.draft_id_to_target_id = _D2T + _TARGET_VOCAB_SIZE
         target_head = _StubShardedLMHead(self._target_weight(), tp_size=1, tp_rank=0)
 
         with pytest.raises(ValueError, match="outside the target vocabulary"):
             proposer._build_pruned_lm_head_from_target(target_head)
 
-    def test_rejects_heads_sharded_over_different_groups(self, monkeypatch):
-        """lmhead_tensor_parallel_size can give a head its own comm group; the
-        all-reduce and the draft's weight_loader must agree on which one."""
-        self._patch_tp_group(monkeypatch, world_size=1, all_reduce=None)
-        proposer = self._make_proposer(_StubDraftLMHead(), all_reduce=None)
+    def test_rejects_an_unloaded_all_zero_mapping(self):
+        """The model allocates d2t zero-filled and the loader skips it when the
+        checkpoint has none. All zeros reads as the in-range mapping "keep
+        target ids 0..K-1", so only an explicit check catches it."""
+        proposer = self._make_proposer(_StubDraftLMHead())
+        proposer.model.draft_id_to_target_id = torch.zeros_like(_D2T)
         target_head = _StubShardedLMHead(self._target_weight(), tp_size=1, tp_rank=0)
-        target_head.comm_group = SimpleNamespace(world_size=1, unique_name="lmhead_tp", all_reduce=None)
 
-        with pytest.raises(NotImplementedError, match="same communication group"):
+        with pytest.raises(ValueError, match="carries no d2t mapping"):
             proposer._build_pruned_lm_head_from_target(target_head)
 
-    def test_reports_a_missing_target_head(self, monkeypatch):
-        self._patch_tp_group(monkeypatch, world_size=1, all_reduce=None)
-        proposer = self._make_proposer(_StubDraftLMHead(), all_reduce=None)
+    def test_rejects_a_mapping_that_is_not_strictly_increasing(self):
+        proposer = self._make_proposer(_StubDraftLMHead())
+        # kept ids 1, 3, 6, 9 -> 1, 3, 3, 9: a repeated target row.
+        scrambled = _D2T.clone()
+        scrambled[2] = 3 - 2
+        proposer.model.draft_id_to_target_id = scrambled
+        target_head = _StubShardedLMHead(self._target_weight(), tp_size=1, tp_rank=0)
+
+        with pytest.raises(ValueError, match="not strictly increasing"):
+            proposer._build_pruned_lm_head_from_target(target_head)
+
+    def test_rejects_a_sharded_target_head_with_no_identifiable_group(self):
+        """Without a comm_group the reduction group is unknown, and the global
+        TP group is not a safe guess while the draft's patch is in effect."""
+        proposer = self._make_proposer(_StubDraftLMHead())
+        target_head = _StubShardedLMHead(self._target_weight(), tp_size=2, tp_rank=0)
+        target_head.comm_group = None
+
+        with pytest.raises(NotImplementedError, match="no comm_group"):
+            proposer._build_pruned_lm_head_from_target(target_head)
+
+    def test_reports_a_missing_target_head(self):
+        proposer = self._make_proposer(_StubDraftLMHead())
 
         with pytest.raises(ValueError, match="no lm_head"):
             proposer._build_pruned_lm_head_from_target(None)
+
+
+class TestCheckpointOwnershipDefaults:
+    """``has_own_*`` must default to False, or nothing below is ever reached.
+
+    ``process_eagle_weight`` only ever sets these to True, so the "checkpoint
+    ships no lm_head / embed_tokens" case rests entirely on the class-attribute
+    defaults that ``SupportsEagleBase`` contributes through the MRO. If a
+    refactor dropped the protocol from the bases, every DSpark draft -- reduced
+    vocabulary or not -- would silently keep an unloaded head instead of
+    sharing or deriving one.
+    """
+
+    def test_defaults_are_false_before_any_weight_is_seen(self):
+        assert Qwen3DSparkForCausalLM.has_own_lm_head is False
+        assert Qwen3DSparkForCausalLM.has_own_embed_tokens is False
+
+    def test_the_proposer_reads_those_defaults_as_false(self):
+        assert getattr(Qwen3DSparkForCausalLM, "has_own_lm_head", True) is False
+        assert getattr(Qwen3DSparkForCausalLM, "has_own_embed_tokens", True) is False
 
 
 class TestMaybeShareLMHeadRouting:

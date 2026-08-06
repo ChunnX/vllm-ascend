@@ -19,6 +19,7 @@ from vllm.distributed.parallel_state import (
 from vllm.forward_context import BatchDescriptor, ForwardContext, get_forward_context
 from vllm.logger import logger
 from vllm.model_executor.layers.attention_layer_base import AttentionLayerBase
+from vllm.model_executor.layers.vocab_parallel_embedding import UnquantizedEmbeddingMethod
 from vllm.model_executor.model_loader import get_model
 from vllm.model_executor.models import supports_multimodal
 from vllm.model_executor.models.deepseek_eagle3 import Eagle3DeepseekV2ForCausalLM
@@ -541,13 +542,14 @@ class AscendSpecDecodeBaseProposer(SpecDecodeBaseProposer):
 
         Under TP the target head is vocab-sharded, so the rows a rank needs
         mostly live elsewhere. The pruned head is assembled in full on every
-        rank with a single all-reduce -- ``draft_vocab_size`` rows, not the
-        target vocabulary -- and then handed to the draft head's own
-        ``weight_loader``, which owns the sharding and padding rules. Reduction
-        and redistribution therefore have to run over the same communication
-        group, which is why the two heads' groups are compared rather than
-        assumed to be the model TP group (``lmhead_tensor_parallel_size`` gives
-        both heads a group of its own).
+        rank with a single all-reduce over the group that shards the *target*
+        head -- ``draft_vocab_size`` rows, not the target vocabulary -- and is
+        then handed to the draft head's own ``weight_loader``, which selects
+        that head's shard locally and issues no collective of its own. The two
+        heads therefore need not share a group: with
+        ``draft_tensor_parallel_size=1`` against a TP target, every target rank
+        reconstructs the same full head and its rank-local draft head loads all
+        of it.
         """
         draft_lm_head = getattr(self.model, "lm_head", None)
         d2t = getattr(self.model, "draft_id_to_target_id", None)
@@ -560,25 +562,33 @@ class AscendSpecDecodeBaseProposer(SpecDecodeBaseProposer):
                 "derive it from."
             )
 
+        # Quantization is decided by the head's quant method, not by its weight
+        # dtype: an FP8 head is floating point yet its rows are meaningless
+        # without the accompanying scales, so a dtype test would let it through
+        # and produce a numerically wrong head that still has a legal shape.
         target_weight = getattr(target_lm_head, "weight", None)
-        if target_weight is None or not target_weight.is_floating_point():
+        target_quant_method = getattr(target_lm_head, "quant_method", None)
+        if target_weight is None or not isinstance(target_quant_method, UnquantizedEmbeddingMethod):
             raise ValueError(
                 "Deriving a pruned draft lm_head requires an unquantized target "
-                f"lm_head; got {type(target_lm_head).__name__} with weight "
-                f"{None if target_weight is None else target_weight.dtype}. Export "
-                "the draft checkpoint with its own lm_head instead."
+                f"lm_head; got {type(target_lm_head).__name__} with quant method "
+                f"{type(target_quant_method).__name__}. Export the draft checkpoint "
+                "with its own lm_head instead."
             )
 
-        target_group = getattr(target_lm_head, "comm_group", None) or get_tp_group()
-        draft_group = getattr(draft_lm_head, "comm_group", None) or get_tp_group()
-        if draft_group is not target_group:
+        # The group that shards the target head, which is the only group whose
+        # ranks jointly hold every kept row. get_tp_group() is not a fallback:
+        # load_model runs inside patch_tensor_parallel_group whenever
+        # draft_tensor_parallel_size differs from the target's, so the global TP
+        # group may currently be the draft's rank-local one.
+        target_group = getattr(target_lm_head, "comm_group", None)
+        tp_size = getattr(target_lm_head, "tp_size", 1)
+        if tp_size > 1 and target_group is None:
             raise NotImplementedError(
-                "A reduced draft vocabulary requires the draft and target lm_head "
-                "to be sharded over the same communication group; got "
-                f"{draft_group.unique_name} and {target_group.unique_name}. Export "
-                "the draft checkpoint with its own lm_head instead."
+                f"The target lm_head is sharded {tp_size} ways but exposes no "
+                "comm_group, so the group holding its rows cannot be identified. "
+                "Export the draft checkpoint with its own lm_head instead."
             )
-        tp_size = target_group.world_size
 
         draft_vocab_size = d2t.shape[0]
         target_vocab_start = target_lm_head.shard_indices.org_vocab_start_index
@@ -587,13 +597,34 @@ class AscendSpecDecodeBaseProposer(SpecDecodeBaseProposer):
         # Kept target ids in ascending order: draft id i -> i + d2t[i]. Built on
         # CPU so that selecting this rank's share costs no device synchronization
         # and needs no boolean row indexing, which is not portable on NPU.
-        kept_target_ids = torch.arange(draft_vocab_size, dtype=torch.long) + d2t.cpu().to(torch.long)
+        d2t_cpu = d2t.cpu().to(torch.long)
+        kept_target_ids = torch.arange(draft_vocab_size, dtype=torch.long) + d2t_cpu
         target_vocab_size = self.vllm_config.model_config.get_vocab_size()
+        if not bool(d2t_cpu.any()):
+            # The model allocates d2t zero-filled and the loader skips it when
+            # the checkpoint has none, so an all-zero buffer means "no mapping
+            # was loaded" -- the same convention training uses. It would
+            # otherwise read as the perfectly in-range mapping "keep target ids
+            # 0..K-1" and start a server that proposes the wrong tokens.
+            raise ValueError(
+                f"The draft config declares draft_vocab_size={draft_vocab_size} "
+                f"(target vocabulary {target_vocab_size}) but its checkpoint "
+                "carries no d2t mapping; the draft vocabulary would silently be "
+                "read as the first draft_vocab_size target ids. Export the draft "
+                "from a run trained with draft_vocab_size."
+            )
         if int(kept_target_ids.min()) < 0 or int(kept_target_ids.max()) >= target_vocab_size:
             raise ValueError(
                 "The draft's d2t mapping points outside the target vocabulary "
                 f"[0, {target_vocab_size}); the checkpoint was trained against a "
                 "different target model."
+            )
+        if draft_vocab_size > 1 and not bool(torch.all(kept_target_ids[1:] > kept_target_ids[:-1])):
+            # Row selection by a t2d mask yields ascending, distinct target ids.
+            # Anything else means the offsets and the head rows disagree.
+            raise ValueError(
+                "The draft's d2t mapping is not strictly increasing, so it does "
+                "not describe an ascending selection of target vocabulary rows."
             )
 
         local_draft_rows = torch.nonzero(

@@ -334,8 +334,10 @@ Two things follow from how such a draft is trained:
 
 - The draft borrows the target's LM head, so its checkpoint usually ships no
   `lm_head` weights. vLLM Ascend then derives the head at load time by selecting
-  the target rows `d2t` keeps. A checkpoint that does ship its own `lm_head`
-  (already sliced) is used as-is.
+  the target rows `d2t` keeps, which works for both `draft_tensor_parallel_size`
+  settings the engine allows (1, or the target's TP degree). A checkpoint that
+  does ship its own `lm_head` (already sliced) is used as-is. A quantized target
+  LM head is rejected with an error rather than silently losing its scales.
 - The reachable acceptance rate is capped by how much of the target's token
   distribution the draft vocabulary covers, since a token outside it can never
   be proposed. Compare `acceptance_per_pos` against the full-vocabulary baseline
