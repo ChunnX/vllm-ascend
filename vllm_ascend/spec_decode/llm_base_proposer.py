@@ -463,10 +463,20 @@ class AscendSpecDecodeBaseProposer(SpecDecodeBaseProposer):
             # target lm_head ([target_vocab_size, hidden]) makes the draft emit
             # logits over the wrong vocabulary, so the verifier rejects almost
             # every speculative token. Keep the draft's own lm_head in that case.
-            draft_has_own_lm_head = (getattr(self.model, "draft_id_to_target_id", None) is not None) or (
+            draft_id_to_target_id = getattr(self.model, "draft_id_to_target_id", None)
+            draft_has_own_lm_head = (draft_id_to_target_id is not None) or (
                 getattr(self.model, "has_own_lm_head", True)
             )
-            if draft_has_own_lm_head and self.method == "dflash":
+            if draft_id_to_target_id is not None and not getattr(self.model, "has_own_lm_head", True):
+                # A reduced draft vocabulary whose checkpoint carries no lm_head:
+                # the DFlash/DSpark training stack owns no LM head at all, it
+                # borrows the frozen target head and reads only the rows the
+                # mapping keeps. Neither of the two branches below is right here
+                # -- sharing the target head gives the wrong vocabulary, keeping
+                # the draft's own head serves an unloaded tensor -- so rebuild
+                # that same row slice from the target.
+                self._build_pruned_lm_head_from_target(self._resolve_target_lm_head(model))
+            elif draft_has_own_lm_head and self.method == "dflash":
                 logger.info(
                     "[spec_decode/base] DFlash draft uses d2t vocab remapping;"
                     " keeping the draft's own lm_head instead of sharing the target"
@@ -479,10 +489,9 @@ class AscendSpecDecodeBaseProposer(SpecDecodeBaseProposer):
                 )
             else:
                 logger.info("[spec_decode/base] Loading EAGLE/DFLASH LM head weights from the target model.")
-                if hasattr(model, "lm_head"):
-                    self.model.lm_head = model.lm_head
-                elif hasattr(model, "get_language_model") and hasattr(model.get_language_model(), "lm_head"):
-                    self.model.lm_head = model.get_language_model().lm_head
+                target_lm_head = self._resolve_target_lm_head(model)
+                if target_lm_head is not None:
+                    self.model.lm_head = target_lm_head
                 else:
                     logger.warning(
                         "[spec_decode/base] Target model has no accessible lm_head"
@@ -511,6 +520,116 @@ class AscendSpecDecodeBaseProposer(SpecDecodeBaseProposer):
                 use_eagle=self.use_eagle,
                 enable_enpu=self.enable_enpu,
             )
+
+    @staticmethod
+    def _resolve_target_lm_head(model: nn.Module) -> nn.Module | None:
+        if hasattr(model, "lm_head"):
+            return model.lm_head
+        if hasattr(model, "get_language_model") and hasattr(model.get_language_model(), "lm_head"):
+            return model.get_language_model().lm_head
+        return None
+
+    def _build_pruned_lm_head_from_target(self, target_lm_head: nn.Module | None) -> None:
+        """Fill the draft's pruned lm_head with the target rows its d2t keeps.
+
+        A DFlash/DSpark draft trained with ``draft_vocab_size`` owns no LM head
+        of its own: training borrows the frozen target head and projects through
+        only the kept rows, in ascending target-id order, so the served
+        checkpoint carries the ``d2t`` mapping but no ``lm_head`` weights. Draft
+        id ``i`` therefore means target id ``i + d2t[i]``, and reproducing that
+        row slice here is what makes serving agree with training.
+
+        Under TP the target head is vocab-sharded, so the rows a rank needs
+        mostly live elsewhere. The pruned head is assembled in full on every
+        rank with a single all-reduce -- ``draft_vocab_size`` rows, not the
+        target vocabulary -- and then handed to the draft head's own
+        ``weight_loader``, which owns the sharding and padding rules. Reduction
+        and redistribution therefore have to run over the same communication
+        group, which is why the two heads' groups are compared rather than
+        assumed to be the model TP group (``lmhead_tensor_parallel_size`` gives
+        both heads a group of its own).
+        """
+        draft_lm_head = getattr(self.model, "lm_head", None)
+        d2t = getattr(self.model, "draft_id_to_target_id", None)
+        assert draft_lm_head is not None and d2t is not None
+
+        if target_lm_head is None:
+            raise ValueError(
+                "The draft model uses a reduced vocabulary (d2t) and ships no "
+                "lm_head of its own, but the target model exposes no lm_head to "
+                "derive it from."
+            )
+
+        target_weight = getattr(target_lm_head, "weight", None)
+        if target_weight is None or not target_weight.is_floating_point():
+            raise ValueError(
+                "Deriving a pruned draft lm_head requires an unquantized target "
+                f"lm_head; got {type(target_lm_head).__name__} with weight "
+                f"{None if target_weight is None else target_weight.dtype}. Export "
+                "the draft checkpoint with its own lm_head instead."
+            )
+
+        target_group = getattr(target_lm_head, "comm_group", None) or get_tp_group()
+        draft_group = getattr(draft_lm_head, "comm_group", None) or get_tp_group()
+        if draft_group is not target_group:
+            raise NotImplementedError(
+                "A reduced draft vocabulary requires the draft and target lm_head "
+                "to be sharded over the same communication group; got "
+                f"{draft_group.unique_name} and {target_group.unique_name}. Export "
+                "the draft checkpoint with its own lm_head instead."
+            )
+        tp_size = target_group.world_size
+
+        draft_vocab_size = d2t.shape[0]
+        target_vocab_start = target_lm_head.shard_indices.org_vocab_start_index
+        target_vocab_end = target_lm_head.shard_indices.org_vocab_end_index
+
+        # Kept target ids in ascending order: draft id i -> i + d2t[i]. Built on
+        # CPU so that selecting this rank's share costs no device synchronization
+        # and needs no boolean row indexing, which is not portable on NPU.
+        kept_target_ids = torch.arange(draft_vocab_size, dtype=torch.long) + d2t.cpu().to(torch.long)
+        target_vocab_size = self.vllm_config.model_config.get_vocab_size()
+        if int(kept_target_ids.min()) < 0 or int(kept_target_ids.max()) >= target_vocab_size:
+            raise ValueError(
+                "The draft's d2t mapping points outside the target vocabulary "
+                f"[0, {target_vocab_size}); the checkpoint was trained against a "
+                "different target model."
+            )
+
+        local_draft_rows = torch.nonzero(
+            (kept_target_ids >= target_vocab_start) & (kept_target_ids < target_vocab_end),
+            as_tuple=True,
+        )[0]
+
+        pruned_weight = torch.zeros(
+            (draft_vocab_size, target_weight.shape[1]),
+            dtype=target_weight.dtype,
+            device=target_weight.device,
+        )
+        if local_draft_rows.numel() > 0:
+            local_target_rows = (kept_target_ids[local_draft_rows] - target_vocab_start).to(target_weight.device)
+            pruned_weight.index_copy_(
+                0,
+                local_draft_rows.to(target_weight.device),
+                target_weight.index_select(0, local_target_rows),
+            )
+        if tp_size > 1:
+            # Every kept id lives in exactly one rank's shard, so summing the
+            # per-rank contributions reconstructs the head without double counting.
+            pruned_weight = target_group.all_reduce(pruned_weight)
+
+        draft_lm_head.weight_loader(draft_lm_head.weight, pruned_weight)
+        del pruned_weight
+
+        logger.info(
+            "[spec_decode/base] %s draft uses a reduced vocabulary (%d of %d"
+            " target tokens, %.2fx) and ships no lm_head; derived it from the"
+            " target lm_head rows kept by d2t.",
+            self.method.upper(),
+            draft_vocab_size,
+            target_vocab_size,
+            target_vocab_size / draft_vocab_size,
+        )
 
     def _maybe_share_topk_indices(self, target_language_model: nn.Module) -> None:
         if hasattr(target_language_model.model, "topk_indices_buffer"):
@@ -1068,6 +1187,70 @@ class AscendSpecDecodeBaseProposer(SpecDecodeBaseProposer):
             logits = self.model.compute_logits(hidden_states)
             return greedy_sample(logits)
 
+    def _dspark_base_logits(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        """Pre-Markov draft logits, in the draft model's own vocabulary.
+
+        ``compute_logits`` scatters a reduced draft vocabulary back into the full
+        target vocabulary. DSpark must not go through that: the Markov bias is
+        emitted at ``draft_vocab_size``, and the sampled id is remapped to target
+        space afterwards, so the scatter would both mismatch the bias shape and
+        materialize a target-vocab tensor per block for nothing. Full-vocabulary
+        drafts (and DSV4 DSpark, which defines no ``compute_draft_logits``) fall
+        back to the previous behavior, where the two are the same tensor.
+        """
+        compute_draft_logits = getattr(self.model, "compute_draft_logits", None)
+        if compute_draft_logits is not None:
+            return compute_draft_logits(hidden_states)
+        return self.model.compute_logits(hidden_states)
+
+    def _dspark_sample_block(self, sample_hidden_states: torch.Tensor) -> torch.Tensor:
+        """Sample one DSpark block: parallel base logits, then the Markov head.
+
+        Dspark speculation requires autoregressive applications of MarkovHead and
+        ConfidenceHead. The MarkovHead performs bias correction on logits. The
+        ConfidenceHead predicts the expected acceptance length of tokens (Not yet
+        achieved).
+
+        Everything before the final remap happens in the draft vocabulary: the
+        base logits and the Markov bias are both ``draft_vocab_size`` wide, and
+        they coincide with the target vocabulary only for a full-vocabulary
+        draft. The ids written into the block buffer are always target ids --
+        both because the next step indexes ``markov_w1`` with them and because
+        they leave here to be verified by the target.
+
+        ``sample_hidden_states`` has been all-gathered to full, so ``markov_emb``
+        should also be full to match it. We change ``flash_comm_v1_enabled`` to
+        avoid ``markov_emb`` from being split.
+
+        Returns the ``[num_blocks, 1 + num_speculative_tokens]`` block buffer,
+        whose first column is the seed (anchor) token.
+        """
+        with _disable_flash_comm_v1_context():
+            raw_logits = self._dspark_base_logits(sample_hidden_states)
+            logits = raw_logits.view(-1, self.num_speculative_tokens, raw_logits.shape[-1])
+            num_blk = logits.shape[0]
+            draft_token_ids = self._dspark_draft_buffer[:num_blk]
+            draft_token_ids[:, 0].copy_(self._dspark_seed_buffer[:num_blk])
+            for idx in range(self.num_speculative_tokens):
+                markov_emb = self.model.markov_embed(draft_token_ids[:, idx])
+                logits_bias = self.model.markov_bias(markov_emb)
+                logits[:, idx].add_(logits_bias)
+                draft_token_ids[:, idx + 1].copy_(self._dspark_map_to_target(logits[:, idx].argmax(dim=-1)))
+        return draft_token_ids
+
+    def _dspark_map_to_target(self, draft_token_ids: torch.Tensor) -> torch.Tensor:
+        """Map draft-vocabulary ids to target ids (identity for a full vocabulary).
+
+        Must run before the id is fed back into ``markov_embed``: ``markov_w1``
+        spans the target vocabulary, so an unmapped draft id is a valid row index
+        pointing at the wrong token -- silently degraded acceptance rather than a
+        crash -- and the id also leaves here to be verified by the target.
+        """
+        map_draft_to_target = getattr(self.model, "map_draft_to_target", None)
+        if map_draft_to_target is None:
+            return draft_token_ids
+        return map_draft_to_target(draft_token_ids)
+
     def _run_merged_draft(
         self,
         num_input_tokens,
@@ -1138,6 +1321,15 @@ class AscendSpecDecodeBaseProposer(SpecDecodeBaseProposer):
         sample_hidden_states = last_hidden_states[token_indices_to_sample]
 
         if get_ascend_config().enable_reduce_sample:
+            if self.method == "dspark":
+                # The reduced-sample paths below emit a flat argmax over the
+                # backbone logits, skipping the Markov head that DSpark needs to
+                # inject intra-block dependency (and, under a reduced draft
+                # vocabulary, the draft->target id remap).
+                raise NotImplementedError(
+                    "additional_config.enable_reduce_sample does not support DSpark:"
+                    " it would bypass the Markov head that DSpark samples with."
+                )
             if self.method in ("eagle3", "dflash", "mtp"):
                 draft_token_ids = self.compute_draft_token_ids(sample_hidden_states)
                 if lmhead_tp_enable():
@@ -1165,24 +1357,7 @@ class AscendSpecDecodeBaseProposer(SpecDecodeBaseProposer):
                 draft_token_ids = logits.argmax(dim=-1)
         else:
             if self.method == "dspark":
-                # Dspark speculation requires autoregressive applications of MarkovHead and ConfidenceHead.
-                # The MarkovHead performs bias correction on logits.
-                # The ConfidenceHead predicts the expected acceptance length of tokens(Not yet achieved).
-
-                # `sample_hidden_states` has been all-gathered to full.
-                # `markov_emb` should also be full to match it.
-                # We changed `flash_comm_v1_enabled` to avoid `markov_emb` from being split.
-                with _disable_flash_comm_v1_context():
-                    raw_logits = self.model.compute_logits(sample_hidden_states)
-                    logits = raw_logits.view(-1, self.num_speculative_tokens, raw_logits.shape[-1])
-                    num_blk = logits.shape[0]
-                    draft_token_ids = self._dspark_draft_buffer[:num_blk]
-                    draft_token_ids[:, 0].copy_(self._dspark_seed_buffer[:num_blk])
-                    for idx in range(self.num_speculative_tokens):
-                        markov_emb = self.model.markov_embed(draft_token_ids[:, idx])
-                        logits_bias = self.model.markov_bias(markov_emb)
-                        logits[:, idx].add_(logits_bias)
-                        draft_token_ids[:, idx + 1].copy_(logits[:, idx].argmax(dim=-1))
+                draft_token_ids = self._dspark_sample_block(sample_hidden_states)
             else:
                 logits = self.model.compute_logits(sample_hidden_states)
                 if lmhead_tp_enable():

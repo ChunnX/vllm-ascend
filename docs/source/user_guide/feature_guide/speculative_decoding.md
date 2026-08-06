@@ -322,6 +322,28 @@ The following code configures vLLM Ascend to use speculative decoding where prop
       --speculative-config '{"method": "dspark", "model": "deepseek-ai/dspark_qwen3_8b_block7", "num_speculative_tokens": 7, "enforce_eager": true}'
     ```
 
+### Reduced draft vocabulary
+
+A DSpark draft may be trained over the most frequent `draft_vocab_size` target
+tokens instead of the full vocabulary, which shrinks both the LM head and the
+Markov head's second factor. No serving flag turns this on: it is enabled by the
+checkpoint itself, whose config carries a top-level `draft_vocab_size` and whose
+weights carry the `d2t` mapping from draft ids back to target ids.
+
+Two things follow from how such a draft is trained:
+
+- The draft borrows the target's LM head, so its checkpoint usually ships no
+  `lm_head` weights. vLLM Ascend then derives the head at load time by selecting
+  the target rows `d2t` keeps. A checkpoint that does ship its own `lm_head`
+  (already sliced) is used as-is.
+- The reachable acceptance rate is capped by how much of the target's token
+  distribution the draft vocabulary covers, since a token outside it can never
+  be proposed. Compare `acceptance_per_pos` against the full-vocabulary baseline
+  before concluding the reduced draft is a win end to end.
+
+`additional_config.enable_reduce_sample` is not supported with DSpark, with or
+without a reduced vocabulary.
+
 ## Speculating using Suffix Decoding
 
 The following code configures vLLM to use speculative decoding where proposals are generated using Suffix Decoding [(SuffixDecoding: Extreme Speculative Decoding for Emerging AI Applications)](https://arxiv.org/abs/2411.04975).
