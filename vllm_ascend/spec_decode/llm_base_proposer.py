@@ -925,6 +925,24 @@ class AscendSpecDecodeBaseProposer(SpecDecodeBaseProposer):
         """
         return batch_descriptor.num_tokens
 
+    def get_graph_dispatch_num_tokens(self, num_tokens: int, num_reqs: int, uniform_decode: bool) -> int:
+        """Return the token count the ACLGraph key is dispatched on.
+
+        The dual of ``get_graph_num_input_tokens``: that one reads a width out
+        of a descriptor, this one picks the width that produces the descriptor.
+        The two have to agree, because the descriptor the draft graph was
+        *captured* under is the target model's, handed down by ``dummy_run``.
+
+        Most speculative methods draft at the same width they dispatch at, so
+        the draft's own token count is the key. A method whose draft geometry
+        is narrower than the verification width must override this: the
+        dispatcher always re-derives ``num_reqs`` as
+        ``padded_num_tokens // uniform_decode_query_len``, so feeding it the
+        narrower count yields a smaller request count -- and therefore another
+        batch size's graph -- as soon as the batch is large enough.
+        """
+        return num_tokens
+
     def _propose(
         self,
         # [num_tokens]
@@ -992,7 +1010,11 @@ class AscendSpecDecodeBaseProposer(SpecDecodeBaseProposer):
 
         if self.use_cuda_graph:
             _, batch_descriptor = self.runner.cudagraph_dispatcher.dispatch(
-                num_tokens=num_tokens, uniform_decode=uniform_decode, has_lora=has_lora
+                num_tokens=self.get_graph_dispatch_num_tokens(
+                    num_tokens, common_attn_metadata.num_reqs, uniform_decode
+                ),
+                uniform_decode=uniform_decode,
+                has_lora=has_lora,
             )
             num_input_tokens = self.get_graph_num_input_tokens(batch_descriptor)
         else:
@@ -1006,9 +1028,25 @@ class AscendSpecDecodeBaseProposer(SpecDecodeBaseProposer):
 
         if self.use_cuda_graph:
             aclgraph_runtime_mode, batch_descriptor = self.runner.cudagraph_dispatcher.dispatch(
-                num_tokens=num_input_tokens, uniform_decode=uniform_decode, has_lora=has_lora
+                num_tokens=self.get_graph_dispatch_num_tokens(
+                    num_input_tokens, common_attn_metadata.num_reqs, uniform_decode
+                ),
+                uniform_decode=uniform_decode,
+                has_lora=has_lora,
             )
             num_input_tokens = self.get_graph_num_input_tokens(batch_descriptor)
+            if num_input_tokens < num_tokens:
+                # The graph is narrower than the work, so the tail requests would
+                # be silently dropped: the model runs on ``input_ids[:
+                # num_input_tokens]`` while query_start_loc still describes every
+                # request, and FIA rejects the TND layout much later with a
+                # tiling error that says nothing about the batch size.
+                raise RuntimeError(
+                    f"The dispatched draft ACLGraph is {num_input_tokens} tokens wide but "
+                    f"the batch drafts {num_tokens} tokens (num_reqs="
+                    f"{common_attn_metadata.num_reqs}, descriptor={batch_descriptor}); "
+                    "it belongs to a different batch size."
+                )
         else:
             aclgraph_runtime_mode = CUDAGraphMode.NONE
             batch_descriptor = None

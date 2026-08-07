@@ -123,6 +123,28 @@ class AscendDSparkProposer(AscendDflashProposer):
             return batch_descriptor.num_reqs * self.num_query_per_req
         return batch_descriptor.num_tokens
 
+    def get_graph_dispatch_num_tokens(self, num_tokens: int, num_reqs: int, uniform_decode: bool) -> int:
+        """Key the draft graph on the target's ``1 + N`` verification width.
+
+        ``dummy_run`` captures under the descriptor the target model produced,
+        so replay has to reproduce that same descriptor. Dispatching on the
+        draft's own ``N * num_reqs`` does not: the dispatcher rounds that up to
+        a capture size and divides by ``1 + N`` again, which recovers
+        ``num_reqs`` only while ``num_reqs < 1 + N``. At ``num_reqs == 1 + N``
+        the draft width is itself a capture size -- 7*8 = 56 for a block-7
+        draft -- and the division gives ``num_reqs - 1``, landing on the
+        previous batch size's graph. That graph exists and replays cleanly; the
+        mismatch only surfaces when FIA checks the TND layout and finds
+        ``queryT`` one request short of ``actual_seq_lengths_q[-1]``.
+
+        ``max`` keeps a DP-inflated token count from being rounded back down;
+        an inflated count that overshoots the largest capture size then falls
+        out of graph mode, which is the safe direction.
+        """
+        if uniform_decode and num_reqs > 0:
+            return max(num_tokens, num_reqs * (1 + self.num_speculative_tokens))
+        return num_tokens
+
     def initialize_attn_backend(self, kv_cache_config, kernel_block_sizes=None) -> None:
         # Find draft layers (attention layers added by draft model)
         all_attn_layers = get_layers_from_vllm_config(
