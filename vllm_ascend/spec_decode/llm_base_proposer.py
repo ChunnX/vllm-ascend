@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 import copy
+import os
+from collections import Counter
 from collections.abc import Callable
 from contextlib import AbstractContextManager, nullcontext
 from functools import partial
@@ -65,6 +67,13 @@ from vllm_ascend.utils import check_gdn_layer, enable_sp, lmhead_tp_enable, shar
 
 # Currently we will fix block size to a small one since `num_reqs` can't be too large
 _PREPARE_INPUTS_BLOCK_SIZE = 4
+
+# Debug-only (same env var as the attention-side mirror assert): which branch of
+# _update_draft_seq_lens_cpu_mirror ran. A passing assert only proves the change
+# safe for branches the workload actually exercised, so report the coverage.
+_SPEC_SEQ_LENS_CHECK = os.getenv("VLLM_ASCEND_SPEC_SEQ_LENS_CHECK", "0") == "1"
+_MIRROR_BRANCH_COUNTS: Counter = Counter()
+_MIRROR_BRANCH_LOG_EVERY = 500
 
 
 # split hidden states along dimension of sequence
@@ -2054,16 +2063,26 @@ class AscendSpecDecodeBaseProposer(SpecDecodeBaseProposer):
         """
         base = cad._seq_lens_cpu if cad._seq_lens_cpu is not None else cad.seq_lens_cpu
         mirror = None
+        branch = "no_base"
         if base is not None and base.shape[0] >= batch_size:
             base = base[:batch_size]
             if num_rejected_tokens_gpu is None:
                 mirror = (base + n_extend).to(torch.int32)
+                branch = "no_rejection"
             else:
                 rejected = self._draft_num_rejected_tokens_cpu(batch_size)
                 if rejected is not None:
                     mirror = (base - rejected + n_extend).to(torch.int32)
+                    branch = "rejection_exact"
+                else:
+                    branch = "rejection_cleared"
         cad._seq_lens_cpu = mirror
         cad.seq_lens_cpu = mirror
+        if _SPEC_SEQ_LENS_CHECK:
+            _MIRROR_BRANCH_COUNTS[branch] += 1
+            total = sum(_MIRROR_BRANCH_COUNTS.values())
+            if total % _MIRROR_BRANCH_LOG_EVERY == 0:
+                logger.info("draft seq_lens mirror branch coverage: %s", dict(_MIRROR_BRANCH_COUNTS))
 
     # update full-graph params for one spec token
     def _update_full_graph_params(self, forward_context, num_tokens, draft_attn_metadatas=None):
