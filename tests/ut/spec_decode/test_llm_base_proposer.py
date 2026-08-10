@@ -19,8 +19,10 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
+import torch
 from vllm.config import CUDAGraphMode
 
 from vllm_ascend.spec_decode.llm_base_proposer import AscendSpecDecodeBaseProposer
@@ -153,3 +155,92 @@ class TestDisableFlashCommV1Context:
         with pytest.raises(RuntimeError, match="boom"), _disable_flash_comm_v1_context():
             raise RuntimeError("boom")
         assert ctx.flash_comm_v1_enabled is True
+
+
+class TestDraftSeqLensCpuMirror:
+    """The dflash-family bake ``seq_lens - rejected + N`` happens on device;
+    _update_draft_seq_lens_cpu_mirror must reproduce it exactly on host, or
+    clear the mirrors so the attention builder falls back to a device read.
+    """
+
+    @staticmethod
+    def _make_proposer(*, event=None, counts=None, num_draft=None) -> AscendSpecDecodeBaseProposer:
+        proposer = AscendSpecDecodeBaseProposer.__new__(AscendSpecDecodeBaseProposer)
+        proposer.runner = SimpleNamespace(
+            valid_sampled_token_count_event=event,
+            valid_sampled_token_count_cpu=counts,
+        )
+        if num_draft is not None:
+            proposer._pending_num_draft_tokens_cpu = torch.tensor(num_draft, dtype=torch.int32)
+        return proposer
+
+    @staticmethod
+    def _make_cad(_seq_lens_cpu=None, seq_lens_cpu=None) -> SimpleNamespace:
+        return SimpleNamespace(_seq_lens_cpu=_seq_lens_cpu, seq_lens_cpu=seq_lens_cpu)
+
+    def test_no_rejection_adds_query_stretch_on_host(self):
+        proposer = self._make_proposer()
+        cad = self._make_cad(_seq_lens_cpu=torch.tensor([19, 30], dtype=torch.int32))
+
+        proposer._update_draft_seq_lens_cpu_mirror(cad, 2, None, 7)
+
+        assert cad._seq_lens_cpu.tolist() == [26, 37]
+        assert cad.seq_lens_cpu.tolist() == [26, 37]
+        assert cad._seq_lens_cpu.dtype == torch.int32
+
+    def test_rejection_uses_host_twin_of_device_formula(self):
+        # Device formula: rejected = num_draft + 1 - valid when num_draft > 0.
+        # Request 0: all 7 drafts accepted (valid=8) -> rejected 0.
+        # Request 1: 2 accepted (valid=3) -> rejected 5.
+        # Request 2: prefill, no drafts -> rejected 0 regardless of valid.
+        event = MagicMock()
+        proposer = self._make_proposer(
+            event=event,
+            counts=torch.tensor([8, 3, 1], dtype=torch.int64),
+            num_draft=[7, 7, 0],
+        )
+        cad = self._make_cad(_seq_lens_cpu=torch.tensor([19, 30, 5], dtype=torch.int32))
+
+        proposer._update_draft_seq_lens_cpu_mirror(cad, 3, torch.zeros(3), 7)
+
+        event.synchronize.assert_called_once()
+        assert cad._seq_lens_cpu.tolist() == [26, 32, 12]
+        assert cad.seq_lens_cpu.tolist() == [26, 32, 12]
+
+    def test_rejection_without_host_counts_clears_mirrors(self):
+        proposer = self._make_proposer(num_draft=[7])
+        cad = self._make_cad(_seq_lens_cpu=torch.tensor([19], dtype=torch.int32))
+
+        proposer._update_draft_seq_lens_cpu_mirror(cad, 1, torch.zeros(1), 7)
+
+        assert cad._seq_lens_cpu is None
+        assert cad.seq_lens_cpu is None
+
+    def test_short_num_draft_buffer_clears_mirrors(self):
+        proposer = self._make_proposer(
+            event=MagicMock(), counts=torch.tensor([8, 3], dtype=torch.int64), num_draft=[7]
+        )
+        cad = self._make_cad(_seq_lens_cpu=torch.tensor([19, 30], dtype=torch.int32))
+
+        proposer._update_draft_seq_lens_cpu_mirror(cad, 2, torch.zeros(2), 7)
+
+        assert cad._seq_lens_cpu is None
+        assert cad.seq_lens_cpu is None
+
+    def test_missing_base_keeps_mirrors_cleared(self):
+        proposer = self._make_proposer()
+        cad = self._make_cad()
+
+        proposer._update_draft_seq_lens_cpu_mirror(cad, 1, None, 7)
+
+        assert cad._seq_lens_cpu is None
+        assert cad.seq_lens_cpu is None
+
+    def test_falls_back_to_subclass_field_when_parent_mirror_absent(self):
+        proposer = self._make_proposer()
+        cad = self._make_cad(seq_lens_cpu=torch.tensor([19], dtype=torch.int32))
+
+        proposer._update_draft_seq_lens_cpu_mirror(cad, 1, None, 7)
+
+        assert cad._seq_lens_cpu.tolist() == [26]
+        assert cad.seq_lens_cpu.tolist() == [26]

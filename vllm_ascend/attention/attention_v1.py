@@ -15,6 +15,7 @@
 # This file is a part of the vllm-ascend project.
 #
 
+import os
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
@@ -67,6 +68,10 @@ from vllm_ascend.utils import is_950, weak_ref_tensors
 # default max value of sliding window size
 SWA_INT_MAX = 2147483647
 _ATTN_KEYS_BUFFER = None
+# Debug-only: verify the CPU seq_lens mirror against the device tensor in
+# parallel-drafting builds (adds a blocking D2H copy per build; keep off in
+# production).
+_SPEC_SEQ_LENS_CHECK = os.getenv("VLLM_ASCEND_SPEC_SEQ_LENS_CHECK", "0") == "1"
 
 
 @register_backend(AttentionBackendEnum.CUSTOM, "ASCEND")
@@ -315,11 +320,27 @@ class AscendAttentionMetadataBuilder(AttentionMetadataBuilder[AscendMetadata]):
         slot_mapping = common_attn_metadata.slot_mapping[:num_actual_tokens]
         # this slot_mapping override doesn't work since vllm will override it again. We should fix it vllm.
         # see: https://github.com/vllm-project/vllm/blob/ce88756b967c2c5006746a424c15dd59a284ed8c/vllm/model_executor/layers/attention/cross_attention.py#L117
+        seq_lens_cpu_mirror = None
         if isinstance(self.kv_cache_spec, CrossAttentionSpec):
             seq_lens = common_attn_metadata.seq_lens
             slot_mapping = common_attn_metadata.slot_mapping.to(torch.int32)
         elif self.speculative_config and self.speculative_config.parallel_drafting:
+            # Parallel drafting needs the device seq_lens tensor in the
+            # metadata, but seq_lens_list must come from the CPU pick above:
+            # .tolist() on the NPU tensor blocks on all queued device work
+            # (target verify + sampling) before the draft forward can launch.
+            # Contract: the dflash-family proposers keep the CPU mirrors in
+            # lock-step with their device-side bake (or clear them, in which
+            # case the fallback above already synced a fresh copy).
+            seq_lens_cpu_mirror = seq_lens
             seq_lens = common_attn_metadata.seq_lens
+            if _SPEC_SEQ_LENS_CHECK:
+                n = seq_lens_cpu_mirror.shape[0]
+                device_seq_lens = seq_lens[:n].cpu().to(seq_lens_cpu_mirror.dtype)
+                assert torch.equal(seq_lens_cpu_mirror, device_seq_lens), (
+                    f"stale CPU seq_lens mirror: cpu={seq_lens_cpu_mirror.tolist()} "
+                    f"vs npu={device_seq_lens.tolist()}"
+                )
 
         attn_state = common_attn_metadata.attn_state
 
@@ -330,7 +351,7 @@ class AscendAttentionMetadataBuilder(AttentionMetadataBuilder[AscendMetadata]):
         query_start_loc = query_start_loc_cpu.pin_memory().to(self.device, non_blocking=True)
 
         actual_seq_lengths_q = query_start_loc_cpu[1:].tolist()
-        seq_lens_list = seq_lens.tolist()
+        seq_lens_list = (seq_lens if seq_lens_cpu_mirror is None else seq_lens_cpu_mirror).tolist()
         # flashcomm1/SP (or cudagraph) padding makes the model runner insert a
         # dummy padding request into query_start_loc to satisfy the FIA TND-layout
         # constraint (sum of q lengths == hidden_states.shape[0]), bumping the
