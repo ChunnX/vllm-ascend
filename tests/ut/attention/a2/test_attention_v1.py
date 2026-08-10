@@ -169,23 +169,20 @@ class TestAscendAttentionMetadataBuilder(TestBase):
 
         self.builder.build(1, common_attn_metadata, mock_model)
 
-    @patch.object(AscendAttentionMetadataBuilder, "metadata_cls")
-    def test_build_parallel_drafting_seq_lens_list_from_cpu_mirror(self, mock_ascend_metadata):
-        """With parallel_drafting, seq_lens_list must come from the CPU
-        mirror (no device sync) while the metadata seq_lens field keeps the
-        device tensor for full-graph FIA replay."""
+    def _parallel_drafting_builder(self):
         spec_config = MagicMock()
         spec_config.num_speculative_tokens = 3
         spec_config.parallel_drafting = True
         self.mock_vllm_config.speculative_config = spec_config
-        builder = AscendAttentionMetadataBuilder(None, None, self.mock_vllm_config, self.mock_device)
+        return AscendAttentionMetadataBuilder(None, None, self.mock_vllm_config, self.mock_device)
 
-        device_seq_lens = torch.tensor([40, 50, 60], dtype=torch.int32)
-        common_attn_metadata = AscendCommonAttentionMetadata(
+    @staticmethod
+    def _parallel_drafting_metadata(device_seq_lens, **overrides):
+        kwargs = dict(
             query_start_loc=torch.tensor([0, 2, 5, 9]),
             query_start_loc_cpu=torch.tensor([0, 2, 5, 9]),
             seq_lens=device_seq_lens,
-            _seq_lens_cpu=torch.tensor([4, 5, 6], dtype=torch.int32),
+            _seq_lens_cpu=None,
             seq_lens_cpu=None,
             num_reqs=3,
             num_actual_tokens=9,
@@ -199,11 +196,45 @@ class TestAscendAttentionMetadataBuilder(TestBase):
             num_computed_tokens_cpu=None,
             max_seq_len=6,
         )
+        kwargs.update(overrides)
+        return AscendCommonAttentionMetadata(**kwargs)
+
+    @patch.object(AscendAttentionMetadataBuilder, "metadata_cls")
+    def test_build_parallel_drafting_seq_lens_list_from_exact_mirror(self, mock_ascend_metadata):
+        """A producer that declares the mirror exact gets seq_lens_list from
+        the CPU tensor (no device sync); the metadata seq_lens field still
+        keeps the device tensor for full-graph FIA replay."""
+        builder = self._parallel_drafting_builder()
+        device_seq_lens = torch.tensor([40, 50, 60], dtype=torch.int32)
+        common_attn_metadata = self._parallel_drafting_metadata(
+            device_seq_lens,
+            _seq_lens_cpu=torch.tensor([4, 5, 6], dtype=torch.int32),
+            seq_lens_host_exact=True,
+        )
 
         builder.build(1, common_attn_metadata)
 
         kwargs = mock_ascend_metadata.call_args.kwargs
         self.assertEqual(kwargs["seq_lens_list"], [4, 5, 6])
+        self.assertIs(kwargs["seq_lens"], device_seq_lens)
+
+    @patch.object(AscendAttentionMetadataBuilder, "metadata_cls")
+    def test_build_parallel_drafting_ignores_unflagged_cpu_placeholder(self, mock_ascend_metadata):
+        """Regression: the model runner v2 draft path fills seq_lens_cpu with
+        max_seq_len as a placeholder and never declares it exact. Reading it
+        as a mirror would set every request's KV length to max_seq_len, so
+        seq_lens_list must come from the device tensor instead."""
+        builder = self._parallel_drafting_builder()
+        device_seq_lens = torch.tensor([40, 50, 60], dtype=torch.int32)
+        common_attn_metadata = self._parallel_drafting_metadata(
+            device_seq_lens,
+            seq_lens_cpu=torch.tensor([640, 640, 640], dtype=torch.int32),
+        )
+
+        builder.build(1, common_attn_metadata)
+
+        kwargs = mock_ascend_metadata.call_args.kwargs
+        self.assertEqual(kwargs["seq_lens_list"], [40, 50, 60])
         self.assertIs(kwargs["seq_lens"], device_seq_lens)
 
 

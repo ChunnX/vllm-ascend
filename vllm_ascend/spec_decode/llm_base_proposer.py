@@ -2057,8 +2057,9 @@ class AscendSpecDecodeBaseProposer(SpecDecodeBaseProposer):
         set_inputs_first_pass.
 
         AscendAttentionMetadataBuilder.build sources ``seq_lens_list`` from
-        these mirrors to avoid a blocking device read. When the exact host
-        value cannot be derived, both mirrors are cleared so build falls back
+        these mirrors, but only because this method sets
+        ``seq_lens_host_exact``. When the exact host value cannot be derived,
+        the mirrors are cleared and the flag stays False, so build falls back
         to reading the device tensor instead of consuming a stale mirror.
         """
         base = cad._seq_lens_cpu if cad._seq_lens_cpu is not None else cad.seq_lens_cpu
@@ -2078,6 +2079,7 @@ class AscendSpecDecodeBaseProposer(SpecDecodeBaseProposer):
                     branch = "rejection_cleared"
         cad._seq_lens_cpu = mirror
         cad.seq_lens_cpu = mirror
+        cad.seq_lens_host_exact = mirror is not None
         if _SPEC_SEQ_LENS_CHECK:
             _MIRROR_BRANCH_COUNTS[branch] += 1
             total = sum(_MIRROR_BRANCH_COUNTS.values())

@@ -176,7 +176,11 @@ class TestDraftSeqLensCpuMirror:
 
     @staticmethod
     def _make_cad(_seq_lens_cpu=None, seq_lens_cpu=None) -> SimpleNamespace:
-        return SimpleNamespace(_seq_lens_cpu=_seq_lens_cpu, seq_lens_cpu=seq_lens_cpu)
+        return SimpleNamespace(
+            _seq_lens_cpu=_seq_lens_cpu,
+            seq_lens_cpu=seq_lens_cpu,
+            seq_lens_host_exact=False,
+        )
 
     def test_no_rejection_adds_query_stretch_on_host(self):
         proposer = self._make_proposer()
@@ -187,6 +191,7 @@ class TestDraftSeqLensCpuMirror:
         assert cad._seq_lens_cpu.tolist() == [26, 37]
         assert cad.seq_lens_cpu.tolist() == [26, 37]
         assert cad._seq_lens_cpu.dtype == torch.int32
+        assert cad.seq_lens_host_exact is True
 
     def test_rejection_uses_host_twin_of_device_formula(self):
         # Device formula: rejected = num_draft + 1 - valid when num_draft > 0.
@@ -206,6 +211,7 @@ class TestDraftSeqLensCpuMirror:
         event.synchronize.assert_called_once()
         assert cad._seq_lens_cpu.tolist() == [26, 32, 12]
         assert cad.seq_lens_cpu.tolist() == [26, 32, 12]
+        assert cad.seq_lens_host_exact is True
 
     def test_rejection_without_host_counts_clears_mirrors(self):
         proposer = self._make_proposer(num_draft=[7])
@@ -215,6 +221,7 @@ class TestDraftSeqLensCpuMirror:
 
         assert cad._seq_lens_cpu is None
         assert cad.seq_lens_cpu is None
+        assert cad.seq_lens_host_exact is False
 
     def test_short_num_draft_buffer_clears_mirrors(self):
         proposer = self._make_proposer(
@@ -226,6 +233,7 @@ class TestDraftSeqLensCpuMirror:
 
         assert cad._seq_lens_cpu is None
         assert cad.seq_lens_cpu is None
+        assert cad.seq_lens_host_exact is False
 
     def test_missing_base_keeps_mirrors_cleared(self):
         proposer = self._make_proposer()
@@ -235,6 +243,7 @@ class TestDraftSeqLensCpuMirror:
 
         assert cad._seq_lens_cpu is None
         assert cad.seq_lens_cpu is None
+        assert cad.seq_lens_host_exact is False
 
     def test_falls_back_to_subclass_field_when_parent_mirror_absent(self):
         proposer = self._make_proposer()
@@ -244,3 +253,4 @@ class TestDraftSeqLensCpuMirror:
 
         assert cad._seq_lens_cpu.tolist() == [26]
         assert cad.seq_lens_cpu.tolist() == [26]
+        assert cad.seq_lens_host_exact is True

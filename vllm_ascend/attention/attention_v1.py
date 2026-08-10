@@ -326,13 +326,13 @@ class AscendAttentionMetadataBuilder(AttentionMetadataBuilder[AscendMetadata]):
             slot_mapping = common_attn_metadata.slot_mapping.to(torch.int32)
         elif self.speculative_config and self.speculative_config.parallel_drafting:
             # Parallel drafting needs the device seq_lens tensor in the
-            # metadata, but seq_lens_list must come from the CPU pick above:
-            # .tolist() on the NPU tensor blocks on all queued device work
+            # metadata, but .tolist() on it blocks on all queued device work
             # (target verify + sampling) before the draft forward can launch.
-            # Contract: the dflash-family proposers keep the CPU mirrors in
-            # lock-step with their device-side bake (or clear them, in which
-            # case the fallback above already synced a fresh copy).
-            seq_lens_cpu_mirror = seq_lens
+            # Take seq_lens_list from the CPU pick above only when the producer
+            # opted in by declaring the mirror exact; otherwise fall through to
+            # the device read, which is slower but always correct.
+            if common_attn_metadata.seq_lens_host_exact:
+                seq_lens_cpu_mirror = seq_lens
             seq_lens = common_attn_metadata.seq_lens
             if _SPEC_SEQ_LENS_CHECK:
                 n = seq_lens_cpu_mirror.shape[0]

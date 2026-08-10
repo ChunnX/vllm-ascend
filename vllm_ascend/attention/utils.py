@@ -217,6 +217,15 @@ class AscendCommonAttentionMetadata(CommonAttentionMetadata):
     # E.g., tensor([128, 256, 64]) for 3 requests with different seq lengths.
     seq_lens_cpu: torch.Tensor = None
 
+    # Opt-in: the CPU seq_lens mirror equals the NPU ``seq_lens`` element for
+    # element, so host-side consumers may read it instead of paying a blocking
+    # device read. Only producers that actively keep the two in lock-step may
+    # set this (see llm_base_proposer._update_draft_seq_lens_cpu_mirror).
+    # Default False: several producers fill seq_lens_cpu with a placeholder
+    # (e.g. the model runner v2 draft path fills it with max_seq_len), and
+    # trusting that as a mirror would corrupt attention KV lengths.
+    seq_lens_host_exact: bool = False
+
     # CPU tensor of already computed tokens count per request.
     # E.g., tensor([100, 200, 50]) means req0 has 100 tokens already computed.
     num_computed_tokens_cpu: torch.Tensor = None
