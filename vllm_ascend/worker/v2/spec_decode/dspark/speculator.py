@@ -28,6 +28,7 @@ from vllm.v1.worker.gpu.spec_decode.dspark.speculator import (
     DSparkSpeculator,
 )
 
+from vllm_ascend.spec_decode.vocab_mapping import settle_reduced_vocab_lm_head
 from vllm_ascend.utils import vllm_version_is
 from vllm_ascend.worker.v2.attn_utils import build_attn_metadata_wrapper
 
@@ -44,6 +45,29 @@ class AscendDSparkSpeculator(DSparkSpeculator):
         cudagraph_mode = self.vllm_config.compilation_config.cudagraph_mode
         if cudagraph_mode.has_full_cudagraphs():
             self.update_stream: torch.npu.Stream = torch.npu.Stream()
+
+    def load_draft_model(
+        self,
+        target_model: torch.nn.Module,
+        target_attn_layer_names: set[str],
+    ) -> torch.nn.Module:
+        """Load the draft, then settle its LM head when the vocabulary is reduced.
+
+        Upstream shares the target's LM head with any draft that did not ship one
+        of its own, which is right for a full-vocabulary draft and wrong for a
+        pruned one: the shared head spans the target vocabulary while the draft's
+        logits processor is ``draft_vocab_size`` wide, so it would slice the first
+        K columns instead of the K the mapping keeps -- plausible tokens, wrong
+        ones, and nothing raises. The draft model blocks that share for a reduced
+        vocabulary; what is left is to check the mapping and fill the head that
+        the checkpoint left empty.
+
+        The sequential Markov sampling itself already reads the mapping upstream,
+        so nothing on the hot path changes here.
+        """
+        model = super().load_draft_model(target_model, target_attn_layer_names)
+        settle_reduced_vocab_lm_head(model, target_model, self.vllm_config.model_config.get_vocab_size())
+        return model
 
     def init_cudagraph_manager(self, cudagraph_mode: CUDAGraphMode) -> None:
         super().init_cudagraph_manager(cudagraph_mode)
