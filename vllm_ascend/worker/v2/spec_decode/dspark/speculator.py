@@ -30,6 +30,10 @@ from vllm.v1.worker.gpu.spec_decode.dspark.speculator import (
 
 from vllm_ascend.utils import vllm_version_is
 from vllm_ascend.worker.v2.attn_utils import build_attn_metadata_wrapper
+from vllm_ascend.worker.v2.spec_decode.vocab_mapping import (
+    build_pruned_lm_head_from_target,
+    validate_draft_vocab_mapping,
+)
 
 
 class AscendDSparkSpeculator(DSparkSpeculator):
@@ -44,6 +48,30 @@ class AscendDSparkSpeculator(DSparkSpeculator):
         cudagraph_mode = self.vllm_config.compilation_config.cudagraph_mode
         if cudagraph_mode.has_full_cudagraphs():
             self.update_stream: torch.npu.Stream = torch.npu.Stream()
+
+    def load_draft_model(
+        self,
+        target_model: torch.nn.Module,
+        target_attn_layer_names: set[str],
+    ) -> torch.nn.Module:
+        model = super().load_draft_model(target_model, target_attn_layer_names)
+        if getattr(model, "draft_id_to_target_id", None) is None:
+            return model
+
+        # Reached whether the pruned head was derived here or shipped by the
+        # checkpoint: every proposed id is read through this table.
+        kept_target_ids = validate_draft_vocab_mapping(model, self.vllm_config.model_config.get_vocab_size())
+        if getattr(model, "lm_head_needs_target_rows", False):
+            # Same lookup load_dspark_model uses: *ForConditionalGeneration
+            # targets keep the head on the inner language model.
+            target_language_model = (
+                target_model.get_language_model() if hasattr(target_model, "get_language_model") else target_model
+            )
+            target_lm_head = getattr(target_language_model, "lm_head", None)
+            if target_lm_head is None:
+                target_lm_head = getattr(target_model, "lm_head", None)
+            build_pruned_lm_head_from_target(model, target_lm_head, kept_target_ids)
+        return model
 
     def init_cudagraph_manager(self, cudagraph_mode: CUDAGraphMode) -> None:
         super().init_cudagraph_manager(cudagraph_mode)
