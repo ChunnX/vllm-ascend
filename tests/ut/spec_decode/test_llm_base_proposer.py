@@ -161,6 +161,7 @@ class TestDraftSeqLensCpuMirror:
     """The dflash-family bake ``seq_lens - rejected + N`` happens on device;
     _update_draft_seq_lens_cpu_mirror must reproduce it exactly on host, or
     clear the mirrors so the attention builder falls back to a device read.
+    Never a third outcome: a populated but wrong mirror is a wrong KV length.
     """
 
     @staticmethod
@@ -170,8 +171,9 @@ class TestDraftSeqLensCpuMirror:
             valid_sampled_token_count_event=event,
             valid_sampled_token_count_cpu=counts,
         )
-        if num_draft is not None:
-            proposer._pending_num_draft_tokens_cpu = torch.tensor(num_draft, dtype=torch.int32)
+        proposer._num_draft_tokens_cpu = (
+            torch.tensor(num_draft, dtype=torch.int32) if num_draft is not None else None
+        )
         return proposer
 
     @staticmethod
@@ -222,6 +224,23 @@ class TestDraftSeqLensCpuMirror:
         assert cad._seq_lens_cpu is None
         assert cad.seq_lens_cpu is None
         assert cad.seq_lens_host_exact is False
+
+    def test_second_call_in_same_step_clears_mirrors(self):
+        """The draft counts are consume-once: a second bake without a fresh
+        prepare_inputs_padded must fall back to the device read rather than
+        reuse the previous step's numbers."""
+        proposer = self._make_proposer(
+            event=MagicMock(), counts=torch.tensor([8], dtype=torch.int64), num_draft=[7]
+        )
+        first_cad = self._make_cad(_seq_lens_cpu=torch.tensor([19], dtype=torch.int32))
+        proposer._update_draft_seq_lens_cpu_mirror(first_cad, 1, torch.zeros(1), 7)
+        assert first_cad.seq_lens_host_exact is True
+
+        second_cad = self._make_cad(_seq_lens_cpu=torch.tensor([19], dtype=torch.int32))
+        proposer._update_draft_seq_lens_cpu_mirror(second_cad, 1, torch.zeros(1), 7)
+
+        assert second_cad._seq_lens_cpu is None
+        assert second_cad.seq_lens_host_exact is False
 
     def test_short_num_draft_buffer_clears_mirrors(self):
         proposer = self._make_proposer(

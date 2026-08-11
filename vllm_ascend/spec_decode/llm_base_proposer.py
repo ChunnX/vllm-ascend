@@ -1,7 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
 import copy
-import os
-from collections import Counter
 from collections.abc import Callable
 from contextlib import AbstractContextManager, nullcontext
 from functools import partial
@@ -67,13 +65,6 @@ from vllm_ascend.utils import check_gdn_layer, enable_sp, lmhead_tp_enable, shar
 
 # Currently we will fix block size to a small one since `num_reqs` can't be too large
 _PREPARE_INPUTS_BLOCK_SIZE = 4
-
-# Debug-only (same env var as the attention-side mirror assert): which branch of
-# _update_draft_seq_lens_cpu_mirror ran. A passing assert only proves the change
-# safe for branches the workload actually exercised, so report the coverage.
-_SPEC_SEQ_LENS_CHECK = os.getenv("VLLM_ASCEND_SPEC_SEQ_LENS_CHECK", "0") == "1"
-_MIRROR_BRANCH_COUNTS: Counter = Counter()
-_MIRROR_BRANCH_LOG_EVERY = 500
 
 
 # split hidden states along dimension of sequence
@@ -1933,13 +1924,10 @@ class AscendSpecDecodeBaseProposer(SpecDecodeBaseProposer):
         used as padding and filtered out later by `token_indices_to_sample`.
         No blocking CPU operations should be introduced in this function.
         """
-        # Host twin of the per-request draft-token counts whose device cumsum
-        # drives num_rejected_tokens_gpu below. Consumed by the dflash-family
-        # set_inputs_first_pass to keep the CPU seq_lens mirrors exact without
-        # a device sync (see _draft_num_rejected_tokens_cpu).
-        self._pending_num_draft_tokens_cpu = torch.tensor(
-            spec_decode_metadata.num_draft_tokens, dtype=torch.int32
-        )
+        # Host twin of the per-request draft-token counts that the kernel below
+        # turns into ``num_rejected_tokens_gpu``. Published for this step only;
+        # see ``_take_num_draft_tokens_cpu`` for the consume-once contract.
+        self._num_draft_tokens_cpu = torch.tensor(spec_decode_metadata.num_draft_tokens, dtype=torch.int32)
         if HAS_TRITON:
             num_reqs = common_attn_metadata.num_reqs
             device = valid_sampled_tokens_count.device
@@ -2024,67 +2012,90 @@ class AscendSpecDecodeBaseProposer(SpecDecodeBaseProposer):
 
         return spec_common_attn_metadata, token_indices, token_indices_to_sample, num_rejected_tokens_gpu
 
-    def _draft_num_rejected_tokens_cpu(self, batch_size: int) -> torch.Tensor | None:
+    def _take_num_draft_tokens_cpu(self) -> torch.Tensor | None:
+        """Consume the draft-token counts published by prepare_inputs_padded.
+
+        Consume-once by design: the counts describe one step, and the buffer
+        they pair with (the runner's sampled-token counts) is overwritten every
+        step. Clearing on read means a step that never went through
+        prepare_inputs_padded reads None rather than silently reusing the
+        previous step's numbers, so mirror staleness cannot happen instead of
+        merely being unlikely.
+        """
+        num_draft_tokens_cpu = getattr(self, "_num_draft_tokens_cpu", None)
+        self._num_draft_tokens_cpu = None
+        return num_draft_tokens_cpu
+
+    def _num_rejected_tokens_cpu(self, batch_size: int) -> torch.Tensor | None:
         """Host twin of ``num_rejected_tokens_gpu`` from prepare_inputs_padded.
 
-        Combines the draft-token counts stashed there (scheduler data, already
-        on host) with the sampled-token counts the runner copies device->host
-        on a side stream right after sampling. The event wait below only
-        covers that small copy, not the whole default stream, so the draft
-        pipeline stays asynchronous. Returns None when either half is
-        unavailable; callers must then treat the CPU seq_lens mirrors as
-        stale.
+        Recomputes ``rejected = num_draft + 1 - valid`` (the same formula the
+        device kernel uses, and the one ``correct_optimistic_seq_lens_cpu``
+        applies for the previous step) from two host arrays: the draft-token
+        counts published by prepare_inputs_padded and the sampled-token counts
+        the runner copies device->host on a side stream right after sampling.
+        Both describe the current step in the current batch order, so no
+        index mapping is needed.
+
+        Waiting on the copy event covers only that small side-stream copy, not
+        the default stream, so the draft pipeline stays asynchronous. Returns
+        None when either half is missing.
         """
-        num_draft = getattr(self, "_pending_num_draft_tokens_cpu", None)
+        num_draft_tokens = self._take_num_draft_tokens_cpu()
         event = getattr(self.runner, "valid_sampled_token_count_event", None)
-        counts = getattr(self.runner, "valid_sampled_token_count_cpu", None)
-        if num_draft is None or event is None or counts is None or num_draft.shape[0] < batch_size:
+        valid_counts = getattr(self.runner, "valid_sampled_token_count_cpu", None)
+        if num_draft_tokens is None or event is None or valid_counts is None:
+            return None
+        if num_draft_tokens.shape[0] < batch_size or valid_counts.shape[0] < batch_size:
             return None
         event.synchronize()
-        num_draft = num_draft[:batch_size]
-        valid = counts[:batch_size].to(torch.int32)
-        return torch.where(num_draft > 0, num_draft + 1 - valid, torch.zeros_like(num_draft))
+        num_draft_tokens = num_draft_tokens[:batch_size]
+        valid_counts = valid_counts[:batch_size].to(torch.int32)
+        # Requests without drafts (prefills) reject nothing regardless of count.
+        return torch.where(
+            num_draft_tokens > 0,
+            num_draft_tokens + 1 - valid_counts,
+            torch.zeros_like(num_draft_tokens),
+        )
 
     def _update_draft_seq_lens_cpu_mirror(
         self,
         cad,
         batch_size: int,
         num_rejected_tokens_gpu,
-        n_extend: int,
+        num_query_per_req: int,
     ) -> None:
-        """Keep cad's CPU seq_lens mirrors in lock-step with the device-side
-        ``seq_lens - num_rejected + n_extend`` bake done by the dflash-family
-        set_inputs_first_pass.
+        """Mirror the device-side draft ``seq_lens`` bake onto the host.
 
-        AscendAttentionMetadataBuilder.build sources ``seq_lens_list`` from
-        these mirrors, but only because this method sets
-        ``seq_lens_host_exact``. When the exact host value cannot be derived,
-        the mirrors are cleared and the flag stays False, so build falls back
-        to reading the device tensor instead of consuming a stale mirror.
+        The dflash-family set_inputs_first_pass computes the draft KV lengths
+        as ``seq_lens - num_rejected + num_query_per_req`` on the device.
+        AscendAttentionMetadataBuilder.build needs the same values as a Python
+        list; reading them back from the device would block on every kernel
+        queued so far, so reproduce the arithmetic here on host tensors and
+        set ``seq_lens_host_exact`` to let build use them.
+
+        Whenever the exact host value cannot be derived the mirrors are cleared
+        and the flag left False, which sends build back to the device read:
+        slower, but the fallback is the only behavior a missing mirror can
+        produce, so a wrong KV length is not among the outcomes.
         """
-        base = cad._seq_lens_cpu if cad._seq_lens_cpu is not None else cad.seq_lens_cpu
+        base_seq_lens = cad._seq_lens_cpu if cad._seq_lens_cpu is not None else cad.seq_lens_cpu
         mirror = None
-        branch = "no_base"
-        if base is not None and base.shape[0] >= batch_size:
-            base = base[:batch_size]
+        if base_seq_lens is not None and base_seq_lens.shape[0] >= batch_size:
+            base_seq_lens = base_seq_lens[:batch_size]
             if num_rejected_tokens_gpu is None:
-                mirror = (base + n_extend).to(torch.int32)
-                branch = "no_rejection"
+                # No verification happened this step (e.g. drafting right after
+                # a prefill), so nothing was rejected.
+                mirror = base_seq_lens + num_query_per_req
             else:
-                rejected = self._draft_num_rejected_tokens_cpu(batch_size)
-                if rejected is not None:
-                    mirror = (base - rejected + n_extend).to(torch.int32)
-                    branch = "rejection_exact"
-                else:
-                    branch = "rejection_cleared"
+                num_rejected_tokens = self._num_rejected_tokens_cpu(batch_size)
+                if num_rejected_tokens is not None:
+                    mirror = base_seq_lens - num_rejected_tokens + num_query_per_req
+        if mirror is not None:
+            mirror = mirror.to(torch.int32)
         cad._seq_lens_cpu = mirror
         cad.seq_lens_cpu = mirror
         cad.seq_lens_host_exact = mirror is not None
-        if _SPEC_SEQ_LENS_CHECK:
-            _MIRROR_BRANCH_COUNTS[branch] += 1
-            total = sum(_MIRROR_BRANCH_COUNTS.values())
-            if total % _MIRROR_BRANCH_LOG_EVERY == 0:
-                logger.info("draft seq_lens mirror branch coverage: %s", dict(_MIRROR_BRANCH_COUNTS))
 
     # update full-graph params for one spec token
     def _update_full_graph_params(self, forward_context, num_tokens, draft_attn_metadatas=None):
