@@ -313,13 +313,27 @@ class AscendAttentionMetadataBuilder(AttentionMetadataBuilder[AscendMetadata]):
             seq_lens = common_attn_metadata.seq_lens[:num_reqs].to("cpu")
 
         slot_mapping = common_attn_metadata.slot_mapping[:num_actual_tokens]
+        # ``seq_lens`` is the tensor the metadata carries; ``host_seq_lens`` is
+        # the one ``seq_lens_list`` is read from. They start out as the same CPU
+        # tensor and diverge only in the branches below, which need a device
+        # tensor in the metadata. Reading the list from a device tensor blocks
+        # on every kernel queued so far, so keep them together where possible.
+        host_seq_lens = seq_lens
         # this slot_mapping override doesn't work since vllm will override it again. We should fix it vllm.
         # see: https://github.com/vllm-project/vllm/blob/ce88756b967c2c5006746a424c15dd59a284ed8c/vllm/model_executor/layers/attention/cross_attention.py#L117
         if isinstance(self.kv_cache_spec, CrossAttentionSpec):
             seq_lens = common_attn_metadata.seq_lens
+            host_seq_lens = seq_lens
             slot_mapping = common_attn_metadata.slot_mapping.to(torch.int32)
         elif self.speculative_config and self.speculative_config.parallel_drafting:
+            # The draft's real KV lengths live on the device: the proposer bakes
+            # ``seq_lens - rejected + num_query_per_req`` there. Keep reading the
+            # list from the CPU tensor only when the producer declared it an
+            # exact mirror of that bake; otherwise take the blocking read, which
+            # is slower but never wrong.
             seq_lens = common_attn_metadata.seq_lens
+            if not common_attn_metadata.seq_lens_host_exact:
+                host_seq_lens = seq_lens
 
         attn_state = common_attn_metadata.attn_state
 
@@ -330,7 +344,7 @@ class AscendAttentionMetadataBuilder(AttentionMetadataBuilder[AscendMetadata]):
         query_start_loc = query_start_loc_cpu.pin_memory().to(self.device, non_blocking=True)
 
         actual_seq_lengths_q = query_start_loc_cpu[1:].tolist()
-        seq_lens_list = seq_lens.tolist()
+        seq_lens_list = host_seq_lens.tolist()
         # flashcomm1/SP (or cudagraph) padding makes the model runner insert a
         # dummy padding request into query_start_loc to satisfy the FIA TND-layout
         # constraint (sum of q lengths == hidden_states.shape[0]), bumping the
