@@ -2346,9 +2346,18 @@ class AscendSpecDecodeBaseProposer(SpecDecodeBaseProposer):
         Both describe the current step in the current batch order, so no
         index mapping is needed.
 
-        Waiting on the copy event covers only that small side-stream copy, not
-        the default stream, so the draft pipeline stays asynchronous. Returns
-        None when either half is missing.
+        The copy stream calls ``wait_stream(default_stream)`` before recording
+        the event, so waiting on it transitively waits for the target forward
+        and sampling -- everything the default stream held when the copy was
+        launched. What it does *not* wait for is anything queued afterwards,
+        which is all of the draft preparation this proposer issues. That is the
+        whole gain over reading the device ``seq_lens`` later on the default
+        stream: the host runs the draft prep while the copy lands, so in steady
+        state the event is already signalled here. A deep queue at copy time
+        (a prefill in the batch, first-iteration warm-up) still shows up as a
+        long wait, but the device is busy for its duration.
+
+        Returns None when either half is missing.
         """
         num_draft_tokens = self._take_num_draft_tokens_cpu()
         event = getattr(self.runner, "valid_sampled_token_count_event", None)
