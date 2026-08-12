@@ -30,6 +30,7 @@ from vllm.v1.worker.utils import AttentionGroup
 
 from vllm_ascend.worker.v2.attn_utils import build_attn_metadata
 from vllm_ascend.worker.v2.input_batch import AscendInputBatch
+from vllm_ascend.worker.v2.model_states import mamba_kernel_trace
 from vllm_ascend.worker.v2.model_states.default import AscendModelState
 
 
@@ -40,6 +41,12 @@ class AscendMambaHybridModelState(MambaHybridModelState, AscendModelState):
     :class:`MambaHybridModelState`. ``AscendModelState`` remains the second
     base so cooperative ``super()`` calls retain the Ascend model-state MRO.
     """
+
+    def preprocess_state(self, *args, **kwargs):
+        # First entry into the align path, and the last place that runs before
+        # the align kernels compile. No-op unless the trace env var is set.
+        mamba_kernel_trace.install(self)
+        return super().preprocess_state(*args, **kwargs)
 
     def prepare_attn(
         self,
