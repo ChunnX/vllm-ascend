@@ -131,6 +131,7 @@ class AscendDflashProposer(AscendEagleProposer):
         cad.query_start_loc = new_query_start_loc
         cad.seq_lens = effective_seq_lens + num_query_per_req
         self._update_draft_seq_lens_cpu_mirror(cad, batch_size, num_rejected_tokens_gpu, num_query_per_req)
+        self._update_draft_seq_lens_upper_bound(cad, batch_size, num_query_per_req)
         cad.query_start_loc_cpu = (
             torch.from_numpy(self.token_arange_np[: batch_size + 1]).clone() * num_query_per_req
         ).to(torch.int32)

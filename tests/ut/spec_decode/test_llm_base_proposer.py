@@ -287,3 +287,88 @@ class TestDraftSeqLensCpuMirror:
         assert cad._seq_lens_cpu.tolist() == [26]
         assert cad.seq_lens_cpu.tolist() == [26]
         assert cad.seq_lens_host_exact is True
+
+
+class TestDraftSeqLensUpperBound:
+    """``upper = base_upper + N`` is the host half of the FIA runtime-KV
+    protocol: host plans topology from the bound, device shrinks actual work.
+    The bound must never fall below the device value, and computing it must not
+    disturb the runner buffer it is derived from.
+    """
+
+    @staticmethod
+    def _make_proposer(method: str = "dspark") -> AscendSpecDecodeBaseProposer:
+        proposer = AscendSpecDecodeBaseProposer.__new__(AscendSpecDecodeBaseProposer)
+        proposer.method = method
+        return proposer
+
+    @staticmethod
+    def _make_cad(upper_bound, seq_lens=None) -> SimpleNamespace:
+        return SimpleNamespace(seq_lens_cpu_upper_bound=upper_bound, seq_lens=seq_lens)
+
+    def test_adds_query_stretch_without_touching_the_device(self):
+        proposer = self._make_proposer()
+        cad = self._make_cad(torch.tensor([19, 30], dtype=torch.int32))
+
+        proposer._update_draft_seq_lens_upper_bound(cad, 2, 7)
+
+        assert cad.seq_lens_cpu_upper_bound.tolist() == [26, 37]
+        assert cad.seq_lens_cpu_upper_bound.dtype == torch.int32
+
+    def test_bound_holds_for_every_rejection_count(self):
+        """exact = base - rejected + N, so the gap to the bound is exactly the
+        rejected count: 0 rejected touches the bound, more only widens it."""
+        base, n = 19, 7
+        for rejected in range(n + 1):
+            proposer = self._make_proposer()
+            cad = self._make_cad(torch.tensor([base], dtype=torch.int32))
+
+            proposer._update_draft_seq_lens_upper_bound(cad, 1, n)
+
+            exact = base - rejected + n
+            assert cad.seq_lens_cpu_upper_bound.item() == exact + rejected
+            assert cad.seq_lens_cpu_upper_bound.item() >= exact
+
+    def test_does_not_mutate_the_shared_runner_buffer(self):
+        """seq_lens_cpu_upper_bound, seq_lens_cpu and _seq_lens_cpu are handed
+        the same runner.optimistic_seq_lens_cpu tensor. An in-place update
+        would corrupt the runner's base state for every later step."""
+        shared = torch.tensor([19, 30], dtype=torch.int32)
+        proposer = self._make_proposer()
+        cad = self._make_cad(shared)
+
+        proposer._update_draft_seq_lens_upper_bound(cad, 2, 7)
+
+        assert shared.tolist() == [19, 30]
+        assert cad.seq_lens_cpu_upper_bound is not shared
+
+    def test_missing_or_short_bound_is_cleared(self):
+        proposer = self._make_proposer()
+        cad = self._make_cad(None)
+        proposer._update_draft_seq_lens_upper_bound(cad, 2, 7)
+        assert cad.seq_lens_cpu_upper_bound is None
+
+        cad = self._make_cad(torch.tensor([19], dtype=torch.int32))
+        proposer._update_draft_seq_lens_upper_bound(cad, 2, 7)
+        assert cad.seq_lens_cpu_upper_bound is None
+
+    def test_debug_check_rejects_a_device_value_above_the_bound(self):
+        proposer = self._make_proposer()
+        upper = torch.tensor([26], dtype=torch.int32)
+
+        with pytest.raises(AssertionError, match="upper bound violated"):
+            proposer._check_seq_lens_upper_bound(self._make_cad(upper, torch.tensor([27])), upper, 1)
+
+        # Equal is the tight case and must pass.
+        proposer._check_seq_lens_upper_bound(self._make_cad(upper, torch.tensor([26])), upper, 1)
+
+    def test_graph_padding_uses_the_same_filler_as_the_device(self):
+        """The padded dummy requests must carry identical fillers on both
+        sides; a mismatch puts the bound below the device value on those rows."""
+        for method, filler in (("dspark", 1), ("dflash", 0)):
+            proposer = self._make_proposer(method)
+            bound = torch.tensor([26, 37], dtype=torch.int32)
+
+            padded = proposer._adjust_parallel_draft_seq_lens_for_graph(bound, 4)
+
+            assert padded.tolist() == [26, 37, filler, filler]

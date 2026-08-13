@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 import copy
+import logging
 from collections.abc import Callable
 from contextlib import AbstractContextManager, nullcontext
 from functools import partial
@@ -1104,6 +1105,13 @@ class AscendSpecDecodeBaseProposer(SpecDecodeBaseProposer):
                     )
                     common_attn_metadata._seq_lens_cpu = padded_mirror
                     common_attn_metadata.seq_lens_cpu = padded_mirror
+                if common_attn_metadata.seq_lens_cpu_upper_bound is not None:
+                    # Same helper again: the padded requests must carry the
+                    # identical filler on both sides, or the bound would sit
+                    # below the device value on exactly those rows.
+                    common_attn_metadata.seq_lens_cpu_upper_bound = self._adjust_parallel_draft_seq_lens_for_graph(
+                        common_attn_metadata.seq_lens_cpu_upper_bound, num_reqs_padded
+                    )
             else:
                 common_attn_metadata.seq_lens = self._adjust_tensor(self.runner.seq_lens, num_reqs_padded)
                 common_attn_metadata.seq_lens_cpu = self._adjust_tensor(
@@ -2375,6 +2383,62 @@ class AscendSpecDecodeBaseProposer(SpecDecodeBaseProposer):
             num_draft_tokens + 1 - valid_counts,
             torch.zeros_like(num_draft_tokens),
         )
+
+    def _update_draft_seq_lens_upper_bound(
+        self,
+        cad,
+        batch_size: int,
+        num_query_per_req: int,
+    ) -> None:
+        """Publish a host upper bound for the draft KV lengths.
+
+        The dflash-family set_inputs_first_pass bakes the exact lengths on the
+        device as ``seq_lens - num_rejected + num_query_per_req``. Since
+        ``num_rejected >= 0``, dropping that term gives an upper bound that
+        needs nothing from the device::
+
+            upper = base_upper + num_query_per_req  >=  device exact
+
+        ``base_upper`` (``optimistic_seq_lens_cpu``) assumes every draft token
+        was accepted, so it is itself >= the device base, which only widens the
+        bound. This is the host half of the eventual FIA runtime-KV protocol:
+        host plans the task topology from the bound, device shrinks the actual
+        work. Nothing consumes it yet -- the current FIA takes exact host
+        lengths -- so this only prepares and validates the value.
+
+        Deliberately *not* clamped to ``max_model_len``: the device bake at the
+        call sites is unclamped, so clamping only this side could produce
+        ``upper < exact`` and silently invert the invariant. Clamping has to
+        land on both sides at once, together with the operator work.
+
+        Out-of-place by construction: ``seq_lens_cpu_upper_bound``,
+        ``seq_lens_cpu`` and ``_seq_lens_cpu`` are all handed the *same*
+        ``runner.optimistic_seq_lens_cpu`` tensor, so an in-place update here
+        would corrupt the runner's own base state and every step after it.
+        """
+        base_upper = cad.seq_lens_cpu_upper_bound
+        if base_upper is None or base_upper.shape[0] < batch_size:
+            cad.seq_lens_cpu_upper_bound = None
+            return
+        upper = (base_upper[:batch_size] + num_query_per_req).to(torch.int32)
+        cad.seq_lens_cpu_upper_bound = upper
+        if logger.isEnabledFor(logging.DEBUG):
+            self._check_seq_lens_upper_bound(cad, upper, batch_size)
+
+    @staticmethod
+    def _check_seq_lens_upper_bound(cad, upper: torch.Tensor, batch_size: int) -> None:
+        """Verify ``0 <= device exact <= host upper`` element for element.
+
+        Reads the device tensor, so it blocks -- debug logging only. This is
+        the whole point of landing the bound before it is wired to FIA: an
+        assumption that only breaks under rejection is cheap to falsify now and
+        expensive to debug once the kernel trusts it.
+        """
+        exact = cad.seq_lens[:batch_size].cpu().to(upper.dtype)
+        if bool(((exact < 0) | (exact > upper)).any()):
+            raise AssertionError(
+                f"draft KV length upper bound violated: exact={exact.tolist()} upper={upper.tolist()}"
+            )
 
     def _update_draft_seq_lens_cpu_mirror(
         self,
