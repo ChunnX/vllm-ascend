@@ -202,30 +202,20 @@ class TestAscendAttentionMetadataBuilder(TestBase):
 
         self.assertFalse(result)
 
-    def test_dspark_sink_builder_validates_supported_gqa_layers(self):
+    def test_dspark_sink_builder_delegates_capability_checks_to_operator(self):
         self.mock_vllm_config.speculative_config = SimpleNamespace(
             method="dspark",
             parallel_drafting=True,
             num_speculative_tokens=7,
         )
-        layer = SimpleNamespace(
-            impl=SimpleNamespace(
-                num_heads=32,
-                num_kv_heads=4,
-                head_size=128,
-                sliding_window=None,
-                sinks=None,
-            )
-        )
 
         with (
             patch.object(attn_module, "_DSPARK_FIA_SINK_ENABLED", True),
-            patch.object(attn_module, "get_layers_from_vllm_config", return_value={"layer": layer}),
             patch.object(attn_module, "_ensure_fia_sink_ops_registered") as ensure_ops,
         ):
             builder = AscendAttentionMetadataBuilder(
                 None,
-                ["layer"],
+                ["layer-with-operator-defined-shape"],
                 self.mock_vllm_config,
                 self.mock_device,
             )
@@ -233,35 +223,6 @@ class TestAscendAttentionMetadataBuilder(TestBase):
 
         self.assertTrue(builder._dspark_fia_sink_enabled)
         ensure_ops.assert_called_once_with()
-
-    def test_dspark_sink_builder_rejects_mha_before_metadata_build(self):
-        self.mock_vllm_config.speculative_config = SimpleNamespace(
-            method="dspark",
-            parallel_drafting=True,
-            num_speculative_tokens=7,
-        )
-        layer = SimpleNamespace(
-            impl=SimpleNamespace(
-                num_heads=8,
-                num_kv_heads=8,
-                head_size=128,
-                sliding_window=None,
-                sinks=None,
-            )
-        )
-
-        with (
-            patch.object(attn_module, "_DSPARK_FIA_SINK_ENABLED", True),
-            patch.object(attn_module, "get_layers_from_vllm_config", return_value={"layer": layer}),
-        ):
-            builder = AscendAttentionMetadataBuilder(
-                None,
-                ["layer"],
-                self.mock_vllm_config,
-                self.mock_device,
-            )
-            with self.assertRaisesRegex(RuntimeError, "only supports non-causal GQA"):
-                builder._enable_dspark_fia_sink()
 
     def test_unpadded_preserves_internal_seq_lens_cpu(self):
         internal_seq_lens_cpu = torch.tensor([4, 5, 6], dtype=torch.int32)

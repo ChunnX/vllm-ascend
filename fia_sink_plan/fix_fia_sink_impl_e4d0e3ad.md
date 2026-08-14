@@ -2,7 +2,8 @@
 
 ## 1. 修复结论
 
-本次修复针对 `c357e30b` / `e4d0e3ad` 审视中确认的阻断问题，目标仍限定为：
+本次修复针对 `c357e30b` / `e4d0e3ad` 审视中确认的阻断问题。当前已验证、优先服务的
+模型形态是：
 
 - speculative method 为 `dspark`；
 - draft attention 为非因果；
@@ -10,6 +11,11 @@
 - 无 sliding window、无 learnable sink；
 - KV cache 使用分页 BBH 视图；
 - 通过 device seq tensors + AICPU tiling 消除 `seq_lens.tolist()` 同步。
+
+这里的 GQA / D=128 等只是当前业务场景和验证基线，**不是框架侧能力白名单**。底层
+`omni-ops/.../docs/npu_fused_infer_attention_sink.md` 覆盖更广的 head topology、D 维度和输入组合；Python
+接入层不应复制一份不完整且容易过时的算子约束。最终实现只限定 DSpark 非因果草稿路由，
+具体 shape、dtype、layout 及组合是否合法交由 metadata op / FIA Sink 计算算子校验并报错。
 
 默认开关仍为关闭：
 
@@ -30,9 +36,20 @@ speculative_config.parallel_drafting is True
 common_attn_metadata.causal is False
 ```
 
-metadata builder 在清空 host-side sequence metadata 前解析真实 attention layers，并检查
-GQA、head size、GQA ratio、sliding window 和 learnable sink。这样 builder 与 impl 使用同一结论，
-不会再出现 builder 把列表置为 `None`、impl 又拒绝 sink 后落入普通 FIA 的情况。
+metadata builder 与 impl 使用同一个 `use_fia_sink` 路由结论，不再在 impl 侧二次拒绝后回落普通
+FIA，因此不会出现 builder 已将 host-side 列表置为 `None`、impl 又拒绝 sink 的 split-brain。
+
+`_enable_dspark_fia_sink()` 只加载并检查自定义算子是否注册，不再解析 attention layers，也不再
+限制 GQA、`head_size=128`、GQA ratio、sliding window 或 learnable sink。这样做是有意的：
+
+- 算子能力文档支持的范围远大于当前 DSpark 验证配置，例如 Q\_S>1 时 D 可到 512（具体还受
+  dtype、对齐、PageAttention 布局等综合约束）；
+- 框架侧手写白名单会错误拒绝底层已经支持的新模型/新规格，并可能随算子演进而失真；
+- 不支持的组合由 `_npu_fused_infer_attention_sink_metadata` 或
+  `npu_fused_infer_attention_sink` 返回原生校验错误，错误来源更准确。
+
+保留的框架侧门禁只有：环境开关、`method="dspark"`、`parallel_drafting=True` 和非因果 draft
+metadata；这些条件描述的是接入路径适用范围，而不是底层算子能力。
 
 ### 2.2 启动期加载并检查自定义算子
 
@@ -98,7 +115,7 @@ metadata producer 只被捕获一次；replay 时图会先重放 metadata produc
 4. 非整除的非 uniform query batch 明确失败；
 5. 同一 forward/signature 的 metadata compute 只调用一次；
 6. 缺少 `omni_custom_ops` 时给出明确错误；
-7. 支持的 GQA layer 通过能力检查，MHA 在清空 host metadata 前被拒绝。
+7. builder 只检查并注册自定义算子，不因 GQA/MHA、head dimension 等模型形态提前拒绝。
 
 ## 4. 本地验证结果
 
@@ -116,6 +133,7 @@ PASS  git diff --check
 
 ```text
 python -m pytest ...  -> No module named pytest
+ruff check ...        -> command not found: ruff
 bash format.sh ci     -> pre-commit is not installed
 ```
 
@@ -171,11 +189,11 @@ pytest -sv tests/e2e/pull_request/one_card/spec_decode/test_dspark.py
 
 | 项目 | 状态 |
 |---|---|
-| DSpark GQA / non-causal / D=128 | 已实现，待 NPU 实测 |
+| DSpark GQA / non-causal / D=128 | 当前验证基线；已实现，待 NPU 实测 |
 | eager | 已实现，待 NPU 实测 |
 | FULL aclgraph padding | 已修复 device metadata，待 NPU replay 实测 |
-| MHA | 明确不启用 |
-| sliding window / learnable sink | 明确不启用 |
+| 其他 head topology / head dimension | Python 不设白名单，由底层算子校验；需按目标模型实测 |
+| sliding window / learnable sink 等组合 | Python 不做能力推断，由底层算子校验；需按算子文档和目标模型实测 |
 | DFlash / draft_model / P-EAGLE | 不受该开关影响 |
 | EP / flashcomm1 | 非本次 draft attention 修改范围 |
 | real-weight gate | 当前本机无 NPU/模型，尚未执行 |

@@ -1,8 +1,12 @@
-# 交付件 2：仅在 DSpark 草稿模型（GQA / 非因果 / headdim128）的 attention 中使能 `npu_fused_infer_attention_sink`
+# 交付件 2：在 DSpark 非因果草稿 attention 中使能 `npu_fused_infer_attention_sink`
 
 > 实现更新：`e4d0e3ad` 后的审视修复、FULL 图 padding 处理和最终验证门禁见
 > `fix_fia_sink_impl_e4d0e3ad.md`。本文件第 3.4 节保留早期备选设计，最终实现采用
 > metadata op 图内内联捕获 + forward-context 跨层共享。
+>
+> 能力边界更新：GQA / headdim128 是当前实测目标，不是 Python 侧白名单。底层算子支持范围
+> 更广，最终实现不对 head topology、head dimension、sliding window 等模型属性预判；不支持
+> 的输入组合由 metadata op / FIA Sink 算子按其版本能力直接报错。
 
 ## 1. 背景与根因
 
@@ -56,7 +60,7 @@ device seq_lens 拉到 host，阻断异步调度。
 于是把 **device 侧 `seq_lens` / `query_start_loc` 直接传给算子**，tiling 在 AICPU 完成，
 `build()` 里这条 `tolist()` 同步即可被消除。
 
-### 关键入参形态（DSpark 草稿）
+### 当前验证基线的关键入参形态（DSpark 草稿）
 
 - `input_layout = "TND"`；`query` 形状 `(T, num_heads, 128)`。
 - `key/value`：分页 KV 重排为 **BBH** `(num_block, block_size, num_kv_heads*128)`
@@ -89,46 +93,34 @@ device seq_lens 拉到 host，阻断异步调度。
 
 ## 3. 使能方案（`vllm_ascend/attention/attention_v1.py`）
 
-### 3.1 判定条件：只在 DSpark 草稿 attention 生效
+### 3.1 路由条件：只在 DSpark 草稿 attention 生效
 
-在 `AscendAttentionMetadataBuilder.build()` 里可稳定拿到：
-- `self.speculative_config.parallel_drafting`（DSpark/DFlash 草稿的标志）；
-- `common_attn_metadata.causal == False`（草稿非因果，普通解码/prefill 为 True）；
-- `self.kv_cache_spec.head_size`（草稿 head_dim=128）；
-- `self.kv_cache_spec.num_kv_heads`（GQA 用）。
+最终实现只用以下条件判断是否进入该接入路径：
 
-建议在 `AscendMetadata` 上增加一个布尔字段，由 builder 一次性判定，impl 侧再加形状兜底：
+- `VLLM_ASCEND_ENABLE_DSPARK_FIA_SINK=1`；
+- `speculative_config.method == "dspark"`；
+- `speculative_config.parallel_drafting is True`；
+- `common_attn_metadata.causal is False`。
 
-```python
-# AscendMetadata 新增字段
-use_fia_sink: bool = False
-
-# AscendAttentionMetadataBuilder.build() 末尾、构造 metadata 之前
-is_draft_gqa_noncausal = (
-    self.speculative_config is not None
-    and self.speculative_config.parallel_drafting
-    and not common_attn_metadata.causal
-    and getattr(self.kv_cache_spec, "head_size", None) == 128
-)
-```
-
-impl 侧（`AscendAttentionBackendImpl.forward_impl` 或 `forward_fused_infer_attention`）再加
-GQA + 形状兜底：
+`AscendMetadata.use_fia_sink` 保存统一路由结论，builder 和 impl 不做两套互相冲突的判定：
 
 ```python
-use_sink = (
-    getattr(attn_metadata, "use_fia_sink", False)
-    and self.head_size == 128
-    and self.num_heads != self.num_kv_heads
-    and self.num_heads % self.num_kv_heads == 0
-    and self.sliding_window is None
-    and self.sinks is None
-)
+use_fia_sink = dspark_fia_sink_requested and not common_attn_metadata.causal
 ```
 
-> 双保险理由：builder 侧的 `parallel_drafting + 非因果` 精确定位「草稿」；
-> impl 侧的 `headdim128 + GQA + 无 SWA/sink` 保证只对已知良好 shape 走 sink 算子，
-> 其余路径保持现状，风险最小化。
+`_enable_dspark_fia_sink()` 只负责加载 `omni_custom_ops` 并确认两个必需 torch ops 已注册，
+不再解析 layer 或检查 GQA、D=128、GQA ratio、SWA、learnable sink：
+
+```python
+def _enable_dspark_fia_sink(self):
+    _ensure_fia_sink_ops_registered()
+    self._dspark_fia_sink_enabled = True
+```
+
+这是刻意的职责划分。底层文档对 Q\_S>1 场景支持 D≤512，并针对 dtype、对齐、N/S、
+PageAttention 排布等给出组合约束；把当前 GQA/D=128 实测形态写成框架白名单，会错误拒绝
+底层已支持的规格，并随算子演进变成过时的第二份约束。具体输入是否合法应由
+`_npu_fused_infer_attention_sink_metadata` / `npu_fused_infer_attention_sink` 校验并返回原生错误。
 
 ### 3.2 `build()` 里消除同步
 
@@ -288,9 +280,9 @@ Ascend 侧 patch 成 `DFlashAclGraphManager`，`vllm_ascend/worker/v2/spec_decod
 5. **dtype**：sink/metadata 的 seq len 入参要求 `int64`；`input_buffers.seq_lens`/
    `query_start_loc` 默认 int32，必须 `.to(torch.int64)`（在 device 上做，无同步）。
 
-6. **判定边界**：`parallel_drafting + 非因果` 也覆盖 DFlash，最终实现必须额外检查
-   `speculative_config.method == "dspark"`，并在 builder 清空 host metadata 前完成真实 layer
-   的 `headdim128/GQA/无 SWA/无 learnable sink` 能力校验。
+6. **路由与能力边界**：`parallel_drafting + 非因果` 也覆盖 DFlash，因此最终实现必须额外检查
+   `speculative_config.method == "dspark"`。框架只做路由和算子注册检查，不复制底层的 shape/
+   dtype/layout 能力表；不支持的组合由算子自身报错。GQA/D=128 是验证基线，不是使能条件。
 
 ---
 
@@ -317,5 +309,5 @@ Ascend 侧 patch 成 `DFlashAclGraphManager`，`vllm_ascend/worker/v2/spec_decod
 - omniinfer 使能范式：`/opt/zsy/omniinfer/omni/attention/backends/attention.py`、
   `/opt/zsy/omniinfer/omni/compilation/utils.py`（`OP_FIA_SINK`、`capture_graph_task`）、
   `/opt/zsy/omniinfer/omni/attention/backends/utils.py`（`CrossLayerSharedOp`）
-- 算子接口文档：`/opt/zsy/omni-ops/inference/ascendc/src/ops-transformer/attention/ai_infra_fused_infer_attention_sink/docs/`、
+- 算子接口文档：`/opt/zsy/omni-ops/inference/ascendc/src/ops-transformer/attention/ai_infra_fused_infer_attention_sink/docs/npu_fused_infer_attention_sink.md`、
   `.../ai_infra_fused_infer_attention_sink_metadata/docs/`

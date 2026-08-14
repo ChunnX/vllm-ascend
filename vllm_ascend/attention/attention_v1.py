@@ -25,10 +25,9 @@ import torch
 import torch_npu
 import vllm.envs as envs_vllm
 import vllm_ascend.envs as envs_ascend
-from vllm.config import VllmConfig, get_current_vllm_config, get_layers_from_vllm_config
+from vllm.config import VllmConfig, get_current_vllm_config
 from vllm.distributed import get_tensor_model_parallel_rank, get_tensor_model_parallel_world_size
 from vllm.forward_context import get_forward_context
-from vllm.model_executor.layers.attention_layer_base import AttentionLayerBase
 from vllm.utils.math_utils import cdiv
 from vllm.v1.attention.backend import (  # type: ignore
     AttentionBackend,
@@ -77,13 +76,13 @@ _FIA_SINK_REQUIRED_OPS = (
     "_npu_fused_infer_attention_sink_metadata",
     "npu_fused_infer_attention_sink",
 )
-_FIA_SINK_MAX_GQA_RATIO = 64
 _fia_sink_ops_registered = False
 
-# When enabled, DSpark draft attention (parallel-drafting, non-causal, GQA,
-# head_dim=128) is dispatched to npu_fused_infer_attention_sink, which accepts
-# device-side seq_lens and computes tiling on AICPU. This removes the
-# seq_lens.tolist() host sync in the draft hot path.
+# When enabled, non-causal DSpark draft attention is dispatched to
+# npu_fused_infer_attention_sink, which accepts device-side seq_lens and
+# computes tiling on AICPU. Tensor-shape and attention-topology capability
+# checks are intentionally delegated to the custom op so this integration does
+# not narrow the operator's supported domain to one validated model shape.
 _DSPARK_FIA_SINK_ENABLED = bool(envs_ascend.VLLM_ASCEND_ENABLE_DSPARK_FIA_SINK)
 
 
@@ -333,7 +332,6 @@ class AscendAttentionMetadataBuilder(AttentionMetadataBuilder[AscendMetadata]):
         )
 
         self.speculative_config = vllm_config.speculative_config
-        self._layer_names = layer_names
         self._dspark_fia_sink_requested = _dspark_fia_sink_requested(self.speculative_config)
         self._dspark_fia_sink_enabled = False
         self.decode_threshold = 1
@@ -353,52 +351,9 @@ class AscendAttentionMetadataBuilder(AttentionMetadataBuilder[AscendMetadata]):
         self.attn_mask_builder = AttentionMaskBuilder(self.device)
 
     def _enable_dspark_fia_sink(self) -> None:
-        """Validate the concrete non-causal draft layers and load sink ops."""
+        """Load sink ops; the operator validates its supported input domain."""
         if self._dspark_fia_sink_enabled:
             return
-        attn_layers = get_layers_from_vllm_config(
-            self.vllm_config,
-            AttentionLayerBase,  # type: ignore[type-abstract]
-            self._layer_names,
-        )
-        if not attn_layers:
-            raise RuntimeError(
-                "DSpark FIA sink was requested but no attention layers were "
-                f"resolved for metadata group {self._layer_names}."
-            )
-
-        unsupported_layers = []
-        for layer_name, layer in attn_layers.items():
-            impl = layer.impl
-            num_heads = impl.num_heads
-            num_kv_heads = impl.num_kv_heads
-            valid_gqa = (
-                num_kv_heads > 0
-                and num_heads != num_kv_heads
-                and num_heads % num_kv_heads == 0
-            )
-            gqa_ratio = num_heads // num_kv_heads if valid_gqa else None
-            supported = (
-                impl.head_size == 128
-                and valid_gqa
-                and gqa_ratio is not None
-                and gqa_ratio <= _FIA_SINK_MAX_GQA_RATIO
-                and impl.sliding_window is None
-                and impl.sinks is None
-            )
-            if not supported:
-                unsupported_layers.append(
-                    f"{layer_name}(heads={num_heads}, kv_heads={num_kv_heads}, "
-                    f"head_size={impl.head_size}, sliding_window={impl.sliding_window}, "
-                    f"sinks={impl.sinks is not None})"
-                )
-        if unsupported_layers:
-            raise RuntimeError(
-                "DSpark FIA sink only supports non-causal GQA layers with "
-                "head_size=128, GQA ratio <= 64, no sliding window and no "
-                "learnable sinks. Unsupported layers: "
-                + "; ".join(unsupported_layers)
-            )
         _ensure_fia_sink_ops_registered()
         self._dspark_fia_sink_enabled = True
 
@@ -484,8 +439,8 @@ class AscendAttentionMetadataBuilder(AttentionMetadataBuilder[AscendMetadata]):
         # Its seq_lens depends on the device-side rejected-token count, so the
         # host-side seq_lens list is unavailable without a sync. Route it to
         # npu_fused_infer_attention_sink which consumes device-side seq_lens
-        # (AICPU tiling), keeping the buffers on device. Initialization has
-        # already restricted this path to the supported DSpark GQA shape.
+        # (AICPU tiling), keeping the buffers on device. The custom op owns
+        # validation of head topology, dimensions, dtype and other capabilities.
         if self._dspark_fia_sink_requested and not common_attn_metadata.causal:
             self._enable_dspark_fia_sink()
         use_fia_sink = self._dspark_fia_sink_enabled and not common_attn_metadata.causal
