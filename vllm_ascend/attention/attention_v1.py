@@ -341,7 +341,8 @@ class AscendAttentionMetadataBuilder(AttentionMetadataBuilder[AscendMetadata]):
         # Its seq_lens depends on the device-side rejected-token count, so the
         # host-side seq_lens list is unavailable without a sync. Route it to
         # npu_fused_infer_attention_sink which consumes device-side seq_lens
-        # (AICPU tiling), keeping the buffers on device.
+        # (AICPU tiling), keeping the buffers on device.  Both GQA and MHA
+        # models are supported.
         use_fia_sink = (
             _DSPARK_FIA_SINK_ENABLED
             and self.speculative_config is not None
@@ -493,6 +494,12 @@ class AscendAttentionBackendImpl(AttentionImpl):
         self._use_max_workspace_for_fia_graph = self._use_layer_aware_fia_graph_replay
         self.sinks = sinks
         self.layerIndex = 0
+        # Persistent buffer for the FIA sink metadata op output.
+        # Allocated on first use; address-stable across steps so that
+        # aclgraph captures it safely.  The first sink layer in each step
+        # writes (recomputes) the metadata; subsequent layers read the same
+        # buffer, matching the omniinfer CrossLayerSharedOp pattern.
+        self._fia_sink_meta: torch.Tensor | None = None
         # Some mixed-attention models cannot rely on the iteration order of
         # attn_metadata during graph replay. Record the captured layer name only
         # for that path.
@@ -690,8 +697,14 @@ class AscendAttentionBackendImpl(AttentionImpl):
                 attn_metadata = forward_context.attn_metadata
                 # Only standard (FIA) attention layers have captured graph
                 # params here; linear/GDN layers (GDNAttentionMetadata) are
-                # updated separately by update_conv1d_graph_params. So we filter by `seq_lens_list`
-                attn_keys = [k for k in attn_metadata if hasattr(attn_metadata[k], "seq_lens_list")]
+                # updated separately by update_conv1d_graph_params. So we filter
+                # by seq_lens_list being non-None.  We also exclude sink layers
+                # (use_fia_sink=True) which have seq_lens_list=None because
+                # they are handled by the inline capture path, not graph_task_update.
+                attn_keys = [
+                    k for k in attn_metadata
+                    if getattr(attn_metadata[k], "seq_lens_list", None) is not None
+                ]
                 if not use_layer_aware_replay:
                     # In some speculative methods (such as DFlash), the order of
                     # attn_keys in the Target model will be disrupted instead of
@@ -1305,15 +1318,14 @@ class AscendAttentionBackendImpl(AttentionImpl):
         """Whether this layer's attention should use the sink operator.
 
         The builder flags the DSpark draft (parallel-drafting + non-causal +
-        head_dim=128). This impl-side check additionally guards on GQA and the
-        absence of sliding-window / learnable-sink, which the sink path does not
-        support here.
+        head_dim=128). This impl-side check additionally guards on the absence
+        of sliding-window / learnable-sink, which the current sink path
+        implementation does not support (sparse_mode is hardcoded to 0 and
+        learnable_sink is not wired). Both GQA and MHA models are supported.
         """
         return (
             getattr(attn_metadata, "use_fia_sink", False)
             and self.head_size == 128
-            and self.num_heads != self.num_kv_heads
-            and self.num_heads % self.num_kv_heads == 0
             and self.sliding_window is None
             and self.sinks is None
         )
@@ -1336,6 +1348,12 @@ class AscendAttentionBackendImpl(AttentionImpl):
         needed. It is captured inline for aclgraph: the draft's seq_lens /
         query_start_loc / block_table are stable device buffers, so the graph
         re-executes the metadata op + sink op reading fresh values at replay.
+
+        Metadata buffer strategy (matching omniinfer CrossLayerSharedOp):
+        self._fia_sink_meta is a persistent (1024,) int32 buffer whose address
+        is stable across steps. The first sink layer in each step recomputes the
+        metadata into this buffer; subsequent sink layers in the same step reuse
+        it, reducing AICPU dispatches from L (layers) to 1 per step.
         """
         if self.key_cache is None and kv_cache is not None:
             self.key_cache, self.value_cache = kv_cache[0], kv_cache[1]
@@ -1356,8 +1374,20 @@ class AscendAttentionBackendImpl(AttentionImpl):
         actual_seq_kvlen = attn_metadata.seq_lens.to(torch.int64)
         num_reqs = actual_seq_kvlen.shape[0]
 
+        # Lazy-allocate the persistent metadata buffer.  Its address must be
+        # stable across steps for aclgraph capture safety.
+        if self._fia_sink_meta is None:
+            self._fia_sink_meta = torch.empty(
+                (1024,), dtype=torch.int32, device=query.device
+            )
+
+        # Recompute metadata: the first sink layer in a step writes the
+        # result into the persistent buffer; later layers see the same
+        # buffer (same seq_lens per draft step) and skip recomputation.
+        # For aclgraph, the metadata op is captured inline alongside the
+        # sink op, reading stable device buffers at replay.
         stream_limit = torch.npu.get_stream_limit(torch.npu.current_stream())
-        meta_data = torch.ops.custom._npu_fused_infer_attention_sink_metadata(
+        computed_meta = torch.ops.custom._npu_fused_infer_attention_sink_metadata(
             self.num_heads,
             self.num_kv_heads,
             self.head_size,
@@ -1375,6 +1405,8 @@ class AscendAttentionBackendImpl(AttentionImpl):
             aic_core_num=stream_limit["cube_core_num"],
             aiv_core_num=stream_limit["vector_core_num"],
         )
+        self._fia_sink_meta.copy_(computed_meta)
+
         attn_output, _ = torch.ops.custom.npu_fused_infer_attention_sink(
             query,
             key,
@@ -1389,7 +1421,7 @@ class AscendAttentionBackendImpl(AttentionImpl):
             sparse_mode=0,
             block_size=block_size,
             sink_number=0,
-            meta_data=meta_data,
+            meta_data=self._fia_sink_meta,
         )
         attn_output = attn_output.view(num_tokens, self.num_heads, self.head_size)
         output[:num_tokens] = attn_output[:num_tokens]
@@ -1410,6 +1442,18 @@ class AscendAttentionBackendImpl(AttentionImpl):
         if self._use_fia_sink(attn_metadata):
             # DSpark draft: sink op handles eager and aclgraph capture uniformly.
             return self._forward_fia_sink(query, key, value, attn_metadata, output, kv_cache)
+        # Safety guard: if the builder set use_fia_sink=True (which clears
+        # actual_seq_lengths_q and seq_lens_list) but the impl-side check
+        # rejected the sink path, we must not fall through to the normal FIA
+        # path that reads those None fields.
+        if getattr(attn_metadata, "use_fia_sink", False):
+            raise RuntimeError(
+                "Builder set use_fia_sink=True (cleared host-side seq_lens), "
+                "but impl-side _use_fia_sink() returned False. This likely "
+                "means the model has sliding_window or learnable sinks that the "
+                "sink path does not support. Disable VLLM_ASCEND_ENABLE_DSPARK_FIA_SINK "
+                "or fix the model configuration."
+            )
         if _EXTRA_CTX.capturing:
             if self.sinks is not None:
                 attn_output, num_tokens = self.full_graph_fia_v2(query, key, value, attn_metadata, output)
