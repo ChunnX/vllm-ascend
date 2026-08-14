@@ -419,6 +419,22 @@ class TestAscendAttentionBackendImpl(TestBase):
             kv_sharing_target_layer_name="producer_layer",
         )
 
+    def test_use_fia_sink_delegates_topology_but_rejects_swa_and_sinks(self):
+        metadata = SimpleNamespace(use_fia_sink=False)
+        self.assertFalse(self.impl._use_fia_sink(metadata))
+
+        # head_size=64 here is deliberately not rejected: head topology and
+        # dimensions are delegated to the sink operator.
+        metadata.use_fia_sink = True
+        self.assertTrue(self.impl._use_fia_sink(metadata))
+
+        # sparse_mode is hardcoded to non-causal full attention, so SWA / sinks
+        # cannot be delegated and must fail loudly instead of silently mis-routing.
+        with self.assertRaisesRegex(RuntimeError, "sliding-window and learnable-sink"):
+            self.impl_swa._use_fia_sink(metadata)
+        with self.assertRaisesRegex(RuntimeError, "sliding-window and learnable-sink"):
+            self.impl_swa_sink._use_fia_sink(metadata)
+
     @patch("vllm_ascend.ascend_forward_context.get_forward_context")
     def test_large_head_prefill_uses_device_operator_fallback(self, mock_get_forward_context):
         query = torch.randn(2, 8, FIA_TND_LARGE_HEAD_FALLBACK_HEAD_SIZE)

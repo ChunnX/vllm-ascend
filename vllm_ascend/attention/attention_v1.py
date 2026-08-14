@@ -1405,11 +1405,25 @@ class AscendAttentionBackendImpl(AttentionImpl):
     def _use_fia_sink(self, attn_metadata: AscendMetadata) -> bool:
         """Whether this layer's attention should use the sink operator.
 
-        The builder resolves the concrete layers and validates all sink
-        constraints before clearing host-side sequence metadata, so dispatch
-        cannot disagree with metadata construction.
+        The builder flags the DSpark non-causal draft and clears the host-side
+        sequence-length lists. Head topology, head-dim and dtype validity is
+        delegated to the sink operator (which receives those as inputs), but
+        sparse_mode is hardcoded to 0 (non-causal full attention) here and
+        atten_mask / learnable_sink are not forwarded, so sliding-window and
+        learnable-sink layers cannot be delegated and must fail loudly instead
+        of silently computing full attention.
         """
-        return getattr(attn_metadata, "use_fia_sink", False)
+        if not getattr(attn_metadata, "use_fia_sink", False):
+            return False
+        if self.sliding_window is not None or self.sinks is not None:
+            raise RuntimeError(
+                "DSpark FIA sink hardcodes sparse_mode=0 (non-causal full "
+                "attention) and does not forward atten_mask / learnable_sink, "
+                "so sliding-window and learnable-sink layers are not supported. "
+                "Disable VLLM_ASCEND_ENABLE_DSPARK_FIA_SINK or use a draft model "
+                "without sliding window / learnable sinks."
+            )
+        return True
 
     def _forward_fia_sink(
         self,

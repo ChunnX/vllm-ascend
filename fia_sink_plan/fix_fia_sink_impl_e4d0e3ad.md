@@ -40,16 +40,21 @@ metadata builder 与 impl 使用同一个 `use_fia_sink` 路由结论，不再�
 FIA，因此不会出现 builder 已将 host-side 列表置为 `None`、impl 又拒绝 sink 的 split-brain。
 
 `_enable_dspark_fia_sink()` 只加载并检查自定义算子是否注册，不再解析 attention layers，也不再
-限制 GQA、`head_size=128`、GQA ratio、sliding window 或 learnable sink。这样做是有意的：
+限制 GQA、`head_size=128` 或 GQA ratio。这样做是有意的：
 
 - 算子能力文档支持的范围远大于当前 DSpark 验证配置，例如 Q\_S>1 时 D 可到 512（具体还受
   dtype、对齐、PageAttention 布局等综合约束）；
 - 框架侧手写白名单会错误拒绝底层已经支持的新模型/新规格，并可能随算子演进而失真；
-- 不支持的组合由 `_npu_fused_infer_attention_sink_metadata` 或
-  `npu_fused_infer_attention_sink` 返回原生校验错误，错误来源更准确。
+- 不支持的 head 拓扑 / D 维度 / dtype / layout 组合由
+  `_npu_fused_infer_attention_sink_metadata` 或 `npu_fused_infer_attention_sink`
+  返回原生校验错误，错误来源更准确。
 
 保留的框架侧门禁只有：环境开关、`method="dspark"`、`parallel_drafting=True` 和非因果 draft
 metadata；这些条件描述的是接入路径适用范围，而不是底层算子能力。
+
+**例外**：`sliding_window` 与 `learnable sink` 仍由 impl 侧 `_use_fia_sink()` 显式拒绝并报错，
+不能下放给算子——sink 路径把 `sparse_mode` 写死为 0（非因果全注意力）且不转发
+`atten_mask` / `learnable_sink`，算子收不到这些信息，无从校验，直接走 sink 会静默算成全注意力。
 
 ### 2.2 启动期加载并检查自定义算子
 
@@ -193,7 +198,7 @@ pytest -sv tests/e2e/pull_request/one_card/spec_decode/test_dspark.py
 | eager | 已实现，待 NPU 实测 |
 | FULL aclgraph padding | 已修复 device metadata，待 NPU replay 实测 |
 | 其他 head topology / head dimension | Python 不设白名单，由底层算子校验；需按目标模型实测 |
-| sliding window / learnable sink 等组合 | Python 不做能力推断，由底层算子校验；需按算子文档和目标模型实测 |
+| sliding window / learnable sink 等组合 | impl 侧 `_use_fia_sink()` 显式报错拒绝（`sparse_mode` 写死、无法下放）；不静默走 sink |
 | DFlash / draft_model / P-EAGLE | 不受该开关影响 |
 | EP / flashcomm1 | 非本次 draft attention 修改范围 |
 | real-weight gate | 当前本机无 NPU/模型，尚未执行 |
