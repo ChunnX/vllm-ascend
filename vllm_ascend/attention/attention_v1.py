@@ -15,6 +15,8 @@
 # This file is a part of the vllm-ascend project.
 #
 
+import importlib
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
@@ -23,8 +25,10 @@ import torch
 import torch_npu
 import vllm.envs as envs_vllm
 import vllm_ascend.envs as envs_ascend
-from vllm.config import VllmConfig, get_current_vllm_config
+from vllm.config import VllmConfig, get_current_vllm_config, get_layers_from_vllm_config
 from vllm.distributed import get_tensor_model_parallel_rank, get_tensor_model_parallel_world_size
+from vllm.forward_context import get_forward_context
+from vllm.model_executor.layers.attention_layer_base import AttentionLayerBase
 from vllm.utils.math_utils import cdiv
 from vllm.v1.attention.backend import (  # type: ignore
     AttentionBackend,
@@ -68,12 +72,98 @@ from vllm_ascend.utils import is_950, weak_ref_tensors
 # default max value of sliding window size
 SWA_INT_MAX = 2147483647
 _ATTN_KEYS_BUFFER = None
+_FIA_SINK_META_CACHE_ATTR = "_ascend_fia_sink_meta_cache"
+_FIA_SINK_REQUIRED_OPS = (
+    "_npu_fused_infer_attention_sink_metadata",
+    "npu_fused_infer_attention_sink",
+)
+_FIA_SINK_MAX_GQA_RATIO = 64
+_fia_sink_ops_registered = False
 
 # When enabled, DSpark draft attention (parallel-drafting, non-causal, GQA,
 # head_dim=128) is dispatched to npu_fused_infer_attention_sink, which accepts
 # device-side seq_lens and computes tiling on AICPU. This removes the
 # seq_lens.tolist() host sync in the draft hot path.
 _DSPARK_FIA_SINK_ENABLED = bool(envs_ascend.VLLM_ASCEND_ENABLE_DSPARK_FIA_SINK)
+
+
+def _dspark_fia_sink_requested(speculative_config: Any | None) -> bool:
+    """Return whether this config explicitly requests the DSpark sink path."""
+    return bool(
+        _DSPARK_FIA_SINK_ENABLED
+        and speculative_config is not None
+        and getattr(speculative_config, "method", None) == "dspark"
+        and getattr(speculative_config, "parallel_drafting", False)
+    )
+
+
+def _ensure_fia_sink_ops_registered() -> None:
+    """Load omni_custom_ops and fail early when its sink ops are unavailable."""
+    global _fia_sink_ops_registered
+    if _fia_sink_ops_registered:
+        return
+
+    try:
+        importlib.import_module("omni_custom_ops")
+    except (ImportError, OSError) as exc:
+        raise RuntimeError(
+            "VLLM_ASCEND_ENABLE_DSPARK_FIA_SINK=1 requires the omni_custom_ops "
+            "wheel. Install it and source the matching CANN custom OPP environment."
+        ) from exc
+
+    missing_ops = [name for name in _FIA_SINK_REQUIRED_OPS if not hasattr(torch.ops.custom, name)]
+    if missing_ops:
+        raise RuntimeError(
+            "omni_custom_ops was imported but the required FIA sink operators "
+            f"were not registered: {', '.join(missing_ops)}"
+        )
+    _fia_sink_ops_registered = True
+
+
+def _get_or_compute_fia_sink_inputs(
+    cache_key: tuple[int, ...],
+    compute: Callable[[], tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Compute device seq tensors and metadata once per forward/signature.
+
+    During aclgraph capture the first layer records the conversion, metadata and
+    sink dependency. Later layers reuse the same tensors. Graph replay therefore
+    reruns one metadata op per signature while keeping all captured addresses
+    stable. Eager forwards get a fresh context-local cache on every step.
+    """
+    forward_context = get_forward_context()
+    cache = getattr(forward_context, _FIA_SINK_META_CACHE_ATTR, None)
+    if cache is None:
+        cache = {}
+        setattr(forward_context, _FIA_SINK_META_CACHE_ATTR, cache)
+    if cache_key not in cache:
+        cache[cache_key] = compute()
+    return cache[cache_key]
+
+
+def _build_fia_sink_seq_tensors(
+    num_tokens: int,
+    seq_lens: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Build legal device-side TND lengths for uniform DSpark query blocks.
+
+    FULL graph replay pads the request bucket. The producer leaves padded
+    query_start_loc entries at the real-token boundary and padded KV lengths at
+    zero, neither of which is legal for FIA sink. DSpark queries are uniform, so
+    derive cumulative Q lengths from static shapes and map dummy KV lengths to 1.
+    """
+    num_reqs = seq_lens.shape[0]
+    if num_reqs <= 0 or num_tokens % num_reqs != 0:
+        raise RuntimeError(
+            "DSpark FIA sink requires a non-empty uniform query batch: "
+            f"num_tokens={num_tokens}, num_reqs={num_reqs}"
+        )
+    query_tokens_per_req = num_tokens // num_reqs
+    actual_seq_qlen = (
+        torch.arange(1, num_reqs + 1, dtype=torch.int64, device=seq_lens.device) * query_tokens_per_req
+    )
+    actual_seq_kvlen = seq_lens.to(torch.int64).clamp_min(1)
+    return actual_seq_qlen, actual_seq_kvlen
 
 
 @register_backend(AttentionBackendEnum.CUSTOM, "ASCEND")
@@ -243,6 +333,9 @@ class AscendAttentionMetadataBuilder(AttentionMetadataBuilder[AscendMetadata]):
         )
 
         self.speculative_config = vllm_config.speculative_config
+        self._layer_names = layer_names
+        self._dspark_fia_sink_requested = _dspark_fia_sink_requested(self.speculative_config)
+        self._dspark_fia_sink_enabled = False
         self.decode_threshold = 1
         if self.speculative_config:
             spec_token_num = self.speculative_config.num_speculative_tokens
@@ -258,6 +351,56 @@ class AscendAttentionMetadataBuilder(AttentionMetadataBuilder[AscendMetadata]):
         scheduler_config = vllm_config.scheduler_config
         self.chunked_prefill_enabled = scheduler_config.enable_chunked_prefill
         self.attn_mask_builder = AttentionMaskBuilder(self.device)
+
+    def _enable_dspark_fia_sink(self) -> None:
+        """Validate the concrete non-causal draft layers and load sink ops."""
+        if self._dspark_fia_sink_enabled:
+            return
+        attn_layers = get_layers_from_vllm_config(
+            self.vllm_config,
+            AttentionLayerBase,  # type: ignore[type-abstract]
+            self._layer_names,
+        )
+        if not attn_layers:
+            raise RuntimeError(
+                "DSpark FIA sink was requested but no attention layers were "
+                f"resolved for metadata group {self._layer_names}."
+            )
+
+        unsupported_layers = []
+        for layer_name, layer in attn_layers.items():
+            impl = layer.impl
+            num_heads = impl.num_heads
+            num_kv_heads = impl.num_kv_heads
+            valid_gqa = (
+                num_kv_heads > 0
+                and num_heads != num_kv_heads
+                and num_heads % num_kv_heads == 0
+            )
+            gqa_ratio = num_heads // num_kv_heads if valid_gqa else None
+            supported = (
+                impl.head_size == 128
+                and valid_gqa
+                and gqa_ratio is not None
+                and gqa_ratio <= _FIA_SINK_MAX_GQA_RATIO
+                and impl.sliding_window is None
+                and impl.sinks is None
+            )
+            if not supported:
+                unsupported_layers.append(
+                    f"{layer_name}(heads={num_heads}, kv_heads={num_kv_heads}, "
+                    f"head_size={impl.head_size}, sliding_window={impl.sliding_window}, "
+                    f"sinks={impl.sinks is not None})"
+                )
+        if unsupported_layers:
+            raise RuntimeError(
+                "DSpark FIA sink only supports non-causal GQA layers with "
+                "head_size=128, GQA ratio <= 64, no sliding window and no "
+                "learnable sinks. Unsupported layers: "
+                + "; ".join(unsupported_layers)
+            )
+        _ensure_fia_sink_ops_registered()
+        self._dspark_fia_sink_enabled = True
 
     @classmethod
     def get_cudagraph_support(
@@ -341,15 +484,11 @@ class AscendAttentionMetadataBuilder(AttentionMetadataBuilder[AscendMetadata]):
         # Its seq_lens depends on the device-side rejected-token count, so the
         # host-side seq_lens list is unavailable without a sync. Route it to
         # npu_fused_infer_attention_sink which consumes device-side seq_lens
-        # (AICPU tiling), keeping the buffers on device.  Both GQA and MHA
-        # models are supported.
-        use_fia_sink = (
-            _DSPARK_FIA_SINK_ENABLED
-            and self.speculative_config is not None
-            and self.speculative_config.parallel_drafting
-            and not common_attn_metadata.causal
-            and getattr(self.kv_cache_spec, "head_size", None) == 128
-        )
+        # (AICPU tiling), keeping the buffers on device. Initialization has
+        # already restricted this path to the supported DSpark GQA shape.
+        if self._dspark_fia_sink_requested and not common_attn_metadata.causal:
+            self._enable_dspark_fia_sink()
+        use_fia_sink = self._dspark_fia_sink_enabled and not common_attn_metadata.causal
 
         if use_fia_sink:
             # Keep seq_lens / query_start_loc on device (no .tolist() sync) and
@@ -494,12 +633,6 @@ class AscendAttentionBackendImpl(AttentionImpl):
         self._use_max_workspace_for_fia_graph = self._use_layer_aware_fia_graph_replay
         self.sinks = sinks
         self.layerIndex = 0
-        # Persistent buffer for the FIA sink metadata op output.
-        # Allocated on first use; address-stable across steps so that
-        # aclgraph captures it safely.  The first sink layer in each step
-        # writes (recomputes) the metadata; subsequent layers read the same
-        # buffer, matching the omniinfer CrossLayerSharedOp pattern.
-        self._fia_sink_meta: torch.Tensor | None = None
         # Some mixed-attention models cannot rely on the iteration order of
         # attn_metadata during graph replay. Record the captured layer name only
         # for that path.
@@ -1317,18 +1450,11 @@ class AscendAttentionBackendImpl(AttentionImpl):
     def _use_fia_sink(self, attn_metadata: AscendMetadata) -> bool:
         """Whether this layer's attention should use the sink operator.
 
-        The builder flags the DSpark draft (parallel-drafting + non-causal +
-        head_dim=128). This impl-side check additionally guards on the absence
-        of sliding-window / learnable-sink, which the current sink path
-        implementation does not support (sparse_mode is hardcoded to 0 and
-        learnable_sink is not wired). Both GQA and MHA models are supported.
+        The builder resolves the concrete layers and validates all sink
+        constraints before clearing host-side sequence metadata, so dispatch
+        cannot disagree with metadata construction.
         """
-        return (
-            getattr(attn_metadata, "use_fia_sink", False)
-            and self.head_size == 128
-            and self.sliding_window is None
-            and self.sinks is None
-        )
+        return getattr(attn_metadata, "use_fia_sink", False)
 
     def _forward_fia_sink(
         self,
@@ -1349,11 +1475,10 @@ class AscendAttentionBackendImpl(AttentionImpl):
         query_start_loc / block_table are stable device buffers, so the graph
         re-executes the metadata op + sink op reading fresh values at replay.
 
-        Metadata buffer strategy (matching omniinfer CrossLayerSharedOp):
-        self._fia_sink_meta is a persistent (1024,) int32 buffer whose address
-        is stable across steps. The first sink layer in each step recomputes the
-        metadata into this buffer; subsequent sink layers in the same step reuse
-        it, reducing AICPU dispatches from L (layers) to 1 per step.
+        The forward-context cache shares converted Q/KV lengths and metadata
+        across all layers with the same input signature. During graph capture
+        the producing metadata op is recorded once and replayed before its sink
+        consumers, so graph-managed tensor addresses remain stable.
         """
         if self.key_cache is None and kv_cache is not None:
             self.key_cache, self.value_cache = kv_cache[0], kv_cache[1]
@@ -1368,44 +1493,54 @@ class AscendAttentionBackendImpl(AttentionImpl):
         num_tokens = attn_metadata.num_actual_tokens
         query = query[:num_tokens]
 
-        # TND cumulative query lengths + per-batch kv lengths, straight from the
-        # draft's device buffers (int64 conversion happens on device, no sync).
-        actual_seq_qlen = attn_metadata.query_start_loc[1:].to(torch.int64)
-        actual_seq_kvlen = attn_metadata.seq_lens.to(torch.int64)
-        num_reqs = actual_seq_kvlen.shape[0]
-
-        # Lazy-allocate the persistent metadata buffer.  Its address must be
-        # stable across steps for aclgraph capture safety.
-        if self._fia_sink_meta is None:
-            self._fia_sink_meta = torch.empty(
-                (1024,), dtype=torch.int32, device=query.device
+        num_reqs = attn_metadata.seq_lens.shape[0]
+        if block_table.shape[0] < num_reqs:
+            raise RuntimeError(
+                "DSpark FIA sink block table has fewer rows than requests: "
+                f"rows={block_table.shape[0]}, num_reqs={num_reqs}"
             )
+        block_table = block_table[:num_reqs]
 
-        # Recompute metadata: the first sink layer in a step writes the
-        # result into the persistent buffer; later layers see the same
-        # buffer (same seq_lens per draft step) and skip recomputation.
-        # For aclgraph, the metadata op is captured inline alongside the
-        # sink op, reading stable device buffers at replay.
-        stream_limit = torch.npu.get_stream_limit(torch.npu.current_stream())
-        computed_meta = torch.ops.custom._npu_fused_infer_attention_sink_metadata(
+        cache_key = (
+            attn_metadata.seq_lens.data_ptr(),
+            num_tokens,
+            num_reqs,
             self.num_heads,
             self.num_kv_heads,
             self.head_size,
-            self.head_size,
-            actual_seq_lengths=actual_seq_qlen,
-            actual_seq_lengths_kv=actual_seq_kvlen,
-            batch_size=num_reqs,
-            sparse_mode=0,
-            pre_tokens=SWA_INT_MAX,
-            next_tokens=SWA_INT_MAX,
-            input_layout="TND",
-            input_layout_kv="BnBsH",
-            sink_num=0,
-            block_size=block_size,
-            aic_core_num=stream_limit["cube_core_num"],
-            aiv_core_num=stream_limit["vector_core_num"],
+            block_size,
         )
-        self._fia_sink_meta.copy_(computed_meta)
+
+        def compute_sink_inputs() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+            actual_seq_qlen, actual_seq_kvlen = _build_fia_sink_seq_tensors(
+                num_tokens,
+                attn_metadata.seq_lens,
+            )
+            stream_limit = torch.npu.get_stream_limit(torch.npu.current_stream())
+            meta_data = torch.ops.custom._npu_fused_infer_attention_sink_metadata(
+                self.num_heads,
+                self.num_kv_heads,
+                self.head_size,
+                self.head_size,
+                actual_seq_lengths=actual_seq_qlen,
+                actual_seq_lengths_kv=actual_seq_kvlen,
+                batch_size=num_reqs,
+                sparse_mode=0,
+                pre_tokens=SWA_INT_MAX,
+                next_tokens=SWA_INT_MAX,
+                input_layout="TND",
+                input_layout_kv="BnBsH",
+                sink_num=0,
+                block_size=block_size,
+                aic_core_num=stream_limit["cube_core_num"],
+                aiv_core_num=stream_limit["vector_core_num"],
+            )
+            return actual_seq_qlen, actual_seq_kvlen, meta_data
+
+        actual_seq_qlen, actual_seq_kvlen, meta_data = _get_or_compute_fia_sink_inputs(
+            cache_key,
+            compute_sink_inputs,
+        )
 
         attn_output, _ = torch.ops.custom.npu_fused_infer_attention_sink(
             query,
@@ -1421,7 +1556,7 @@ class AscendAttentionBackendImpl(AttentionImpl):
             sparse_mode=0,
             block_size=block_size,
             sink_number=0,
-            meta_data=self._fia_sink_meta,
+            meta_data=meta_data,
         )
         attn_output = attn_output.view(num_tokens, self.num_heads, self.head_size)
         output[:num_tokens] = attn_output[:num_tokens]
@@ -1442,18 +1577,6 @@ class AscendAttentionBackendImpl(AttentionImpl):
         if self._use_fia_sink(attn_metadata):
             # DSpark draft: sink op handles eager and aclgraph capture uniformly.
             return self._forward_fia_sink(query, key, value, attn_metadata, output, kv_cache)
-        # Safety guard: if the builder set use_fia_sink=True (which clears
-        # actual_seq_lengths_q and seq_lens_list) but the impl-side check
-        # rejected the sink path, we must not fall through to the normal FIA
-        # path that reads those None fields.
-        if getattr(attn_metadata, "use_fia_sink", False):
-            raise RuntimeError(
-                "Builder set use_fia_sink=True (cleared host-side seq_lens), "
-                "but impl-side _use_fia_sink() returned False. This likely "
-                "means the model has sliding_window or learnable sinks that the "
-                "sink path does not support. Disable VLLM_ASCEND_ENABLE_DSPARK_FIA_SINK "
-                "or fix the model configuration."
-            )
         if _EXTRA_CTX.capturing:
             if self.sinks is not None:
                 attn_output, num_tokens = self.full_graph_fia_v2(query, key, value, attn_metadata, output)

@@ -1,5 +1,9 @@
 # 交付件 2：仅在 DSpark 草稿模型（GQA / 非因果 / headdim128）的 attention 中使能 `npu_fused_infer_attention_sink`
 
+> 实现更新：`e4d0e3ad` 后的审视修复、FULL 图 padding 处理和最终验证门禁见
+> `fix_fia_sink_impl_e4d0e3ad.md`。本文件第 3.4 节保留早期备选设计，最终实现采用
+> metadata op 图内内联捕获 + forward-context 跨层共享。
+
 ## 1. 背景与根因
 
 在 model runner v2 的 DSpark 投机推理里，草稿模型（draft）在 t-1 步并行产出一批草稿 token，
@@ -284,9 +288,9 @@ Ascend 侧 patch 成 `DFlashAclGraphManager`，`vllm_ascend/worker/v2/spec_decod
 5. **dtype**：sink/metadata 的 seq len 入参要求 `int64`；`input_buffers.seq_lens`/
    `query_start_loc` 默认 int32，必须 `.to(torch.int64)`（在 device 上做，无同步）。
 
-6. **判定边界**：`parallel_drafting + 非因果` 也覆盖 DFlash；若只想 DSpark，可进一步用
-   `speculative_config.method == "mtp"` 或 speculator 类型收窄（DSpark 走 `method=="mtp"`
-   的配置）。当前双保险（builder 判定 + impl 侧 `headdim128/GQA`）已足够安全。
+6. **判定边界**：`parallel_drafting + 非因果` 也覆盖 DFlash，最终实现必须额外检查
+   `speculative_config.method == "dspark"`，并在 builder 清空 host metadata 前完成真实 layer
+   的 `headdim128/GQA/无 SWA/无 learnable sink` 能力校验。
 
 ---
 
@@ -294,7 +298,7 @@ Ascend 侧 patch 成 `DFlashAclGraphManager`，`vllm_ascend/worker/v2/spec_decod
 
 1. **单算子正确性**：跑交付件 1 的脚本，与 `torch.nn.functional.scaled_dot_product_attention`
    （非因果）比对误差 < 1e-2（fp16）。
-2. **端到端正确性**：开启 DSpark（`method="mtp"` + draft 模型），对比使能前后生成结果一致；
+2. **端到端正确性**：开启 DSpark（`method="dspark"` + draft 模型），对比使能前后生成结果一致；
    用现有 `tests/e2e/` 下 speculative decoding 用例回归。
 3. **性能**：用 profile 确认 `build()` 里 `seq_lens.tolist()` 的 host 同步消失，
    AsyncScheduler 不再在该点阻塞；对比每步 draft 时延。

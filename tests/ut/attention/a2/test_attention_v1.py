@@ -11,6 +11,10 @@ from vllm_ascend.attention.attention_v1 import (
     AscendAttentionMetadataBuilder,
     AscendAttentionState,
     AscendC8AttentionBackendImpl,
+    _build_fia_sink_seq_tensors,
+    _dspark_fia_sink_requested,
+    _ensure_fia_sink_ops_registered,
+    _get_or_compute_fia_sink_inputs,
 )
 from vllm_ascend.attention.utils import (
     AscendCommonAttentionMetadata,
@@ -27,6 +31,84 @@ LARGE_HEAD_PREFILL_PATH = "vllm_ascend.device.utils.npu_large_head_prefill_atten
 
 
 class TestAttentionGraphHelpers(TestBase):
+    def test_fia_sink_is_scoped_to_dspark(self):
+        with patch.object(attn_module, "_DSPARK_FIA_SINK_ENABLED", True):
+            self.assertTrue(
+                _dspark_fia_sink_requested(
+                    SimpleNamespace(method="dspark", parallel_drafting=True)
+                )
+            )
+            self.assertFalse(
+                _dspark_fia_sink_requested(
+                    SimpleNamespace(method="dflash", parallel_drafting=True)
+                )
+            )
+            self.assertFalse(
+                _dspark_fia_sink_requested(
+                    SimpleNamespace(method="draft_model", parallel_drafting=True)
+                )
+            )
+
+    def test_fia_sink_builds_legal_full_graph_padding_lengths(self):
+        seq_lens = torch.tensor([19, 23, 0, 0], dtype=torch.int32)
+
+        actual_seq_qlen, actual_seq_kvlen = _build_fia_sink_seq_tensors(
+            num_tokens=32,
+            seq_lens=seq_lens,
+        )
+
+        self.assertTrue(
+            torch.equal(
+                actual_seq_qlen,
+                torch.tensor([8, 16, 24, 32], dtype=torch.int64),
+            )
+        )
+        self.assertTrue(
+            torch.equal(
+                actual_seq_kvlen,
+                torch.tensor([19, 23, 1, 1], dtype=torch.int64),
+            )
+        )
+        self.assertTrue(
+            torch.equal(
+                seq_lens,
+                torch.tensor([19, 23, 0, 0], dtype=torch.int32),
+            )
+        )
+        self.assertEqual(actual_seq_qlen[-1].item(), 32)
+
+    def test_fia_sink_rejects_non_uniform_query_batch(self):
+        with self.assertRaisesRegex(RuntimeError, "uniform query batch"):
+            _build_fia_sink_seq_tensors(
+                num_tokens=31,
+                seq_lens=torch.tensor([4, 5, 6, 7], dtype=torch.int32),
+            )
+
+    def test_fia_sink_metadata_is_computed_once_per_forward_signature(self):
+        forward_context = SimpleNamespace()
+        expected = (
+            torch.tensor([4], dtype=torch.int64),
+            torch.tensor([8], dtype=torch.int64),
+            torch.empty(1024, dtype=torch.int32),
+        )
+        compute = MagicMock(return_value=expected)
+
+        with patch.object(attn_module, "get_forward_context", return_value=forward_context):
+            first = _get_or_compute_fia_sink_inputs((1, 2, 3), compute)
+            second = _get_or_compute_fia_sink_inputs((1, 2, 3), compute)
+
+        self.assertIs(first, expected)
+        self.assertIs(second, expected)
+        compute.assert_called_once_with()
+
+    def test_fia_sink_dependency_failure_is_reported_at_initialization(self):
+        with (
+            patch.object(attn_module, "_fia_sink_ops_registered", False),
+            patch.object(attn_module.importlib, "import_module", side_effect=ImportError("missing")),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "requires the omni_custom_ops wheel"):
+                _ensure_fia_sink_ops_registered()
+
     def test_cache_graph_workspace_keeps_first_workspace_by_default(self):
         graph_params = SimpleNamespace(workspaces={1: torch.empty(4)})
         candidate_workspace = torch.empty(8)
@@ -119,6 +201,67 @@ class TestAscendAttentionMetadataBuilder(TestBase):
         result = self.builder.reorder_batch(mock_input_batch, mock_scheduler_output)
 
         self.assertFalse(result)
+
+    def test_dspark_sink_builder_validates_supported_gqa_layers(self):
+        self.mock_vllm_config.speculative_config = SimpleNamespace(
+            method="dspark",
+            parallel_drafting=True,
+            num_speculative_tokens=7,
+        )
+        layer = SimpleNamespace(
+            impl=SimpleNamespace(
+                num_heads=32,
+                num_kv_heads=4,
+                head_size=128,
+                sliding_window=None,
+                sinks=None,
+            )
+        )
+
+        with (
+            patch.object(attn_module, "_DSPARK_FIA_SINK_ENABLED", True),
+            patch.object(attn_module, "get_layers_from_vllm_config", return_value={"layer": layer}),
+            patch.object(attn_module, "_ensure_fia_sink_ops_registered") as ensure_ops,
+        ):
+            builder = AscendAttentionMetadataBuilder(
+                None,
+                ["layer"],
+                self.mock_vllm_config,
+                self.mock_device,
+            )
+            builder._enable_dspark_fia_sink()
+
+        self.assertTrue(builder._dspark_fia_sink_enabled)
+        ensure_ops.assert_called_once_with()
+
+    def test_dspark_sink_builder_rejects_mha_before_metadata_build(self):
+        self.mock_vllm_config.speculative_config = SimpleNamespace(
+            method="dspark",
+            parallel_drafting=True,
+            num_speculative_tokens=7,
+        )
+        layer = SimpleNamespace(
+            impl=SimpleNamespace(
+                num_heads=8,
+                num_kv_heads=8,
+                head_size=128,
+                sliding_window=None,
+                sinks=None,
+            )
+        )
+
+        with (
+            patch.object(attn_module, "_DSPARK_FIA_SINK_ENABLED", True),
+            patch.object(attn_module, "get_layers_from_vllm_config", return_value={"layer": layer}),
+        ):
+            builder = AscendAttentionMetadataBuilder(
+                None,
+                ["layer"],
+                self.mock_vllm_config,
+                self.mock_device,
+            )
+            with self.assertRaisesRegex(RuntimeError, "only supports non-causal GQA"):
+                builder._enable_dspark_fia_sink()
 
     def test_unpadded_preserves_internal_seq_lens_cpu(self):
         internal_seq_lens_cpu = torch.tensor([4, 5, 6], dtype=torch.int32)
