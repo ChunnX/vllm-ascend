@@ -1,0 +1,86 @@
+[root@013c96af0aa4 vllm-ascend]# TORCH_DEVICE_BACKEND_AUTOLOAD=0 pytest -sv tests/ut/ops/test_gdn_attn_builder.py -k SharedBatchPlan
+INFO 08-17 07:54:32 [__init__.py:52] Available plugins for group vllm.platform_plugins:
+INFO 08-17 07:54:32 [__init__.py:54] - ascend -> vllm_ascend:register
+INFO 08-17 07:54:32 [__init__.py:57] All plugins in this group will be loaded. Set `VLLM_PLUGINS` to control which plugins to load.
+INFO 08-17 07:54:32 [__init__.py:237] Platform plugin ascend is activated
+INFO 08-17 07:54:35 [platform.py:61] Breakable cudagraph is force disabled on Ascend because DeepSeek V4 PIECEWISE cudagraph is not supported yet.
+============================================================================== test session starts ==============================================================================
+platform linux -- Python 3.12.13, pytest-8.3.2, pluggy-1.6.0 -- /usr/local/python3.12.13/bin/python3
+cachedir: .pytest_cache
+rootdir: /vllm-workspace/vllm-ascend
+configfile: pyproject.toml
+plugins: xdist-3.6.1, anyio-4.14.2
+collected 23 items / 15 deselected / 8 selected                                                                                                                                 
+
+tests/ut/ops/test_gdn_attn_builder.py::TestSharedBatchPlan::test_key_ignores_the_only_per_group_field FAILED
+tests/ut/ops/test_gdn_attn_builder.py::TestSharedBatchPlan::test_key_separates_different_batches PASSED
+tests/ut/ops/test_gdn_attn_builder.py::TestSharedBatchPlan::test_plan_is_computed_once_and_reused FAILED
+tests/ut/ops/test_gdn_attn_builder.py::TestSharedBatchPlan::test_no_cache_means_no_reuse PASSED
+tests/ut/ops/test_gdn_attn_builder.py::TestSharedBatchPlan::test_state_indices_follow_this_group_block_table PASSED
+tests/ut/ops/test_gdn_attn_builder.py::TestSharedBatchPlan::test_state_indices_spec_mixed_selects_both_sides PASSED
+tests/ut/ops/test_gdn_attn_builder.py::TestSharedBatchPlan::test_state_indices_spec_only_has_no_non_spec_side PASSED
+tests/ut/ops/test_gdn_attn_builder.py::TestSharedBatchPlan::test_group_independence_check_catches_a_varying_field PASSED
+
+=================================================================================== FAILURES ====================================================================================
+_________________________________________________________ TestSharedBatchPlan.test_key_ignores_the_only_per_group_field _________________________________________________________
+
+self = <tests.ut.ops.test_gdn_attn_builder.TestSharedBatchPlan object at 0xfffb88bda120>
+
+    def test_key_ignores_the_only_per_group_field(self):
+        """block_table is what build_attn_metadata varies per group, so two
+        groups must land on the same key."""
+        builder = self._make_plan_builder()
+        group_a = self._make_metadata(torch.zeros((4, 8), dtype=torch.int32))
+        group_b = self._make_metadata(torch.ones((4, 8), dtype=torch.int32))
+    
+        key_a = builder._shared_batch_plan_key(group_a, None, None)
+        key_b = builder._shared_batch_plan_key(group_b, None, None)
+    
+>       assert key_a == key_b
+E       AssertionError: assert (4, 16, 26090...12, None, ...) == (4, 16, 26090...76, None, ...)
+E         
+E         At index 2 diff: 2609058545984 != 2609058546176
+E         
+E         Full diff:
+E           (
+E               4,
+E               16,...
+E         
+E         ...Full output truncated (17 lines hidden), use '-vv' to show
+
+tests/ut/ops/test_gdn_attn_builder.py:799: AssertionError
+___________________________________________________________ TestSharedBatchPlan.test_plan_is_computed_once_and_reused ___________________________________________________________
+
+self = <tests.ut.ops.test_gdn_attn_builder.TestSharedBatchPlan object at 0xfffb88bdbb90>
+
+    def test_plan_is_computed_once_and_reused(self):
+        builder = self._make_plan_builder()
+        cache = {}
+        sentinel = object()
+        calls = []
+    
+        def fake_compute(m, num_accepted_tokens, num_decode_draft_tokens_cpu):
+            calls.append(m)
+            return sentinel
+    
+        builder._compute_shared_batch_plan = fake_compute
+    
+        for block_table in (torch.zeros((4, 8), dtype=torch.int32), torch.ones((4, 8), dtype=torch.int32)):
+            got = builder._get_shared_batch_plan(self._make_metadata(block_table), None, None, cache)
+            assert got is sentinel
+    
+>       assert len(calls) == 1
+E       assert 2 == 1
+E        +  where 2 = len([namespace(num_reqs=4, num_actual_tokens=16, query_start_loc=tensor([ 0,  4,  8, 12, 16], dtype=torch.int32), query_start_loc_cpu=tensor([ 0,  4,  8, 12, 16], dtype=torch.int32), seq_lens=tensor([9, 9, 9, 9], dtype=torch.int32), block_table_tensor=tensor([[0, 0, 0, 0, 0, 0, 0, 0],\n        [0, 0, 0, 0, 0, 0, 0, 0],\n        [0, 0, 0, 0, 0, 0, 0, 0],\n        [0, 0, 0, 0, 0, 0, 0, 0]], dtype=torch.int32)), namespace(num_reqs=4, num_actual_tokens=16, query_start_loc=tensor([ 0,  4,  8, 12, 16], dtype=torch.int32), query_start_loc_cpu=tensor([ 0,  4,  8, 12, 16], dtype=torch.int32), seq_lens=tensor([9, 9, 9, 9], dtype=torch.int32), block_table_tensor=tensor([[1, 1, 1, 1, 1, 1, 1, 1],\n        [1, 1, 1, 1, 1, 1, 1, 1],\n        [1, 1, 1, 1, 1, 1, 1, 1],\n        [1, 1, 1, 1, 1, 1, 1, 1]], dtype=torch.int32))])
+
+tests/ut/ops/test_gdn_attn_builder.py:827: AssertionError
+=============================================================================== warnings summary ================================================================================
+../../usr/local/python3.12.13/lib/python3.12/site-packages/torch/jit/_script.py:362: 14 warnings
+  /usr/local/python3.12.13/lib/python3.12/site-packages/torch/jit/_script.py:362: DeprecationWarning: `torch.jit.script_method` is deprecated. Please switch to `torch.compile` or `torch.export`.
+    warnings.warn(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+============================================================================ short test summary info ============================================================================
+FAILED tests/ut/ops/test_gdn_attn_builder.py::TestSharedBatchPlan::test_key_ignores_the_only_per_group_field - AssertionError: assert (4, 16, 26090...12, None, ...) == (4, 16, 26090...76, None, ...)
+FAILED tests/ut/ops/test_gdn_attn_builder.py::TestSharedBatchPlan::test_plan_is_computed_once_and_reused - assert 2 == 1
+============================================================ 2 failed, 6 passed, 15 deselected, 14 warnings in 0.27s ============================================================

@@ -97,6 +97,10 @@ class NPUWorker(WorkerBase):
         # Additional parameters for compatibility with vllm
         **kwargs,
     ):
+        if local_rank == 0:
+            import debugpy
+            debugpy.listen(("0.0.0.0", 49006))
+            debugpy.wait_for_client()
         """Initialize the worker for Ascend."""
         if not envs_ascend.COMPILE_CUSTOM_KERNELS:
             logger.warning(
