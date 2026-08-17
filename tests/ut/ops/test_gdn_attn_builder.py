@@ -759,3 +759,165 @@ def test_builder_skips_prebuilt_meta_without_non_spec_prefill(batch_spec: BatchS
             spec_decode_metadata.actual_seq_lengths,
             torch.tensor([0, 4, 4], dtype=torch.int32),
         )
+
+
+class TestSharedBatchPlan:
+    """A hybrid model spreads its Mamba layers over several KV cache groups, so
+    ``build`` runs once per group with metadata that differs only in the block
+    table. The plan is the batch-shape half of that work, computed once and
+    reused; anything that actually varies per group must stay outside it.
+    """
+
+    @staticmethod
+    def _make_plan_builder():
+        builder = AscendGDNAttentionMetadataBuilder.__new__(AscendGDNAttentionMetadataBuilder)
+        builder.num_spec = 3
+        builder.use_spec_decode = True
+        return builder
+
+    @staticmethod
+    def _make_metadata(block_table):
+        return SimpleNamespace(
+            num_reqs=4,
+            num_actual_tokens=16,
+            query_start_loc=torch.tensor([0, 4, 8, 12, 16], dtype=torch.int32),
+            query_start_loc_cpu=torch.tensor([0, 4, 8, 12, 16], dtype=torch.int32),
+            seq_lens=torch.tensor([9, 9, 9, 9], dtype=torch.int32),
+            block_table_tensor=block_table,
+        )
+
+    def test_key_ignores_the_only_per_group_field(self):
+        """block_table is what build_attn_metadata varies per group, so two
+        groups must land on the same key."""
+        builder = self._make_plan_builder()
+        group_a = self._make_metadata(torch.zeros((4, 8), dtype=torch.int32))
+        group_b = self._make_metadata(torch.ones((4, 8), dtype=torch.int32))
+
+        key_a = builder._shared_batch_plan_key(group_a, None, None)
+        key_b = builder._shared_batch_plan_key(group_b, None, None)
+
+        assert key_a == key_b
+
+    def test_key_separates_different_batches(self):
+        builder = self._make_plan_builder()
+        first = self._make_metadata(torch.zeros((4, 8), dtype=torch.int32))
+        second = self._make_metadata(torch.zeros((4, 8), dtype=torch.int32))
+        second.num_reqs = 3
+
+        assert builder._shared_batch_plan_key(first, None, None) != builder._shared_batch_plan_key(
+            second, None, None
+        )
+
+    def test_plan_is_computed_once_and_reused(self):
+        builder = self._make_plan_builder()
+        cache = {}
+        sentinel = object()
+        calls = []
+
+        def fake_compute(m, num_accepted_tokens, num_decode_draft_tokens_cpu):
+            calls.append(m)
+            return sentinel
+
+        builder._compute_shared_batch_plan = fake_compute
+
+        for block_table in (torch.zeros((4, 8), dtype=torch.int32), torch.ones((4, 8), dtype=torch.int32)):
+            got = builder._get_shared_batch_plan(self._make_metadata(block_table), None, None, cache)
+            assert got is sentinel
+
+        assert len(calls) == 1
+
+    def test_no_cache_means_no_reuse(self):
+        """Callers that pass no cache (mrv1, direct unit tests) keep the
+        original one-build-one-compute behaviour."""
+        builder = self._make_plan_builder()
+        calls = []
+        builder._compute_shared_batch_plan = lambda *a: calls.append(1)
+
+        for _ in range(2):
+            builder._get_shared_batch_plan(
+                self._make_metadata(torch.zeros((4, 8), dtype=torch.int32)), None, None, None
+            )
+
+        assert len(calls) == 2
+
+    def test_state_indices_follow_this_group_block_table(self):
+        """The derived indices are the whole reason each group still calls
+        build: they must track the group's own block table."""
+        builder = self._make_plan_builder()
+        plan = SimpleNamespace(
+            state_index_mode=ascend_gdn_attn_builder._STATE_INDEX_NON_SPEC,
+            spec_sequence_indices=None,
+            non_spec_sequence_indices=None,
+        )
+        block_table = torch.tensor([[10, 11], [20, 21]], dtype=torch.int32)
+
+        spec, non_spec, conv1d = builder._derive_group_state_indices(plan, block_table)
+
+        assert spec is None
+        assert torch.equal(non_spec, torch.tensor([10, 20], dtype=torch.int32))
+        assert torch.equal(conv1d, block_table)
+
+    def test_state_indices_spec_mixed_selects_both_sides(self):
+        builder = self._make_plan_builder()
+        plan = SimpleNamespace(
+            state_index_mode=ascend_gdn_attn_builder._STATE_INDEX_SPEC_MIXED,
+            spec_sequence_indices=torch.tensor([0], dtype=torch.int32),
+            non_spec_sequence_indices=torch.tensor([1], dtype=torch.int32),
+        )
+        block_table = torch.tensor([[10, 11, 12, 13, 14], [20, 21, 22, 23, 24]], dtype=torch.int32)
+
+        spec, non_spec, conv1d = builder._derive_group_state_indices(plan, block_table)
+
+        assert torch.equal(spec, torch.tensor([[10, 11, 12, 13]], dtype=torch.int32))
+        assert torch.equal(non_spec, torch.tensor([20], dtype=torch.int32))
+        assert conv1d is non_spec
+
+    def test_state_indices_spec_only_has_no_non_spec_side(self):
+        builder = self._make_plan_builder()
+        plan = SimpleNamespace(
+            state_index_mode=ascend_gdn_attn_builder._STATE_INDEX_SPEC_ONLY,
+            spec_sequence_indices=torch.tensor([1], dtype=torch.int32),
+            non_spec_sequence_indices=None,
+        )
+        block_table = torch.tensor([[10, 11, 12, 13, 14], [20, 21, 22, 23, 24]], dtype=torch.int32)
+
+        spec, non_spec, conv1d = builder._derive_group_state_indices(plan, block_table)
+
+        assert torch.equal(spec, torch.tensor([[20, 21, 22, 23]], dtype=torch.int32))
+        assert non_spec is None
+        assert conv1d is None
+
+    def test_group_independence_check_catches_a_varying_field(self):
+        """The debug cross-check exists because a field that secretly varies
+        per group would otherwise corrupt results silently."""
+        make = lambda tokens: ascend_gdn_attn_builder._GDNSharedBatchPlan(  # noqa: E731
+            state_index_mode=ascend_gdn_attn_builder._STATE_INDEX_NON_SPEC,
+            num_prefills=0,
+            num_decodes=4,
+            num_decode_tokens=tokens,
+            num_prefill_tokens=0,
+            num_spec_decodes=0,
+            num_spec_decode_tokens=0,
+            spec_sequence_masks=None,
+            spec_sequence_indices=None,
+            non_spec_sequence_indices=None,
+            spec_token_indx=None,
+            non_spec_token_indx=None,
+            spec_query_start_loc=None,
+            non_spec_query_start_loc=None,
+            num_accepted_tokens=None,
+            has_initial_state=None,
+            prefill_has_initial_state=None,
+            prefill_query_start_loc=None,
+            chunk_indices=None,
+            chunk_offsets=None,
+            non_spec_chunked_prefill_metadata=None,
+            nums_dict=None,
+            batch_ptr=None,
+            token_chunk_offset_ptr=None,
+        )
+
+        AscendGDNAttentionMetadataBuilder._assert_plan_is_group_independent(make(4), make(4))
+
+        with pytest.raises(AssertionError, match="num_decode_tokens"):
+            AscendGDNAttentionMetadataBuilder._assert_plan_is_group_independent(make(4), make(5))
