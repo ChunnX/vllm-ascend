@@ -22,6 +22,8 @@ from contextlib import contextmanager
 from dataclasses import replace
 from typing import Any
 
+from vllm.logger import init_logger
+
 import numpy as np
 import torch
 import vllm
@@ -43,6 +45,8 @@ from vllm.v1.worker.gpu.model_states.interface import ModelSpecificAttnMetadata
 from vllm.v1.worker.utils import AttentionGroup
 
 from vllm_ascend.attention.attention_v1 import AscendAttentionState
+
+logger = init_logger(__name__)
 from vllm_ascend.attention.dsa_v1 import AscendDSAMetadataBuilder
 from vllm_ascend.attention.utils import AscendCommonAttentionMetadata
 from vllm_ascend.core.kv_cache_interface import (
@@ -63,6 +67,8 @@ def get_kv_cache_spec(vllm_config: VllmConfig) -> dict[str, KVCacheSpec]:
 
     for layer_name, attn_module in attn_layers.items():
         if getattr(attn_module, "kv_sharing_target_layer_name", None):
+            logger.info("[DIAG-KV-SPEC-V2] Skipped kv_sharing layer: %s -> %s",
+                        layer_name, getattr(attn_module, "kv_sharing_target_layer_name", None))
             continue
 
         spec = attn_module.get_kv_cache_spec(vllm_config)
@@ -73,6 +79,12 @@ def get_kv_cache_spec(vllm_config: VllmConfig) -> dict[str, KVCacheSpec]:
             # Keep Mamba groups after attention groups. Ascend graph parameter
             # updates rely on this stable backend ordering.
             mamba_specs[layer_name] = spec
+            logger.info("[DIAG-KV-SPEC-V2] MambaSpec layer: %s, "
+                        "shapes=%s, dtypes=%s, block_size=%d, "
+                        "mamba_type=%s, page_size_padded=%s, spec_hash=%d",
+                        layer_name, spec.shapes, spec.dtypes,
+                        spec.block_size, spec.mamba_type,
+                        spec.page_size_padded, hash(spec))
             continue
 
         if isinstance(attn_module, MLAAttention):
@@ -93,11 +105,34 @@ def get_kv_cache_spec(vllm_config: VllmConfig) -> dict[str, KVCacheSpec]:
 
         kv_cache_spec[layer_name] = spec
         if isinstance(spec, AttentionSpec):
+            from vllm.v1.kv_cache_interface import FullAttentionSpec as _FAS, SlidingWindowSpec as _SWS
+            if isinstance(spec, _FAS):
+                logger.info("[DIAG-KV-SPEC-V2] FullAttentionSpec layer: %s, "
+                            "num_kv_heads=%d, head_size=%d, sliding_window=%s, "
+                            "non_causal=%s, block_size=%d, page_size_padded=%s, "
+                            "indexes_kv_by_block_stride=%s, spec_hash=%d",
+                            layer_name, spec.num_kv_heads, spec.head_size,
+                            spec.sliding_window, spec.non_causal,
+                            spec.block_size, spec.page_size_padded,
+                            spec.indexes_kv_by_block_stride, hash(spec))
+            elif isinstance(spec, _SWS):
+                logger.info("[DIAG-KV-SPEC-V2] SlidingWindowSpec layer: %s, "
+                            "num_kv_heads=%d, head_size=%d, sliding_window=%d, "
+                            "block_size=%d, spec_hash=%d",
+                            layer_name, spec.num_kv_heads, spec.head_size,
+                            spec.sliding_window, spec.block_size, hash(spec))
+            else:
+                logger.info("[DIAG-KV-SPEC-V2] AttentionSpec layer: %s, "
+                            "type=%s, spec_hash=%d",
+                            layer_name, type(spec).__name__, hash(spec))
             attention_layer_names.append(layer_name)
             continue
 
     if mamba_specs:
         common_page_size = max(spec.page_size_bytes for spec in (*kv_cache_spec.values(), *mamba_specs.values()))
+        logger.info("[DIAG-KV-SPEC-V2] Aligning page sizes: common_page_size=%d, "
+                    "%d attention layers, %d mamba layers",
+                    common_page_size, len(attention_layer_names), len(mamba_specs))
         for layer_name in attention_layer_names:
             spec = kv_cache_spec[layer_name]
             page_size_padded = common_page_size if spec.page_size_bytes < common_page_size else spec.page_size_padded
@@ -110,10 +145,60 @@ def get_kv_cache_spec(vllm_config: VllmConfig) -> dict[str, KVCacheSpec]:
                 page_size_padded=page_size_padded,
                 indexes_kv_by_block_stride=True,
             )
+            logger.info("[DIAG-KV-SPEC-V2]   Aligned attn layer %s: "
+                        "page_size_bytes=%d -> page_size_padded=%d, "
+                        "indexes_kv_by_block_stride=True, new_spec_hash=%d",
+                        layer_name, spec.page_size_bytes, page_size_padded,
+                        hash(kv_cache_spec[layer_name]))
         for layer_name, spec in mamba_specs.items():
             if spec.page_size_bytes < common_page_size:
                 mamba_specs[layer_name] = replace(spec, page_size_padded=common_page_size)
+                logger.info("[DIAG-KV-SPEC-V2]   Aligned mamba layer %s: "
+                            "page_size_bytes=%d -> page_size_padded=%d, new_spec_hash=%d",
+                            layer_name, spec.page_size_bytes, common_page_size,
+                            hash(mamba_specs[layer_name]))
         kv_cache_spec.update(mamba_specs)
+
+    # [DIAG] Log final kv_cache_spec summary for v2
+    from vllm.v1.kv_cache_interface import FullAttentionSpec as _FAS, MambaSpec as _MS, SlidingWindowSpec as _SWS
+    _v2_spec_buckets: dict[int, list[str]] = {}
+    for _ln, _ls in kv_cache_spec.items():
+        _h = hash(_ls)
+        if _h not in _v2_spec_buckets:
+            _v2_spec_buckets[_h] = []
+        _v2_spec_buckets[_h].append(_ln)
+    logger.info("[DIAG-KV-SPEC-V2] get_kv_cache_spec result: %d layers total, "
+                "%d distinct spec hashes", len(kv_cache_spec), len(_v2_spec_buckets))
+    for _h, _lns in _v2_spec_buckets.items():
+        _lns_sorted = sorted(_lns)
+        _sample_spec = kv_cache_spec[_lns_sorted[0]]
+        _spec_type = type(_sample_spec).__name__
+        if len(_lns_sorted) > 10:
+            _lns_display = _lns_sorted[:5] + ["..."] + _lns_sorted[-5:]
+        else:
+            _lns_display = _lns_sorted
+        if isinstance(_sample_spec, _FAS):
+            logger.info("[DIAG-KV-SPEC-V2]   bucket(hash=%d, type=%s, count=%d): "
+                        "num_kv_heads=%d, head_size=%d, sliding_window=%s, "
+                        "non_causal=%s, block_size=%d, page_size_padded=%s, "
+                        "indexes_kv_by_block_stride=%s, layers=%s",
+                        _h, _spec_type, len(_lns_sorted),
+                        _sample_spec.num_kv_heads, _sample_spec.head_size,
+                        _sample_spec.sliding_window, _sample_spec.non_causal,
+                        _sample_spec.block_size, _sample_spec.page_size_padded,
+                        _sample_spec.indexes_kv_by_block_stride, _lns_display)
+        elif isinstance(_sample_spec, _MS):
+            logger.info("[DIAG-KV-SPEC-V2]   bucket(hash=%d, type=%s, count=%d): "
+                        "shapes=%s, dtypes=%s, block_size=%d, mamba_type=%s, "
+                        "page_size_padded=%s, layers=%s",
+                        _h, _spec_type, len(_lns_sorted),
+                        _sample_spec.shapes, _sample_spec.dtypes,
+                        _sample_spec.block_size, _sample_spec.mamba_type,
+                        _sample_spec.page_size_padded, _lns_display)
+        else:
+            logger.info("[DIAG-KV-SPEC-V2]   bucket(hash=%d, type=%s, count=%d): "
+                        "layers=%s", _h, _spec_type, len(_lns_sorted), _lns_display)
+    # [DIAG-END]
 
     return kv_cache_spec
 
@@ -174,6 +259,24 @@ def build_attn_metadata(
     decode_ratio_to_sas_metadata: dict[Any, Any] = {}
     common_ratio_to_sas_metadata: dict[Any, Any] = {}
     kv_cache_groups = kv_cache_config.kv_cache_groups
+
+    # [DIAG] Log kv_cache_groups iteration count in v2 build_attn_metadata
+    logger.info("[DIAG-BUILD-META-V2] build_attn_metadata: %d kv_cache_groups, "
+                "%d total attn_groups",
+                len(kv_cache_groups),
+                sum(len(ag) for ag in attn_groups))
+    for _gi, _kv_group in enumerate(kv_cache_groups):
+        _lns_sorted = sorted(_kv_group.layer_names)
+        if len(_lns_sorted) > 10:
+            _lns_display = _lns_sorted[:5] + ["..."] + _lns_sorted[-5:]
+        else:
+            _lns_display = _lns_sorted
+        _attn_group_count = len(attn_groups[_gi]) if _gi < len(attn_groups) else 0
+        logger.info("[DIAG-BUILD-META-V2]   kv_cache_group[%d]: %d layers, "
+                    "%d attn_groups, spec_type=%s, layers=%s",
+                    _gi, len(_lns_sorted), _attn_group_count,
+                    type(_kv_group.kv_cache_spec).__name__, _lns_display)
+    # [DIAG-END]
     for i, kv_cache_spec in enumerate(kv_cache_groups):
         block_table = block_tables[i]
         slot_mapping = slot_mappings[i]

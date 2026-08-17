@@ -2988,6 +2988,25 @@ class NPUModelRunner(GPUModelRunner):
         decode_ratio_to_sas_metadata: dict[Any, Any] = {}
         common_ratio_to_sas_metadata: dict[Any, Any] = {}
         spec_decode_common_attn_metadata = None
+
+        # [DIAG] Log kv_cache_groups iteration count in v1 _build_attention_metadata
+        logger.info("[DIAG-BUILD-META-V1] _build_attention_metadata: %d kv_cache_groups, "
+                    "%d total attn_groups",
+                    len(self.kv_cache_config.kv_cache_groups),
+                    sum(len(ag) for ag in self.attn_groups))
+        for _gi, _kv_group in enumerate(self.kv_cache_config.kv_cache_groups):
+            _lns_sorted = sorted(_kv_group.layer_names)
+            if len(_lns_sorted) > 10:
+                _lns_display = _lns_sorted[:5] + ["..."] + _lns_sorted[-5:]
+            else:
+                _lns_display = _lns_sorted
+            _attn_group_count = len(self.attn_groups[_gi]) if _gi < len(self.attn_groups) else 0
+            logger.info("[DIAG-BUILD-META-V1]   kv_cache_group[%d]: %d layers, "
+                        "%d attn_groups, spec_type=%s, layers=%s",
+                        _gi, len(_lns_sorted), _attn_group_count,
+                        type(_kv_group.kv_cache_spec).__name__, _lns_display)
+        # [DIAG-END]
+
         for kv_cache_gid, kv_cache_group in enumerate(self.kv_cache_config.kv_cache_groups):
             cm = copy(cm_base)  # shallow copy
             # Basically only the encoder seq_lens, block_table and slot_mapping change
@@ -4553,6 +4572,22 @@ class NPUModelRunner(GPUModelRunner):
                 if spec := attn_module.get_kv_cache_spec(self.vllm_config):
                     kv_cache_spec[layer_name] = spec
                     attn_layer_names.add(layer_name)
+                    from vllm.v1.kv_cache_interface import FullAttentionSpec as _FAS, SlidingWindowSpec as _SWS
+                    if isinstance(spec, _FAS):
+                        logger.info("[DIAG-KV-SPEC-V1] FullAttentionSpec layer: %s, "
+                                    "num_kv_heads=%d, head_size=%d, sliding_window=%s, "
+                                    "non_causal=%s, block_size=%d, page_size_padded=%s, "
+                                    "indexes_kv_by_block_stride=%s, spec_hash=%d",
+                                    layer_name, spec.num_kv_heads, spec.head_size,
+                                    spec.sliding_window, spec.non_causal,
+                                    spec.block_size, spec.page_size_padded,
+                                    spec.indexes_kv_by_block_stride, hash(spec))
+                    elif isinstance(spec, _SWS):
+                        logger.info("[DIAG-KV-SPEC-V1] SlidingWindowSpec layer: %s, "
+                                    "num_kv_heads=%d, head_size=%d, sliding_window=%d, "
+                                    "block_size=%d, spec_hash=%d",
+                                    layer_name, spec.num_kv_heads, spec.head_size,
+                                    spec.sliding_window, spec.block_size, hash(spec))
 
             elif isinstance(attn_module, MLAAttention):
                 if self.use_sparse:
@@ -4645,11 +4680,58 @@ class NPUModelRunner(GPUModelRunner):
             for layer_name, mamba_module in mamba_layers.items():
                 if spec := mamba_module.get_kv_cache_spec(self.vllm_config):
                     kv_cache_spec[layer_name] = spec
+                    logger.info("[DIAG-KV-SPEC-V1] MambaSpec layer: %s, "
+                                "shapes=%s, dtypes=%s, block_size=%d, "
+                                "mamba_type=%s, page_size_padded=%s, spec_hash=%d",
+                                layer_name, spec.shapes, spec.dtypes,
+                                spec.block_size, spec.mamba_type,
+                                spec.page_size_padded, hash(spec))
                     mamba_page_size_padded = spec.page_size_bytes
             # align attn_page_size to mamba_page_size_padded
             for layer_name in attn_layer_names:
                 if kv_cache_spec[layer_name].page_size_bytes < mamba_page_size_padded:  # type: ignore[attr-defined]
                     object.__setattr__(kv_cache_spec[layer_name], "page_size_padded", mamba_page_size_padded)
+
+        # [DIAG] Log final kv_cache_spec summary for v1
+        from vllm.v1.kv_cache_interface import FullAttentionSpec as _FAS, MambaSpec as _MS, SlidingWindowSpec as _SWS
+        _v1_spec_buckets: dict[int, list[str]] = {}
+        for _ln, _ls in kv_cache_spec.items():
+            _h = hash(_ls)
+            if _h not in _v1_spec_buckets:
+                _v1_spec_buckets[_h] = []
+            _v1_spec_buckets[_h].append(_ln)
+        logger.info("[DIAG-KV-SPEC-V1] get_kv_cache_spec result: %d layers total, "
+                    "%d distinct spec hashes", len(kv_cache_spec), len(_v1_spec_buckets))
+        for _h, _lns in _v1_spec_buckets.items():
+            _lns_sorted = sorted(_lns)
+            _sample_spec = kv_cache_spec[_lns_sorted[0]]
+            _spec_type = type(_sample_spec).__name__
+            if len(_lns_sorted) > 10:
+                _lns_display = _lns_sorted[:5] + ["..."] + _lns_sorted[-5:]
+            else:
+                _lns_display = _lns_sorted
+            if isinstance(_sample_spec, _FAS):
+                logger.info("[DIAG-KV-SPEC-V1]   bucket(hash=%d, type=%s, count=%d): "
+                            "num_kv_heads=%d, head_size=%d, sliding_window=%s, "
+                            "non_causal=%s, block_size=%d, page_size_padded=%s, "
+                            "indexes_kv_by_block_stride=%s, layers=%s",
+                            _h, _spec_type, len(_lns_sorted),
+                            _sample_spec.num_kv_heads, _sample_spec.head_size,
+                            _sample_spec.sliding_window, _sample_spec.non_causal,
+                            _sample_spec.block_size, _sample_spec.page_size_padded,
+                            _sample_spec.indexes_kv_by_block_stride, _lns_display)
+            elif isinstance(_sample_spec, _MS):
+                logger.info("[DIAG-KV-SPEC-V1]   bucket(hash=%d, type=%s, count=%d): "
+                            "shapes=%s, dtypes=%s, block_size=%d, mamba_type=%s, "
+                            "page_size_padded=%s, layers=%s",
+                            _h, _spec_type, len(_lns_sorted),
+                            _sample_spec.shapes, _sample_spec.dtypes,
+                            _sample_spec.block_size, _sample_spec.mamba_type,
+                            _sample_spec.page_size_padded, _lns_display)
+            else:
+                logger.info("[DIAG-KV-SPEC-V1]   bucket(hash=%d, type=%s, count=%d): "
+                            "layers=%s", _h, _spec_type, len(_lns_sorted), _lns_display)
+        # [DIAG-END]
 
         return kv_cache_spec
 
