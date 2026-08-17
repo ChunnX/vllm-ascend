@@ -93,6 +93,18 @@ class ModelAclGraphManager(ModelCudaGraphManager):
         """Override run_fullgraph to update full graph params in run_fullgraph."""
         num_tokens = desc.num_tokens
         logger.info_once("run_fullgraph with num_tokens=%s", num_tokens)
+        # model_state = self.model_runner.model_state
+        # prepare_attn_impl = type(model_state).prepare_attn
+        # logger.info_once(
+        #     "[DIAG-ATTN-METADATA-PATH] graph_manager=%s.%s "
+        #     "model_state=%s.%s prepare_attn=%s.%s",
+        #     type(self).__module__,
+        #     type(self).__qualname__,
+        #     type(model_state).__module__,
+        #     type(model_state).__qualname__,
+        #     prepare_attn_impl.__module__,
+        #     prepare_attn_impl.__qualname__,
+        # )
         assert self.update_stream is not None
         self.update_stream.wait_stream(torch.npu.current_stream())
         ret = super().run_fullgraph(desc)

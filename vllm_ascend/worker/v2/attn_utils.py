@@ -20,14 +20,14 @@
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import replace
+# from time import perf_counter_ns  # Temporary DIAG timing; keep for re-enable.
 from typing import Any
-
-from vllm.logger import init_logger
 
 import numpy as np
 import torch
 import vllm
 from vllm.config import VllmConfig, get_current_vllm_config, get_layers_from_vllm_config
+# from vllm.logger import logger  # Temporary DIAG logging; keep for re-enable.
 from vllm.model_executor.layers.attention.mla_attention import MLAAttention
 from vllm.model_executor.layers.attention_layer_base import AttentionLayerBase
 from vllm.utils.torch_utils import get_dtype_size
@@ -45,17 +45,18 @@ from vllm.v1.worker.gpu.model_states.interface import ModelSpecificAttnMetadata
 from vllm.v1.worker.utils import AttentionGroup
 
 from vllm_ascend.attention.attention_v1 import AscendAttentionState
-
-logger = init_logger(__name__)
 from vllm_ascend.attention.dsa_v1 import AscendDSAMetadataBuilder
 from vllm_ascend.attention.utils import AscendCommonAttentionMetadata
 from vllm_ascend.core.kv_cache_interface import (
     AscendMLAAttentionSpec,
     AscendSlidingWindowMLASpec,
 )
+from vllm_ascend.ops.gdn_attn_builder import (
+    AscendGDNAttentionMetadataBuilder,
+    GDNBatchedMetadataTemplate,
+)
 from vllm_ascend.quantization.utils import enable_fa_quant
 from vllm_ascend.utils import AscendDeviceType, calc_split_factor, get_ascend_device_type
-
 
 def get_kv_cache_spec(vllm_config: VllmConfig) -> dict[str, KVCacheSpec]:
     """Build Ascend-specific KV cache specs for v2 worker patching."""
@@ -67,8 +68,11 @@ def get_kv_cache_spec(vllm_config: VllmConfig) -> dict[str, KVCacheSpec]:
 
     for layer_name, attn_module in attn_layers.items():
         if getattr(attn_module, "kv_sharing_target_layer_name", None):
-            logger.info("[DIAG-KV-SPEC-V2] Skipped kv_sharing layer: %s -> %s",
-                        layer_name, getattr(attn_module, "kv_sharing_target_layer_name", None))
+            # logger.info(
+            #     "[DIAG-KV-SPEC-V2] Skipped kv_sharing layer: %s -> %s",
+            #     layer_name,
+            #     getattr(attn_module, "kv_sharing_target_layer_name", None),
+            # )
             continue
 
         spec = attn_module.get_kv_cache_spec(vllm_config)
@@ -79,12 +83,18 @@ def get_kv_cache_spec(vllm_config: VllmConfig) -> dict[str, KVCacheSpec]:
             # Keep Mamba groups after attention groups. Ascend graph parameter
             # updates rely on this stable backend ordering.
             mamba_specs[layer_name] = spec
-            logger.info("[DIAG-KV-SPEC-V2] MambaSpec layer: %s, "
-                        "shapes=%s, dtypes=%s, block_size=%d, "
-                        "mamba_type=%s, page_size_padded=%s, spec_hash=%d",
-                        layer_name, spec.shapes, spec.dtypes,
-                        spec.block_size, spec.mamba_type,
-                        spec.page_size_padded, hash(spec))
+            # logger.info(
+            #     "[DIAG-KV-SPEC-V2] MambaSpec layer: %s, "
+            #     "shapes=%s, dtypes=%s, block_size=%d, "
+            #     "mamba_type=%s, page_size_padded=%s, spec_hash=%d",
+            #     layer_name,
+            #     spec.shapes,
+            #     spec.dtypes,
+            #     spec.block_size,
+            #     spec.mamba_type,
+            #     spec.page_size_padded,
+            #     hash(spec),
+            # )
             continue
 
         if isinstance(attn_module, MLAAttention):
@@ -105,34 +115,57 @@ def get_kv_cache_spec(vllm_config: VllmConfig) -> dict[str, KVCacheSpec]:
 
         kv_cache_spec[layer_name] = spec
         if isinstance(spec, AttentionSpec):
-            from vllm.v1.kv_cache_interface import FullAttentionSpec as _FAS, SlidingWindowSpec as _SWS
-            if isinstance(spec, _FAS):
-                logger.info("[DIAG-KV-SPEC-V2] FullAttentionSpec layer: %s, "
-                            "num_kv_heads=%d, head_size=%d, sliding_window=%s, "
-                            "non_causal=%s, block_size=%d, page_size_padded=%s, "
-                            "indexes_kv_by_block_stride=%s, spec_hash=%d",
-                            layer_name, spec.num_kv_heads, spec.head_size,
-                            spec.sliding_window, spec.non_causal,
-                            spec.block_size, spec.page_size_padded,
-                            spec.indexes_kv_by_block_stride, hash(spec))
-            elif isinstance(spec, _SWS):
-                logger.info("[DIAG-KV-SPEC-V2] SlidingWindowSpec layer: %s, "
-                            "num_kv_heads=%d, head_size=%d, sliding_window=%d, "
-                            "block_size=%d, spec_hash=%d",
-                            layer_name, spec.num_kv_heads, spec.head_size,
-                            spec.sliding_window, spec.block_size, hash(spec))
-            else:
-                logger.info("[DIAG-KV-SPEC-V2] AttentionSpec layer: %s, "
-                            "type=%s, spec_hash=%d",
-                            layer_name, type(spec).__name__, hash(spec))
+            # from vllm.v1.kv_cache_interface import FullAttentionSpec as _FAS
+            # from vllm.v1.kv_cache_interface import SlidingWindowSpec as _SWS
+            #
+            # if isinstance(spec, _FAS):
+            #     logger.info(
+            #         "[DIAG-KV-SPEC-V2] FullAttentionSpec layer: %s, "
+            #         "num_kv_heads=%d, head_size=%d, sliding_window=%s, "
+            #         "non_causal=%s, block_size=%d, page_size_padded=%s, "
+            #         "indexes_kv_by_block_stride=%s, spec_hash=%d",
+            #         layer_name,
+            #         spec.num_kv_heads,
+            #         spec.head_size,
+            #         spec.sliding_window,
+            #         spec.non_causal,
+            #         spec.block_size,
+            #         spec.page_size_padded,
+            #         spec.indexes_kv_by_block_stride,
+            #         hash(spec),
+            #     )
+            # elif isinstance(spec, _SWS):
+            #     logger.info(
+            #         "[DIAG-KV-SPEC-V2] SlidingWindowSpec layer: %s, "
+            #         "num_kv_heads=%d, head_size=%d, sliding_window=%d, "
+            #         "block_size=%d, spec_hash=%d",
+            #         layer_name,
+            #         spec.num_kv_heads,
+            #         spec.head_size,
+            #         spec.sliding_window,
+            #         spec.block_size,
+            #         hash(spec),
+            #     )
+            # else:
+            #     logger.info(
+            #         "[DIAG-KV-SPEC-V2] AttentionSpec layer: %s, "
+            #         "type=%s, spec_hash=%d",
+            #         layer_name,
+            #         type(spec).__name__,
+            #         hash(spec),
+            #     )
             attention_layer_names.append(layer_name)
             continue
 
     if mamba_specs:
         common_page_size = max(spec.page_size_bytes for spec in (*kv_cache_spec.values(), *mamba_specs.values()))
-        logger.info("[DIAG-KV-SPEC-V2] Aligning page sizes: common_page_size=%d, "
-                    "%d attention layers, %d mamba layers",
-                    common_page_size, len(attention_layer_names), len(mamba_specs))
+        # logger.info(
+        #     "[DIAG-KV-SPEC-V2] Aligning page sizes: "
+        #     "common_page_size=%d, %d attention layers, %d mamba layers",
+        #     common_page_size,
+        #     len(attention_layer_names),
+        #     len(mamba_specs),
+        # )
         for layer_name in attention_layer_names:
             spec = kv_cache_spec[layer_name]
             page_size_padded = common_page_size if spec.page_size_bytes < common_page_size else spec.page_size_padded
@@ -145,59 +178,96 @@ def get_kv_cache_spec(vllm_config: VllmConfig) -> dict[str, KVCacheSpec]:
                 page_size_padded=page_size_padded,
                 indexes_kv_by_block_stride=True,
             )
-            logger.info("[DIAG-KV-SPEC-V2]   Aligned attn layer %s: "
-                        "page_size_bytes=%d -> page_size_padded=%d, "
-                        "indexes_kv_by_block_stride=True, new_spec_hash=%d",
-                        layer_name, spec.page_size_bytes, page_size_padded,
-                        hash(kv_cache_spec[layer_name]))
+            # logger.info(
+            #     "[DIAG-KV-SPEC-V2]   Aligned attn layer %s: "
+            #     "page_size_bytes=%d -> page_size_padded=%d, "
+            #     "indexes_kv_by_block_stride=True, new_spec_hash=%d",
+            #     layer_name,
+            #     spec.page_size_bytes,
+            #     page_size_padded,
+            #     hash(kv_cache_spec[layer_name]),
+            # )
         for layer_name, spec in mamba_specs.items():
             if spec.page_size_bytes < common_page_size:
                 mamba_specs[layer_name] = replace(spec, page_size_padded=common_page_size)
-                logger.info("[DIAG-KV-SPEC-V2]   Aligned mamba layer %s: "
-                            "page_size_bytes=%d -> page_size_padded=%d, new_spec_hash=%d",
-                            layer_name, spec.page_size_bytes, common_page_size,
-                            hash(mamba_specs[layer_name]))
+                # logger.info(
+                #     "[DIAG-KV-SPEC-V2]   Aligned mamba layer %s: "
+                #     "page_size_bytes=%d -> page_size_padded=%d, "
+                #     "new_spec_hash=%d",
+                #     layer_name,
+                #     spec.page_size_bytes,
+                #     common_page_size,
+                #     hash(mamba_specs[layer_name]),
+                # )
         kv_cache_spec.update(mamba_specs)
 
-    # [DIAG] Log final kv_cache_spec summary for v2
-    from vllm.v1.kv_cache_interface import FullAttentionSpec as _FAS, MambaSpec as _MS, SlidingWindowSpec as _SWS
-    _v2_spec_buckets: dict[int, list[str]] = {}
-    for _ln, _ls in kv_cache_spec.items():
-        _h = hash(_ls)
-        if _h not in _v2_spec_buckets:
-            _v2_spec_buckets[_h] = []
-        _v2_spec_buckets[_h].append(_ln)
-    logger.info("[DIAG-KV-SPEC-V2] get_kv_cache_spec result: %d layers total, "
-                "%d distinct spec hashes", len(kv_cache_spec), len(_v2_spec_buckets))
-    for _h, _lns in _v2_spec_buckets.items():
-        _lns_sorted = sorted(_lns)
-        _sample_spec = kv_cache_spec[_lns_sorted[0]]
-        _spec_type = type(_sample_spec).__name__
-        if len(_lns_sorted) > 10:
-            _lns_display = _lns_sorted[:5] + ["..."] + _lns_sorted[-5:]
-        else:
-            _lns_display = _lns_sorted
-        if isinstance(_sample_spec, _FAS):
-            logger.info("[DIAG-KV-SPEC-V2]   bucket(hash=%d, type=%s, count=%d): "
-                        "num_kv_heads=%d, head_size=%d, sliding_window=%s, "
-                        "non_causal=%s, block_size=%d, page_size_padded=%s, "
-                        "indexes_kv_by_block_stride=%s, layers=%s",
-                        _h, _spec_type, len(_lns_sorted),
-                        _sample_spec.num_kv_heads, _sample_spec.head_size,
-                        _sample_spec.sliding_window, _sample_spec.non_causal,
-                        _sample_spec.block_size, _sample_spec.page_size_padded,
-                        _sample_spec.indexes_kv_by_block_stride, _lns_display)
-        elif isinstance(_sample_spec, _MS):
-            logger.info("[DIAG-KV-SPEC-V2]   bucket(hash=%d, type=%s, count=%d): "
-                        "shapes=%s, dtypes=%s, block_size=%d, mamba_type=%s, "
-                        "page_size_padded=%s, layers=%s",
-                        _h, _spec_type, len(_lns_sorted),
-                        _sample_spec.shapes, _sample_spec.dtypes,
-                        _sample_spec.block_size, _sample_spec.mamba_type,
-                        _sample_spec.page_size_padded, _lns_display)
-        else:
-            logger.info("[DIAG-KV-SPEC-V2]   bucket(hash=%d, type=%s, count=%d): "
-                        "layers=%s", _h, _spec_type, len(_lns_sorted), _lns_display)
+    # [DIAG] Log final kv_cache_spec summary for v2 (temporarily disabled).
+    # from vllm.v1.kv_cache_interface import FullAttentionSpec as _FAS
+    # from vllm.v1.kv_cache_interface import MambaSpec as _MS
+    # from vllm.v1.kv_cache_interface import SlidingWindowSpec as _SWS
+    #
+    # _v2_spec_buckets: dict[int, list[str]] = {}
+    # for _ln, _ls in kv_cache_spec.items():
+    #     _h = hash(_ls)
+    #     if _h not in _v2_spec_buckets:
+    #         _v2_spec_buckets[_h] = []
+    #     _v2_spec_buckets[_h].append(_ln)
+    # logger.info(
+    #     "[DIAG-KV-SPEC-V2] get_kv_cache_spec result: %d layers total, "
+    #     "%d distinct spec hashes",
+    #     len(kv_cache_spec),
+    #     len(_v2_spec_buckets),
+    # )
+    # for _h, _lns in _v2_spec_buckets.items():
+    #     _lns_sorted = sorted(_lns)
+    #     _sample_spec = kv_cache_spec[_lns_sorted[0]]
+    #     _spec_type = type(_sample_spec).__name__
+    #     if len(_lns_sorted) > 10:
+    #         _lns_display = _lns_sorted[:5] + ["..."] + _lns_sorted[-5:]
+    #     else:
+    #         _lns_display = _lns_sorted
+    #     if isinstance(_sample_spec, _FAS):
+    #         logger.info(
+    #             "[DIAG-KV-SPEC-V2]   bucket(hash=%d, type=%s, count=%d): "
+    #             "num_kv_heads=%d, head_size=%d, sliding_window=%s, "
+    #             "non_causal=%s, block_size=%d, page_size_padded=%s, "
+    #             "indexes_kv_by_block_stride=%s, layers=%s",
+    #             _h,
+    #             _spec_type,
+    #             len(_lns_sorted),
+    #             _sample_spec.num_kv_heads,
+    #             _sample_spec.head_size,
+    #             _sample_spec.sliding_window,
+    #             _sample_spec.non_causal,
+    #             _sample_spec.block_size,
+    #             _sample_spec.page_size_padded,
+    #             _sample_spec.indexes_kv_by_block_stride,
+    #             _lns_display,
+    #         )
+    #     elif isinstance(_sample_spec, _MS):
+    #         logger.info(
+    #             "[DIAG-KV-SPEC-V2]   bucket(hash=%d, type=%s, count=%d): "
+    #             "shapes=%s, dtypes=%s, block_size=%d, mamba_type=%s, "
+    #             "page_size_padded=%s, layers=%s",
+    #             _h,
+    #             _spec_type,
+    #             len(_lns_sorted),
+    #             _sample_spec.shapes,
+    #             _sample_spec.dtypes,
+    #             _sample_spec.block_size,
+    #             _sample_spec.mamba_type,
+    #             _sample_spec.page_size_padded,
+    #             _lns_display,
+    #         )
+    #     else:
+    #         logger.info(
+    #             "[DIAG-KV-SPEC-V2]   bucket(hash=%d, type=%s, count=%d): "
+    #             "layers=%s",
+    #             _h,
+    #             _spec_type,
+    #             len(_lns_sorted),
+    #             _lns_display,
+    #         )
     # [DIAG-END]
 
     return kv_cache_spec
@@ -258,25 +328,41 @@ def build_attn_metadata(
     prefill_ratio_to_sas_metadata: dict[Any, Any] = {}
     decode_ratio_to_sas_metadata: dict[Any, Any] = {}
     common_ratio_to_sas_metadata: dict[Any, Any] = {}
+    gdn_batch_templates: dict[tuple[object, ...], GDNBatchedMetadataTemplate] = {}
+    # gdn_template_builds = 0
+    # gdn_template_reuses = 0
+    # gdn_group_materializations = 0
+    # gdn_template_build_ns = 0
+    # gdn_group_materialize_ns = 0
     kv_cache_groups = kv_cache_config.kv_cache_groups
 
-    # [DIAG] Log kv_cache_groups iteration count in v2 build_attn_metadata
-    logger.info("[DIAG-BUILD-META-V2] build_attn_metadata: %d kv_cache_groups, "
-                "%d total attn_groups",
-                len(kv_cache_groups),
-                sum(len(ag) for ag in attn_groups))
-    for _gi, _kv_group in enumerate(kv_cache_groups):
-        _lns_sorted = sorted(_kv_group.layer_names)
-        if len(_lns_sorted) > 10:
-            _lns_display = _lns_sorted[:5] + ["..."] + _lns_sorted[-5:]
-        else:
-            _lns_display = _lns_sorted
-        _attn_group_count = len(attn_groups[_gi]) if _gi < len(attn_groups) else 0
-        logger.info("[DIAG-BUILD-META-V2]   kv_cache_group[%d]: %d layers, "
-                    "%d attn_groups, spec_type=%s, layers=%s",
-                    _gi, len(_lns_sorted), _attn_group_count,
-                    type(_kv_group.kv_cache_spec).__name__, _lns_display)
+    # [DIAG] Log kv_cache_groups iteration count (temporarily disabled).
+    # logger.info_once(
+    #     "[DIAG-BUILD-META-V2] build_attn_metadata: %d kv_cache_groups, "
+    #     "%d total attn_groups",
+    #     len(kv_cache_groups),
+    #     sum(len(ag) for ag in attn_groups),
+    # )
+    # for _gi, _kv_group in enumerate(kv_cache_groups):
+    #     _lns_sorted = sorted(_kv_group.layer_names)
+    #     if len(_lns_sorted) > 10:
+    #         _lns_display = _lns_sorted[:5] + ["..."] + _lns_sorted[-5:]
+    #     else:
+    #         _lns_display = _lns_sorted
+    #     _attn_group_count = (
+    #         len(attn_groups[_gi]) if _gi < len(attn_groups) else 0
+    #     )
+    #     logger.info_once(
+    #         "[DIAG-BUILD-META-V2]   kv_cache_group[%d]: %d layers, "
+    #         "%d attn_groups, spec_type=%s, layers=%s",
+    #         _gi,
+    #         len(_lns_sorted),
+    #         _attn_group_count,
+    #         type(_kv_group.kv_cache_spec).__name__,
+    #         tuple(_lns_display),
+    #     )
     # [DIAG-END]
+    # build_attn_metadata_start_ns = perf_counter_ns()
     for i, kv_cache_spec in enumerate(kv_cache_groups):
         block_table = block_tables[i]
         slot_mapping = slot_mappings[i]
@@ -321,19 +407,60 @@ def build_attn_metadata(
                     if model_specific_attn_metadata is not None
                     else {}
                 )
-                if isinstance(attn_metadata_builder, AscendDSAMetadataBuilder):
-                    attn_metadata_extra_kwargs.update(
-                        num_reqs_actual=num_reqs,
-                        prefill_ratio_to_sas_metadata=prefill_ratio_to_sas_metadata,
-                        decode_ratio_to_sas_metadata=decode_ratio_to_sas_metadata,
-                        common_ratio_to_sas_metadata=common_ratio_to_sas_metadata,
-                        block_size=attn_group.kv_cache_spec.block_size,
+                if isinstance(
+                    attn_metadata_builder,
+                    AscendGDNAttentionMetadataBuilder,
+                ):
+                    template_key = attn_metadata_builder.get_batch_template_key(
+                        common_attn_metadata,
+                        attn_metadata_extra_kwargs.get("num_accepted_tokens"),
+                        attn_metadata_extra_kwargs.get(
+                            "num_decode_draft_tokens_cpu",
+                        ),
                     )
-                metadata = attn_metadata_builder.build(
-                    common_prefix_len=0,
-                    common_attn_metadata=common_attn_metadata,
-                    **attn_metadata_extra_kwargs,
-                )
+                    batch_template = gdn_batch_templates.get(template_key)
+                    if batch_template is None:
+                        # template_start_ns = perf_counter_ns()
+                        batch_template = attn_metadata_builder.build_batch_template(
+                            common_attn_metadata,
+                            attn_metadata_extra_kwargs.get("num_accepted_tokens"),
+                            attn_metadata_extra_kwargs.get(
+                                "num_decode_draft_tokens_cpu",
+                            ),
+                        )
+                        # gdn_template_build_ns += (
+                        #     perf_counter_ns() - template_start_ns
+                        # )
+                        gdn_batch_templates[template_key] = batch_template
+                        # gdn_template_builds += 1
+                    # else:
+                    #     gdn_template_reuses += 1
+
+                    # materialize_start_ns = perf_counter_ns()
+                    metadata = attn_metadata_builder.build(
+                        common_prefix_len=0,
+                        common_attn_metadata=common_attn_metadata,
+                        batch_template=batch_template,
+                        **attn_metadata_extra_kwargs,
+                    )
+                    # gdn_group_materialize_ns += (
+                    #     perf_counter_ns() - materialize_start_ns
+                    # )
+                    # gdn_group_materializations += 1
+                else:
+                    if isinstance(attn_metadata_builder, AscendDSAMetadataBuilder):
+                        attn_metadata_extra_kwargs.update(
+                            num_reqs_actual=num_reqs,
+                            prefill_ratio_to_sas_metadata=prefill_ratio_to_sas_metadata,
+                            decode_ratio_to_sas_metadata=decode_ratio_to_sas_metadata,
+                            common_ratio_to_sas_metadata=common_ratio_to_sas_metadata,
+                            block_size=attn_group.kv_cache_spec.block_size,
+                        )
+                    metadata = attn_metadata_builder.build(
+                        common_prefix_len=0,
+                        common_attn_metadata=common_attn_metadata,
+                        **attn_metadata_extra_kwargs,
+                    )
                 if isinstance(attn_metadata_builder, AscendDSAMetadataBuilder):
                     # Preserve sharing even if a builder replaces one of the
                     # dictionaries while constructing its metadata.
@@ -342,6 +469,23 @@ def build_attn_metadata(
                     common_ratio_to_sas_metadata = attn_metadata_builder.common_ratio_to_sas_metadata  # type: ignore[assignment]
             for layer_name in attn_group.layer_names:
                 attn_metadata[layer_name] = metadata
+    # if gdn_group_materializations > 0:
+    #     build_attn_metadata_ns = (
+    #         perf_counter_ns() - build_attn_metadata_start_ns
+    #     )
+    #     logger.info(
+    #         "[DIAG-GDN-BATCH-CACHE] template_builds=%d, "
+    #         "template_reuses=%d, group_materializations=%d, "
+    #         "template_ms=%.3f, materialize_ms=%.3f, "
+    #         "total_gdn_builder_ms=%.3f, build_attn_metadata_ms=%.3f",
+    #         gdn_template_builds,
+    #         gdn_template_reuses,
+    #         gdn_group_materializations,
+    #         gdn_template_build_ns / 1_000_000,
+    #         gdn_group_materialize_ns / 1_000_000,
+    #         (gdn_template_build_ns + gdn_group_materialize_ns) / 1_000_000,
+    #         build_attn_metadata_ns / 1_000_000,
+    #     )
     return attn_metadata
 
 
@@ -767,6 +911,16 @@ _BUILD_ATTN_METADATA_MODULE = vllm.v1.worker.gpu.spec_decode.speculator
 def build_attn_metadata_wrapper():
     """Context manager to override attention metadata building for Ascend NPUs."""
     original_func = _BUILD_ATTN_METADATA_MODULE.build_attn_metadata
+    # logger.info_once(
+    #     "[DIAG-ATTN-METADATA-WRAPPER] module=%s original=%s.%s "
+    #     "replacement=%s.%s already_replaced=%s",
+    #     _BUILD_ATTN_METADATA_MODULE.__name__,
+    #     original_func.__module__,
+    #     original_func.__qualname__,
+    #     build_attn_metadata.__module__,
+    #     build_attn_metadata.__qualname__,
+    #     original_func is build_attn_metadata,
+    # )
     try:
         _BUILD_ATTN_METADATA_MODULE.build_attn_metadata = build_attn_metadata
         yield

@@ -98,6 +98,56 @@ class GDNSpecDecodeMetadata:
     actual_seq_lengths: torch.Tensor
 
 
+@dataclass(frozen=True)
+class GDNBatchedMetadataTemplate:
+    """Group-independent GDN metadata for one model-execution batch.
+
+    The template is deliberately scoped to one ``build_attn_metadata`` call.
+    KV-address fields derived from a group's block table are not stored here.
+    """
+
+    cache_key: tuple[object, ...]
+    context_lens_tensor: torch.Tensor
+    num_prefills: int
+    num_prefill_tokens: int
+    num_decodes: int
+    num_decode_tokens: int
+    num_spec_decodes: int
+    num_spec_decode_tokens: int
+    spec_sequence_masks_cpu: torch.Tensor | None
+    spec_sequence_masks: torch.Tensor | None
+    spec_sequence_indices: torch.Tensor | None
+    non_spec_sequence_indices: torch.Tensor | None
+    spec_token_indx: torch.Tensor | None
+    non_spec_token_indx: torch.Tensor | None
+    spec_query_start_loc: torch.Tensor | None
+    non_spec_query_start_loc: torch.Tensor | None
+    non_spec_query_start_loc_cpu: torch.Tensor | None
+    num_accepted_tokens: torch.Tensor | None
+    chunk_indices: torch.Tensor | None
+    chunk_offsets: torch.Tensor | None
+    prefill_query_start_loc: torch.Tensor | None
+    prefill_has_initial_state: torch.Tensor | None
+    has_initial_state: torch.Tensor | None
+    nums_dict: dict[int, dict[str, object]] | None
+    batch_ptr: torch.Tensor | None
+    token_chunk_offset_ptr: torch.Tensor | None
+    non_spec_chunked_prefill_metadata: GDNChunkedPrefillMetadata | None
+
+
+def _tensor_cache_signature(tensor: torch.Tensor | None) -> tuple[object, ...] | None:
+    if tensor is None:
+        return None
+    return (
+        tensor.data_ptr(),
+        tensor.storage_offset(),
+        tuple(tensor.shape),
+        tuple(tensor.stride()),
+        tensor.dtype,
+        tensor.device,
+    )
+
+
 def _build_actual_seq_lengths(
     query_start_loc: torch.Tensor,
     num_sequences: int,
@@ -405,31 +455,59 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
         )
         return attn_metadata
 
-    def build(  # type: ignore[override]
+    def get_batch_template_key(
         self,
-        common_prefix_len: int,
+        common_attn_metadata: CommonAttentionMetadata,
+        num_accepted_tokens: torch.Tensor | None,
+        num_decode_draft_tokens_cpu: torch.Tensor | None,
+    ) -> tuple[object, ...]:
+        """Return a no-sync compatibility key for this invocation."""
+        m = common_attn_metadata
+        dcp_metadata = getattr(m, "context_parallel_metadata", None)
+        return (
+            type(self),
+            self.kv_cache_spec,
+            self.num_spec,
+            self.use_full_cuda_graph,
+            self.gdn_prefill_backend,
+            self.vllm_config.cache_config.mamba_cache_mode,
+            m.num_reqs,
+            m.num_actual_tokens,
+            m.max_query_len,
+            _tensor_cache_signature(m.query_start_loc),
+            _tensor_cache_signature(m.query_start_loc_cpu),
+            _tensor_cache_signature(m.seq_lens),
+            _tensor_cache_signature(getattr(m, "is_prefilling", None)),
+            id(dcp_metadata),
+            _tensor_cache_signature(
+                getattr(dcp_metadata, "query_lens_cpu", None),
+            ),
+            _tensor_cache_signature(num_accepted_tokens),
+            _tensor_cache_signature(num_decode_draft_tokens_cpu),
+        )
+
+    def build_batch_template(
+        self,
         common_attn_metadata: CommonAttentionMetadata,
         num_accepted_tokens: torch.Tensor | None = None,
         num_decode_draft_tokens_cpu: torch.Tensor | None = None,
-        fast_build: bool = False,
-    ) -> GDNAttentionMetadata:
+    ) -> GDNBatchedMetadataTemplate:
+        """Build the block-table-independent portion of GDN metadata."""
         m = common_attn_metadata
+        cache_key = self.get_batch_template_key(
+            m,
+            num_accepted_tokens,
+            num_decode_draft_tokens_cpu,
+        )
 
         query_start_loc = m.query_start_loc
         query_start_loc_cpu = m.query_start_loc_cpu
         context_lens_tensor = m.compute_num_computed_tokens()
         nums_dict, batch_ptr, token_chunk_offset_ptr = None, None, None
-        block_table_tensor = mamba_get_block_table_tensor(
-            m.block_table_tensor,
-            m.seq_lens,
-            self.kv_cache_spec,
-            self.vllm_config.cache_config.mamba_cache_mode,
-        )
 
         spec_sequence_masks_cpu: torch.Tensor | None = None
         spec_sequence_indices: torch.Tensor | None = None
         non_spec_sequence_indices: torch.Tensor | None = None
-        non_spec_conv1d_cache_indices: torch.Tensor | None = None
         if not self.use_spec_decode or num_decode_draft_tokens_cpu is None:
             spec_sequence_masks = None
             num_spec_decodes = 0
@@ -462,9 +540,6 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
             num_spec_decode_tokens = 0
             spec_token_indx = None
             non_spec_token_indx = None
-            spec_state_indices_tensor = None
-            non_spec_state_indices_tensor = block_table_tensor[:, 0]
-            non_spec_conv1d_cache_indices = block_table_tensor
             spec_query_start_loc = None
             non_spec_query_start_loc = query_start_loc
             non_spec_query_start_loc_cpu = query_start_loc_cpu
@@ -505,12 +580,6 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
                     dtype=torch.int32,
                     device=query_start_loc.device,
                 )
-                spec_state_indices_tensor = torch.index_select(
-                    block_table_tensor[:, : self.num_spec + 1],
-                    0,
-                    spec_sequence_indices,
-                )
-                non_spec_state_indices_tensor = None
                 spec_query_start_loc = query_start_loc[: num_spec_decodes + 1]
                 non_spec_query_start_loc = None
                 non_spec_query_start_loc_cpu = None
@@ -525,17 +594,6 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
                 non_spec_token_indx = index[:num_non_spec_tokens]
                 spec_token_indx = index[num_non_spec_tokens:]
 
-                spec_state_indices_tensor = torch.index_select(
-                    block_table_tensor[:, : self.num_spec + 1],
-                    0,
-                    spec_sequence_indices,
-                )
-                non_spec_state_indices_tensor = torch.index_select(
-                    block_table_tensor[:, 0],
-                    0,
-                    non_spec_sequence_indices,
-                )
-                non_spec_conv1d_cache_indices = non_spec_state_indices_tensor
                 spec_query_lens = torch.index_select(
                     query_lens,
                     0,
@@ -588,21 +646,17 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
         chunk_offsets: torch.Tensor | None = None
         prefill_query_start_loc: torch.Tensor | None = None
         prefill_query_start_loc_cpu: torch.Tensor | None = None
-        prefill_state_indices: torch.Tensor | None = None
         prefill_has_initial_state: torch.Tensor | None = None
         non_spec_chunked_prefill_metadata: GDNChunkedPrefillMetadata | None = None
         if num_prefills > 0:
             if spec_sequence_masks is None and num_decodes > 0:
                 assert non_spec_query_start_loc is not None
                 assert non_spec_query_start_loc_cpu is not None
-                assert non_spec_state_indices_tensor is not None
                 prefill_query_start_loc = non_spec_query_start_loc[num_decodes:] - num_decode_tokens
                 prefill_query_start_loc_cpu = non_spec_query_start_loc_cpu[num_decodes:] - num_decode_tokens
-                prefill_state_indices = non_spec_state_indices_tensor[num_decodes:]
             else:
                 prefill_query_start_loc = non_spec_query_start_loc
                 prefill_query_start_loc_cpu = non_spec_query_start_loc_cpu
-                prefill_state_indices = non_spec_state_indices_tensor
 
             assert prefill_query_start_loc_cpu is not None
             non_spec_chunked_prefill_metadata = _build_non_spec_chunked_prefill_metadata(
@@ -641,6 +695,114 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
         assert not (num_decodes > 0 and num_spec_decodes > 0), (
             f"num_decodes: {num_decodes}, num_spec_decodes: {num_spec_decodes}"
         )
+
+        return GDNBatchedMetadataTemplate(
+            cache_key=cache_key,
+            context_lens_tensor=context_lens_tensor,
+            num_prefills=num_prefills,
+            num_prefill_tokens=num_prefill_tokens,
+            num_decodes=num_decodes,
+            num_decode_tokens=num_decode_tokens,
+            num_spec_decodes=num_spec_decodes,
+            num_spec_decode_tokens=num_spec_decode_tokens,
+            spec_sequence_masks_cpu=spec_sequence_masks_cpu,
+            spec_sequence_masks=spec_sequence_masks,
+            spec_sequence_indices=spec_sequence_indices,
+            non_spec_sequence_indices=non_spec_sequence_indices,
+            spec_token_indx=spec_token_indx,
+            non_spec_token_indx=non_spec_token_indx,
+            spec_query_start_loc=spec_query_start_loc,
+            non_spec_query_start_loc=non_spec_query_start_loc,
+            non_spec_query_start_loc_cpu=non_spec_query_start_loc_cpu,
+            num_accepted_tokens=num_accepted_tokens,
+            chunk_indices=chunk_indices,
+            chunk_offsets=chunk_offsets,
+            prefill_query_start_loc=prefill_query_start_loc,
+            prefill_has_initial_state=prefill_has_initial_state,
+            has_initial_state=has_initial_state,
+            nums_dict=nums_dict,
+            batch_ptr=batch_ptr,
+            token_chunk_offset_ptr=token_chunk_offset_ptr,
+            non_spec_chunked_prefill_metadata=non_spec_chunked_prefill_metadata,
+        )
+
+    def build(  # type: ignore[override]
+        self,
+        common_prefix_len: int,
+        common_attn_metadata: CommonAttentionMetadata,
+        num_accepted_tokens: torch.Tensor | None = None,
+        num_decode_draft_tokens_cpu: torch.Tensor | None = None,
+        fast_build: bool = False,
+        batch_template: GDNBatchedMetadataTemplate | None = None,
+    ) -> GDNAttentionMetadata:
+        del common_prefix_len, fast_build
+        m = common_attn_metadata
+        template_key = self.get_batch_template_key(
+            m,
+            num_accepted_tokens,
+            num_decode_draft_tokens_cpu,
+        )
+        if batch_template is None:
+            batch_template = self.build_batch_template(
+                m,
+                num_accepted_tokens,
+                num_decode_draft_tokens_cpu,
+            )
+        elif batch_template.cache_key != template_key:
+            raise ValueError("Incompatible GDN batch metadata template")
+
+        block_table_tensor = mamba_get_block_table_tensor(
+            m.block_table_tensor,
+            m.seq_lens,
+            self.kv_cache_spec,
+            self.vllm_config.cache_config.mamba_cache_mode,
+        )
+
+        spec_sequence_masks = batch_template.spec_sequence_masks
+        spec_sequence_indices = batch_template.spec_sequence_indices
+        non_spec_sequence_indices = batch_template.non_spec_sequence_indices
+        num_prefills = batch_template.num_prefills
+        num_prefill_tokens = batch_template.num_prefill_tokens
+        num_decodes = batch_template.num_decodes
+        num_decode_tokens = batch_template.num_decode_tokens
+        num_spec_decodes = batch_template.num_spec_decodes
+        num_spec_decode_tokens = batch_template.num_spec_decode_tokens
+        spec_token_indx = batch_template.spec_token_indx
+        non_spec_token_indx = batch_template.non_spec_token_indx
+        spec_query_start_loc = batch_template.spec_query_start_loc
+        non_spec_query_start_loc = batch_template.non_spec_query_start_loc
+        num_accepted_tokens = batch_template.num_accepted_tokens
+
+        non_spec_conv1d_cache_indices: torch.Tensor | None = None
+        if spec_sequence_masks is None:
+            spec_state_indices_tensor = None
+            non_spec_state_indices_tensor = block_table_tensor[:, 0]
+            non_spec_conv1d_cache_indices = block_table_tensor
+        else:
+            assert spec_sequence_indices is not None
+            spec_state_indices_tensor = torch.index_select(
+                block_table_tensor[:, : self.num_spec + 1],
+                0,
+                spec_sequence_indices,
+            )
+            if num_prefills == 0 and num_decodes == 0:
+                non_spec_state_indices_tensor = None
+            else:
+                assert non_spec_sequence_indices is not None
+                non_spec_state_indices_tensor = torch.index_select(
+                    block_table_tensor[:, 0],
+                    0,
+                    non_spec_sequence_indices,
+                )
+                non_spec_conv1d_cache_indices = non_spec_state_indices_tensor
+
+        prefill_state_indices: torch.Tensor | None = None
+        if num_prefills > 0:
+            assert non_spec_state_indices_tensor is not None
+            if spec_sequence_masks is None and num_decodes > 0:
+                prefill_state_indices = non_spec_state_indices_tensor[num_decodes:]
+            else:
+                prefill_state_indices = non_spec_state_indices_tensor
 
         batch_size = m.num_actual_tokens
 
@@ -732,12 +894,12 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
             num_spec_decodes=num_spec_decodes,
             num_spec_decode_tokens=num_spec_decode_tokens,
             num_actual_tokens=m.num_actual_tokens,
-            has_initial_state=has_initial_state,
-            chunk_indices=chunk_indices,
-            chunk_offsets=chunk_offsets,
-            prefill_query_start_loc=prefill_query_start_loc,
+            has_initial_state=batch_template.has_initial_state,
+            chunk_indices=batch_template.chunk_indices,
+            chunk_offsets=batch_template.chunk_offsets,
+            prefill_query_start_loc=batch_template.prefill_query_start_loc,
             prefill_state_indices=prefill_state_indices,
-            prefill_has_initial_state=prefill_has_initial_state,
+            prefill_has_initial_state=batch_template.prefill_has_initial_state,
             spec_query_start_loc=spec_query_start_loc,
             non_spec_query_start_loc=non_spec_query_start_loc,
             spec_state_indices_tensor=spec_state_indices_tensor,
@@ -746,13 +908,13 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
             spec_token_indx=spec_token_indx,
             non_spec_token_indx=non_spec_token_indx,
             num_accepted_tokens=num_accepted_tokens,
-            nums_dict=nums_dict,
-            batch_ptr=batch_ptr,
-            token_chunk_offset_ptr=token_chunk_offset_ptr,
+            nums_dict=batch_template.nums_dict,
+            batch_ptr=batch_template.batch_ptr,
+            token_chunk_offset_ptr=batch_template.token_chunk_offset_ptr,
         )
         attn_metadata = self._attach_non_spec_prefill_metadata(
             attn_metadata,
-            non_spec_chunked_prefill_metadata,
+            batch_template.non_spec_chunked_prefill_metadata,
             non_spec_conv1d_cache_indices,
         )
         attn_metadata = self._attach_spec_decode_metadata(
