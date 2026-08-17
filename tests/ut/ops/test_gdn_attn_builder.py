@@ -776,32 +776,44 @@ class TestSharedBatchPlan:
         return builder
 
     @staticmethod
-    def _make_metadata(block_table):
-        return SimpleNamespace(
-            num_reqs=4,
-            num_actual_tokens=16,
-            query_start_loc=torch.tensor([0, 4, 8, 12, 16], dtype=torch.int32),
-            query_start_loc_cpu=torch.tensor([0, 4, 8, 12, 16], dtype=torch.int32),
-            seq_lens=torch.tensor([9, 9, 9, 9], dtype=torch.int32),
-            block_table_tensor=block_table,
-        )
+    def _make_group_metadatas(num_groups, num_reqs=4):
+        """Mirror how build_attn_metadata feeds the group loop.
+
+        It builds one AscendCommonAttentionMetadata per KV cache group from the
+        same batch tensors, varying only the block table and slot mapping. The
+        plan key reads tensor addresses, so a test that rebuilt the batch
+        tensors per group would miss the cache for a reason production never
+        hits.
+        """
+        query_start_loc = torch.tensor([0, 4, 8, 12, 16], dtype=torch.int32)
+        query_start_loc_cpu = torch.tensor([0, 4, 8, 12, 16], dtype=torch.int32)
+        seq_lens = torch.tensor([9, 9, 9, 9], dtype=torch.int32)
+        return [
+            SimpleNamespace(
+                num_reqs=num_reqs,
+                num_actual_tokens=16,
+                query_start_loc=query_start_loc,
+                query_start_loc_cpu=query_start_loc_cpu,
+                seq_lens=seq_lens[:num_reqs],
+                block_table_tensor=torch.full((num_reqs, 8), gid, dtype=torch.int32),
+            )
+            for gid in range(num_groups)
+        ]
 
     def test_key_ignores_the_only_per_group_field(self):
-        """block_table is what build_attn_metadata varies per group, so two
-        groups must land on the same key."""
+        """block_table is what build_attn_metadata varies per group, so every
+        group in one batch must land on the same key."""
         builder = self._make_plan_builder()
-        group_a = self._make_metadata(torch.zeros((4, 8), dtype=torch.int32))
-        group_b = self._make_metadata(torch.ones((4, 8), dtype=torch.int32))
+        groups = self._make_group_metadatas(10)
 
-        key_a = builder._shared_batch_plan_key(group_a, None, None)
-        key_b = builder._shared_batch_plan_key(group_b, None, None)
+        keys = {builder._shared_batch_plan_key(m, None, None) for m in groups}
 
-        assert key_a == key_b
+        assert len(keys) == 1
 
     def test_key_separates_different_batches(self):
         builder = self._make_plan_builder()
-        first = self._make_metadata(torch.zeros((4, 8), dtype=torch.int32))
-        second = self._make_metadata(torch.zeros((4, 8), dtype=torch.int32))
+        first = self._make_group_metadatas(1)[0]
+        second = self._make_group_metadatas(1)[0]
         second.num_reqs = 3
 
         assert builder._shared_batch_plan_key(first, None, None) != builder._shared_batch_plan_key(
@@ -820,8 +832,9 @@ class TestSharedBatchPlan:
 
         builder._compute_shared_batch_plan = fake_compute
 
-        for block_table in (torch.zeros((4, 8), dtype=torch.int32), torch.ones((4, 8), dtype=torch.int32)):
-            got = builder._get_shared_batch_plan(self._make_metadata(block_table), None, None, cache)
+        # Qwen3.6 + DSpark puts 10 Mamba groups in one invocation.
+        for m in self._make_group_metadatas(10):
+            got = builder._get_shared_batch_plan(m, None, None, cache)
             assert got is sentinel
 
         assert len(calls) == 1
@@ -833,12 +846,26 @@ class TestSharedBatchPlan:
         calls = []
         builder._compute_shared_batch_plan = lambda *a: calls.append(1)
 
-        for _ in range(2):
-            builder._get_shared_batch_plan(
-                self._make_metadata(torch.zeros((4, 8), dtype=torch.int32)), None, None, None
-            )
+        for m in self._make_group_metadatas(2):
+            builder._get_shared_batch_plan(m, None, None, None)
 
         assert len(calls) == 2
+
+    def test_a_key_miss_only_costs_speed(self):
+        """If a caller ever rebuilds the batch tensors per group the key stops
+        matching. That must degrade to today's recompute-per-group, never to a
+        reused plan built from someone else's batch."""
+        builder = self._make_plan_builder()
+        cache = {}
+        calls = []
+        builder._compute_shared_batch_plan = lambda *a: (calls.append(1), object())[1]
+
+        for _ in range(3):
+            fresh = self._make_group_metadatas(1)[0]
+            builder._get_shared_batch_plan(fresh, None, None, cache)
+
+        assert len(calls) == 3
+        assert len(cache) == 3
 
     def test_state_indices_follow_this_group_block_table(self):
         """The derived indices are the whole reason each group still calls
