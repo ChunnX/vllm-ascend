@@ -44,6 +44,7 @@ from vllm.v1.worker.utils import AttentionGroup
 
 from vllm_ascend.attention.attention_v1 import AscendAttentionState
 from vllm_ascend.attention.dsa_v1 import AscendDSAMetadataBuilder
+from vllm_ascend.ops.gdn_attn_builder import AscendGDNAttentionMetadataBuilder
 from vllm_ascend.attention.utils import AscendCommonAttentionMetadata
 from vllm_ascend.core.kv_cache_interface import (
     AscendMLAAttentionSpec,
@@ -173,6 +174,12 @@ def build_attn_metadata(
     prefill_ratio_to_sas_metadata: dict[Any, Any] = {}
     decode_ratio_to_sas_metadata: dict[Any, Any] = {}
     common_ratio_to_sas_metadata: dict[Any, Any] = {}
+    # Same idea for GDN. A hybrid model spreads its Mamba layers over several
+    # KV cache groups (Qwen3.6 + DSpark: 10 of the 15), and the only field the
+    # loop below varies for them is the block table, so the batch-shape half of
+    # each build is identical. Scope it to this invocation: the plan keys off
+    # tensor addresses, which are recycled between steps.
+    gdn_batch_shared_cache: dict[Any, Any] = {}
     kv_cache_groups = kv_cache_config.kv_cache_groups
     for i, kv_cache_spec in enumerate(kv_cache_groups):
         block_table = block_tables[i]
@@ -225,6 +232,10 @@ def build_attn_metadata(
                         decode_ratio_to_sas_metadata=decode_ratio_to_sas_metadata,
                         common_ratio_to_sas_metadata=common_ratio_to_sas_metadata,
                         block_size=attn_group.kv_cache_spec.block_size,
+                    )
+                if isinstance(attn_metadata_builder, AscendGDNAttentionMetadataBuilder):
+                    attn_metadata_extra_kwargs.update(
+                        batch_shared_cache=gdn_batch_shared_cache,
                     )
                 metadata = attn_metadata_builder.build(
                     common_prefix_len=0,
