@@ -1413,7 +1413,12 @@ class AscendAttentionBackendImpl(AttentionImpl):
         learnable-sink layers cannot be delegated and must fail loudly instead
         of silently computing full attention.
         """
-        if not getattr(attn_metadata, "use_fia_sink", False):
+        # Require the flag to be exactly True rather than merely truthy. The
+        # builder sets a real bool, and the next branch raises rather than
+        # returning False, so a stand-in object that is truthy by default
+        # (a test double, a sentinel) would turn an unrelated layer into a
+        # hard failure instead of leaving it on the normal path.
+        if getattr(attn_metadata, "use_fia_sink", False) is not True:
             return False
         if self.sliding_window is not None or self.sinks is not None:
             raise RuntimeError(
