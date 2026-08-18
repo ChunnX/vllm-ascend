@@ -273,6 +273,25 @@
 #       PR #48776.
 #
 # ** 11. File: platform/patch_mamba_config.py**
+#   3. `vllm.v1.core.kv_cache_utils.get_kv_cache_groups`
+#      `vllm.v1.core.kv_cache_utils._get_kv_cache_groups_uniform_page_size`
+#    Why:
+#       Upstream uses the smallest KV-spec bucket as the common group width.
+#       A small heterogeneous DSpark draft bucket can therefore split a much
+#       larger Mamba bucket into many groups and multiply metadata overhead.
+#    How:
+#       Keep a padding-safe Pareto selector by default. For DSpark, propagate a
+#       context-local 20% padding budget from get_kv_cache_groups and select the
+#       width that minimizes group count. The patched core functions are shared
+#       by scheduler and workers; other speculative methods keep the safe path.
+#    Related PR (if no, explain why):
+#       No upstream PR yet; this is the implementation of the reviewed DSpark
+#       KV grouping recovery plan.
+#    Future Plan:
+#       Upstream the Pareto group-size selector and remove this patch after the
+#       supported vLLM version contains it.
+#
+# ** 8. File: platform/patch_mamba_config.py**
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 #   1. `vllm.model_executor.models.config.HybridAttentionMambaModelConfig.verify_and_update_config`
 #    Why:
