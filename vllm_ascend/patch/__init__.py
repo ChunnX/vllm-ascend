@@ -268,6 +268,28 @@
 #       Remove this patch once upstream vLLM supports hybrid KV cache + CP for
 #       non-CUDA backends, or exposes a platform hook for this behavior.
 #
+#   2. `vllm.v1.core.kv_cache_utils.get_kv_cache_groups`
+#      `vllm.v1.core.kv_cache_utils._get_kv_cache_groups_uniform_page_size`
+#      `vllm.v1.core.kv_cache_utils._get_kv_cache_groups_uniform_groups`
+#    Why:
+#       Upstream uses the smallest KV-spec bucket as the common group width.
+#       A small heterogeneous DSpark draft bucket can therefore split a much
+#       larger Mamba bucket into many groups and multiply metadata overhead.
+#    How:
+#       Keep a padding-safe Pareto selector by default. For DSpark, propagate a
+#       context-local 20% padding budget from get_kv_cache_groups and select the
+#       width that minimizes group count. The patched core functions are shared
+#       by scheduler and workers; other speculative methods keep the safe path.
+#       (0.28.0 reaches uniform grouping via _get_kv_cache_groups_uniform_groups,
+#       so that name is patched too; the budget nests around main's GLM5-next
+#       dispatch rather than replacing it.)
+#    Related PR (if no, explain why):
+#       No upstream PR yet; this is the implementation of the reviewed DSpark
+#       KV grouping recovery plan.
+#    Future Plan:
+#       Upstream the Pareto group-size selector and remove this patch after the
+#       supported vLLM version contains it.
+#
 # ** 10. File: platform/patch_mamba_block_aligned_split.py**
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 #   1. `vllm.v1.core.sched.scheduler.Scheduler._mamba_block_aligned_split`
