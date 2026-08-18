@@ -13,7 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from dataclasses import dataclass
+import logging
+from dataclasses import dataclass, fields
 
 import torch
 from vllm.config import VllmConfig
@@ -31,6 +32,7 @@ from vllm.v1.attention.backends.utils import (
     mamba_get_block_table_tensor,
     split_decodes_and_prefills,
 )
+from vllm.logger import logger
 from vllm.v1.kv_cache_interface import AttentionSpec
 
 from vllm_ascend.ops.triton.fla.utils import (
@@ -220,6 +222,51 @@ def _build_non_spec_chunked_prefill_metadata(
         cu_seqlens_kern=cu_seqlens_kern,
         keep_meta=keep_meta,
     )
+
+
+# How ``_derive_group_state_indices`` turns this group's block table into state
+# indices. Recorded on the plan so later groups reproduce the branch the first
+# group took without redoing the batch-shape work that selected it.
+_STATE_INDEX_NON_SPEC = "non_spec"
+_STATE_INDEX_SPEC_ONLY = "spec_only"
+_STATE_INDEX_SPEC_MIXED = "spec_mixed"
+
+
+@dataclass
+class _GDNSharedBatchPlan:
+    """One batch's GDN metadata, minus anything derived from a block table.
+
+    A hybrid model spreads its Mamba layers over several KV cache groups, and
+    ``build_attn_metadata`` calls the GDN builder once per group with metadata
+    that differs only in ``block_table_tensor`` and ``slot_mapping``. Every
+    field here is a function of the query/sequence lengths alone, so it is
+    computed for the first group and reused by the rest.
+    """
+
+    state_index_mode: str
+    num_prefills: int
+    num_decodes: int
+    num_decode_tokens: int
+    num_prefill_tokens: int
+    num_spec_decodes: int
+    num_spec_decode_tokens: int
+    spec_sequence_masks: torch.Tensor | None
+    spec_sequence_indices: torch.Tensor | None
+    non_spec_sequence_indices: torch.Tensor | None
+    spec_token_indx: torch.Tensor | None
+    non_spec_token_indx: torch.Tensor | None
+    spec_query_start_loc: torch.Tensor | None
+    non_spec_query_start_loc: torch.Tensor | None
+    num_accepted_tokens: torch.Tensor | None
+    has_initial_state: torch.Tensor | None
+    prefill_has_initial_state: torch.Tensor | None
+    prefill_query_start_loc: torch.Tensor | None
+    chunk_indices: torch.Tensor | None
+    chunk_offsets: torch.Tensor | None
+    non_spec_chunked_prefill_metadata: GDNChunkedPrefillMetadata | None
+    nums_dict: dict | None
+    batch_ptr: torch.Tensor | None
+    token_chunk_offset_ptr: torch.Tensor | None
 
 
 class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
@@ -538,21 +585,26 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
     ) -> GDNAttentionMetadata:
         m = _treat_single_token_prefills_with_state_as_decodes(common_attn_metadata)
 
+    def _compute_shared_batch_plan(
+        self,
+        m: CommonAttentionMetadata,
+        num_accepted_tokens: torch.Tensor | None,
+        num_decode_draft_tokens_cpu: torch.Tensor | None,
+    ) -> _GDNSharedBatchPlan:
+        """The batch-shape half of ``build``, with no block table involved.
+
+        This is the original ``build`` body up to the point where state indices
+        are derived; the block-table work moved to
+        ``_derive_group_state_indices`` so it can stay per-group.
+        """
         query_start_loc = m.query_start_loc
         query_start_loc_cpu = m.query_start_loc_cpu
         context_lens_tensor = m.compute_num_computed_tokens()
         nums_dict, batch_ptr, token_chunk_offset_ptr = None, None, None
-        block_table_tensor = mamba_get_block_table_tensor(
-            m.block_table_tensor,
-            m.seq_lens,
-            self.kv_cache_spec,
-            self.vllm_config.cache_config.mamba_cache_mode,
-        )
 
         spec_sequence_masks_cpu: torch.Tensor | None = None
         spec_sequence_indices: torch.Tensor | None = None
         non_spec_sequence_indices: torch.Tensor | None = None
-        non_spec_conv1d_cache_indices: torch.Tensor | None = None
         if not self.use_spec_decode or num_decode_draft_tokens_cpu is None:
             spec_sequence_masks = None
             num_spec_decodes = 0
@@ -590,9 +642,7 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
             num_spec_decode_tokens = 0
             spec_token_indx = None
             non_spec_token_indx = None
-            spec_state_indices_tensor = None
-            non_spec_state_indices_tensor = block_table_tensor[:, 0]
-            non_spec_conv1d_cache_indices = block_table_tensor
+            state_index_mode = _STATE_INDEX_NON_SPEC
             spec_query_start_loc = None
             non_spec_query_start_loc = query_start_loc
             non_spec_query_start_loc_cpu = query_start_loc_cpu
@@ -633,12 +683,7 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
                     dtype=torch.int32,
                     device=query_start_loc.device,
                 )
-                spec_state_indices_tensor = torch.index_select(
-                    block_table_tensor[:, : self.num_spec + 1],
-                    0,
-                    spec_sequence_indices,
-                )
-                non_spec_state_indices_tensor = None
+                state_index_mode = _STATE_INDEX_SPEC_ONLY
                 spec_query_start_loc = query_start_loc[: num_spec_decodes + 1]
                 non_spec_query_start_loc = None
                 non_spec_query_start_loc_cpu = None
@@ -652,18 +697,8 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
                 num_non_spec_tokens = num_prefill_tokens + num_decode_tokens
                 non_spec_token_indx = index[:num_non_spec_tokens]
                 spec_token_indx = index[num_non_spec_tokens:]
+                state_index_mode = _STATE_INDEX_SPEC_MIXED
 
-                spec_state_indices_tensor = torch.index_select(
-                    block_table_tensor[:, : self.num_spec + 1],
-                    0,
-                    spec_sequence_indices,
-                )
-                non_spec_state_indices_tensor = torch.index_select(
-                    block_table_tensor[:, 0],
-                    0,
-                    non_spec_sequence_indices,
-                )
-                non_spec_conv1d_cache_indices = non_spec_state_indices_tensor
                 spec_query_lens = torch.index_select(
                     query_lens,
                     0,
@@ -725,21 +760,18 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
         chunk_offsets: torch.Tensor | None = None
         prefill_query_start_loc: torch.Tensor | None = None
         prefill_query_start_loc_cpu: torch.Tensor | None = None
-        prefill_state_indices: torch.Tensor | None = None
         prefill_has_initial_state: torch.Tensor | None = None
         non_spec_chunked_prefill_metadata: GDNChunkedPrefillMetadata | None = None
+        has_initial_state: torch.Tensor | None = None
         if num_prefills > 0:
             if spec_sequence_masks is None and num_decodes > 0:
                 assert non_spec_query_start_loc is not None
                 assert non_spec_query_start_loc_cpu is not None
-                assert non_spec_state_indices_tensor is not None
                 prefill_query_start_loc = non_spec_query_start_loc[num_decodes:] - num_decode_tokens
                 prefill_query_start_loc_cpu = non_spec_query_start_loc_cpu[num_decodes:] - num_decode_tokens
-                prefill_state_indices = non_spec_state_indices_tensor[num_decodes:]
             else:
                 prefill_query_start_loc = non_spec_query_start_loc
                 prefill_query_start_loc_cpu = non_spec_query_start_loc_cpu
-                prefill_state_indices = non_spec_state_indices_tensor
 
             assert prefill_query_start_loc_cpu is not None
             non_spec_chunked_prefill_metadata = _build_non_spec_chunked_prefill_metadata(
@@ -752,7 +784,6 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
             chunk_indices = non_spec_chunked_prefill_metadata.chunk_indices_chunk64
             chunk_offsets = non_spec_chunked_prefill_metadata.chunk_offsets_chunk64
 
-        if num_prefills > 0:
             (
                 has_initial_state,
                 nums_dict,
@@ -772,8 +803,210 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
                 prefill_has_initial_state = has_initial_state[num_decodes:]
             else:
                 prefill_has_initial_state = has_initial_state
-        else:
-            has_initial_state = None
+
+        return _GDNSharedBatchPlan(
+            state_index_mode=state_index_mode,
+            num_prefills=num_prefills,
+            num_decodes=num_decodes,
+            num_decode_tokens=num_decode_tokens,
+            num_prefill_tokens=num_prefill_tokens,
+            num_spec_decodes=num_spec_decodes,
+            num_spec_decode_tokens=num_spec_decode_tokens,
+            spec_sequence_masks=spec_sequence_masks,
+            spec_sequence_indices=spec_sequence_indices,
+            non_spec_sequence_indices=non_spec_sequence_indices,
+            spec_token_indx=spec_token_indx,
+            non_spec_token_indx=non_spec_token_indx,
+            spec_query_start_loc=spec_query_start_loc,
+            non_spec_query_start_loc=non_spec_query_start_loc,
+            num_accepted_tokens=num_accepted_tokens,
+            has_initial_state=has_initial_state,
+            prefill_has_initial_state=prefill_has_initial_state,
+            prefill_query_start_loc=prefill_query_start_loc,
+            chunk_indices=chunk_indices,
+            chunk_offsets=chunk_offsets,
+            non_spec_chunked_prefill_metadata=non_spec_chunked_prefill_metadata,
+            nums_dict=nums_dict,
+            batch_ptr=batch_ptr,
+            token_chunk_offset_ptr=token_chunk_offset_ptr,
+        )
+
+    def _shared_batch_plan_key(
+        self,
+        m: CommonAttentionMetadata,
+        num_accepted_tokens: torch.Tensor | None,
+        num_decode_draft_tokens_cpu: torch.Tensor | None,
+    ) -> tuple:
+        """Identify one batch's group-independent inputs.
+
+        Deliberately excludes ``self``: the point is for every GDN group in one
+        invocation to share a plan. Also excludes ``block_table_tensor`` and
+        ``slot_mapping``, the only two fields ``build_attn_metadata`` varies
+        per group.
+
+        ``data_ptr()`` is safe here only because the cache dict lives for a
+        single ``build_attn_metadata`` call; addresses are recycled across
+        steps, so a longer-lived dict would alias unrelated batches.
+        """
+        ptr = lambda t: None if t is None else t.data_ptr()  # noqa: E731
+        return (
+            m.num_reqs,
+            m.num_actual_tokens,
+            ptr(m.query_start_loc),
+            ptr(m.query_start_loc_cpu),
+            ptr(m.seq_lens),
+            ptr(num_accepted_tokens),
+            ptr(num_decode_draft_tokens_cpu),
+            self.num_spec,
+            self.use_spec_decode,
+        )
+
+    def _get_shared_batch_plan(
+        self,
+        m: CommonAttentionMetadata,
+        num_accepted_tokens: torch.Tensor | None,
+        num_decode_draft_tokens_cpu: torch.Tensor | None,
+        batch_shared_cache: dict | None,
+    ) -> _GDNSharedBatchPlan:
+        """Compute the batch-shape work once per invocation, not once per group.
+
+        A hybrid model splits its Mamba layers over several KV cache groups
+        (Qwen3.6 + DSpark: 10), and ``build_attn_metadata`` calls this builder
+        once per group. Everything below depends on query/sequence lengths
+        alone -- only the state indices derive from the group's block table --
+        so without this the same batch-shape computation runs once per group.
+
+        Mirrors the DSA ``*_ratio_to_sas_metadata`` dicts that
+        ``build_attn_metadata`` already threads through for the same reason.
+        """
+        if batch_shared_cache is None:
+            return self._compute_shared_batch_plan(m, num_accepted_tokens, num_decode_draft_tokens_cpu)
+
+        key = self._shared_batch_plan_key(m, num_accepted_tokens, num_decode_draft_tokens_cpu)
+        plan = batch_shared_cache.get(key)
+        if plan is None:
+            plan = self._compute_shared_batch_plan(m, num_accepted_tokens, num_decode_draft_tokens_cpu)
+            batch_shared_cache[key] = plan
+        elif logger.isEnabledFor(logging.DEBUG):
+            # Recompute and compare: proves the cached fields really are
+            # group-independent. A field that secretly varies per group would
+            # otherwise corrupt results silently, which is far more expensive
+            # to find later than an assertion here.
+            self._assert_plan_is_group_independent(
+                plan,
+                self._compute_shared_batch_plan(m, num_accepted_tokens, num_decode_draft_tokens_cpu),
+            )
+        return plan
+
+    @staticmethod
+    def _assert_plan_is_group_independent(
+        cached: _GDNSharedBatchPlan,
+        fresh: _GDNSharedBatchPlan,
+    ) -> None:
+        for field in fields(_GDNSharedBatchPlan):
+            lhs = getattr(cached, field.name)
+            rhs = getattr(fresh, field.name)
+            if isinstance(lhs, torch.Tensor) and isinstance(rhs, torch.Tensor):
+                same = lhs.shape == rhs.shape and bool(torch.equal(lhs, rhs))
+            elif isinstance(lhs, torch.Tensor) or isinstance(rhs, torch.Tensor):
+                same = False
+            elif field.name in ("nums_dict", "non_spec_chunked_prefill_metadata"):
+                same = True  # opaque payloads; covered by the tensors they wrap
+            else:
+                same = lhs == rhs
+            if not same:
+                raise AssertionError(
+                    f"GDN shared batch plan field {field.name!r} differs between KV cache "
+                    "groups; it is not group-independent and must move out of the plan"
+                )
+
+    def _derive_group_state_indices(
+        self,
+        plan: _GDNSharedBatchPlan,
+        block_table_tensor: torch.Tensor,
+    ) -> tuple[torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
+        """The only part of ``build`` that depends on this group's block table."""
+        if plan.state_index_mode == _STATE_INDEX_NON_SPEC:
+            return None, block_table_tensor[:, 0], block_table_tensor
+
+        assert plan.spec_sequence_indices is not None
+        spec_state_indices_tensor = torch.index_select(
+            block_table_tensor[:, : self.num_spec + 1],
+            0,
+            plan.spec_sequence_indices,
+        )
+        if plan.state_index_mode == _STATE_INDEX_SPEC_ONLY:
+            return spec_state_indices_tensor, None, None
+
+        assert plan.non_spec_sequence_indices is not None
+        non_spec_state_indices_tensor = torch.index_select(
+            block_table_tensor[:, 0],
+            0,
+            plan.non_spec_sequence_indices,
+        )
+        return (
+            spec_state_indices_tensor,
+            non_spec_state_indices_tensor,
+            non_spec_state_indices_tensor,
+        )
+
+    def build(  # type: ignore[override]
+        self,
+        common_prefix_len: int,
+        common_attn_metadata: CommonAttentionMetadata,
+        num_accepted_tokens: torch.Tensor | None = None,
+        num_decode_draft_tokens_cpu: torch.Tensor | None = None,
+        fast_build: bool = False,
+        batch_shared_cache: dict | None = None,
+    ) -> GDNAttentionMetadata:
+        m = common_attn_metadata
+        plan = self._get_shared_batch_plan(
+            m, num_accepted_tokens, num_decode_draft_tokens_cpu, batch_shared_cache
+        )
+
+        num_prefills = plan.num_prefills
+        num_decodes = plan.num_decodes
+        num_decode_tokens = plan.num_decode_tokens
+        num_prefill_tokens = plan.num_prefill_tokens
+        num_spec_decodes = plan.num_spec_decodes
+        num_spec_decode_tokens = plan.num_spec_decode_tokens
+        spec_sequence_masks = plan.spec_sequence_masks
+        spec_token_indx = plan.spec_token_indx
+        non_spec_token_indx = plan.non_spec_token_indx
+        spec_query_start_loc = plan.spec_query_start_loc
+        non_spec_query_start_loc = plan.non_spec_query_start_loc
+        num_accepted_tokens = plan.num_accepted_tokens
+        has_initial_state = plan.has_initial_state
+        chunk_indices = plan.chunk_indices
+        chunk_offsets = plan.chunk_offsets
+        prefill_query_start_loc = plan.prefill_query_start_loc
+        prefill_has_initial_state = plan.prefill_has_initial_state
+        non_spec_chunked_prefill_metadata = plan.non_spec_chunked_prefill_metadata
+        nums_dict = plan.nums_dict
+        batch_ptr = plan.batch_ptr
+        token_chunk_offset_ptr = plan.token_chunk_offset_ptr
+
+        # Everything below is this group's own: the block table it addresses,
+        # the state indices derived from it, and the per-builder graph buffers.
+        block_table_tensor = mamba_get_block_table_tensor(
+            m.block_table_tensor,
+            m.seq_lens,
+            self.kv_cache_spec,
+            self.vllm_config.cache_config.mamba_cache_mode,
+        )
+        (
+            spec_state_indices_tensor,
+            non_spec_state_indices_tensor,
+            non_spec_conv1d_cache_indices,
+        ) = self._derive_group_state_indices(plan, block_table_tensor)
+
+        prefill_state_indices: torch.Tensor | None = None
+        if num_prefills > 0:
+            if spec_sequence_masks is None and num_decodes > 0:
+                assert non_spec_state_indices_tensor is not None
+                prefill_state_indices = non_spec_state_indices_tensor[num_decodes:]
+            else:
+                prefill_state_indices = non_spec_state_indices_tensor
 
         assert not (num_decodes > 0 and num_spec_decodes > 0), (
             f"num_decodes: {num_decodes}, num_spec_decodes: {num_spec_decodes}"
@@ -791,6 +1024,10 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
             # passed to conv1d/recurrent kernels at request granularity; padding
             # it to the token count makes the conv1d update kernel treat every
             # token as an independent decode sequence.
+            #
+            # These buffers belong to this builder, so each KV cache group
+            # keeps its own graph-stable addresses even though the values
+            # copied in come from the shared plan.
             spec_batch_size = m.num_reqs
 
             self.spec_state_indices_tensor[spec_batch_size:].fill_(NULL_BLOCK_ID)
