@@ -2,11 +2,18 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM-Ascend project
 import math
 from collections import defaultdict
+from collections.abc import Sequence
+from contextvars import ContextVar
 
 import vllm.v1.core.kv_cache_utils
 from vllm.config import VllmConfig
+from vllm.logger import logger
 from vllm.utils.math_utils import cdiv, round_up
-from vllm.v1.core.kv_cache_utils import _approximate_gcd, may_override_num_blocks
+from vllm.v1.core.kv_cache_utils import (
+    _approximate_gcd,
+    create_kv_cache_group_specs,
+    may_override_num_blocks,
+)
 from vllm.v1.kv_cache_interface import (
     FullAttentionSpec,
     HiddenStateCacheSpec,
@@ -23,6 +30,141 @@ from vllm.v1.kv_cache_interface import (
 _orig_resolve_kv_cache_block_sizes = vllm.v1.core.kv_cache_utils.resolve_kv_cache_block_sizes
 
 _orig_get_kv_cache_groups = vllm.v1.core.kv_cache_utils.get_kv_cache_groups
+
+KV_GROUP_SIZE_BALANCE_THRESHOLD = 1.5
+DSPARK_KV_GROUP_MAX_PADDING_RATIO = 0.20
+_KV_GROUP_MAX_PADDING_RATIO: ContextVar[float | None] = ContextVar(
+    "ascend_kv_group_max_padding_ratio",
+    default=None,
+)
+
+
+def _get_default_kv_group_size(layer_counts: Sequence[int]) -> int:
+    """Return upstream's uniform-page-size grouping heuristic."""
+    if not layer_counts or any(count <= 0 for count in layer_counts):
+        raise ValueError("layer_counts must contain only positive values")
+
+    min_num_layers = min(layer_counts)
+    max_num_layers = max(layer_counts)
+    if max_num_layers < min_num_layers * KV_GROUP_SIZE_BALANCE_THRESHOLD:
+        return max_num_layers
+    return min_num_layers
+
+
+def _evaluate_kv_group_size(
+    layer_counts: Sequence[int],
+    group_size: int,
+) -> tuple[int, int]:
+    """Return ``(num_groups, padding_layers)`` for one group size."""
+    if group_size <= 0:
+        raise ValueError("group_size must be positive")
+
+    num_groups = sum(cdiv(count, group_size) for count in layer_counts)
+    padding_layers = num_groups * group_size - sum(layer_counts)
+    return num_groups, padding_layers
+
+
+def _select_kv_group_size(
+    layer_counts: Sequence[int],
+    *,
+    max_padding_ratio: float | None = None,
+) -> int:
+    """Minimize groups within the selected padding budget.
+
+    The upstream heuristic remains the baseline and fallback. A candidate is
+    eligible only when its conceptual padding is no greater than the baseline,
+    unless an explicit padding-ratio budget is supplied. Among eligible
+    candidates, prefer fewer groups, less padding, and finally a larger group
+    size for deterministic tie-breaking.
+    """
+    if max_padding_ratio is not None and max_padding_ratio < 0:
+        raise ValueError("max_padding_ratio must be non-negative")
+
+    default_group_size = _get_default_kv_group_size(layer_counts)
+    default_num_groups, default_padding = _evaluate_kv_group_size(
+        layer_counts,
+        default_group_size,
+    )
+    best_group_size = default_group_size
+    best_score = (default_num_groups, default_padding, -default_group_size)
+
+    for candidate in range(1, max(layer_counts) + 1):
+        num_groups, padding_layers = _evaluate_kv_group_size(
+            layer_counts,
+            candidate,
+        )
+        if max_padding_ratio is None:
+            if padding_layers > default_padding:
+                continue
+        elif padding_layers / sum(layer_counts) > max_padding_ratio:
+            continue
+        candidate_score = (num_groups, padding_layers, -candidate)
+        if candidate_score < best_score:
+            best_group_size = candidate
+            best_score = candidate_score
+
+    return best_group_size
+
+
+def _get_kv_cache_groups_uniform_page_size(
+    kv_cache_spec: dict[str, KVCacheSpec],
+    *,
+    max_padding_ratio: float | None = None,
+) -> list[KVCacheGroupSpec]:
+    """Group uniform-page-size layers with a bounded Pareto choice."""
+    same_type_layers: dict[KVCacheSpec, list[str]] = defaultdict(list)
+    for layer_name, layer_spec in kv_cache_spec.items():
+        same_type_layers[layer_spec].append(layer_name)
+
+    layer_counts = [len(layers) for layers in same_type_layers.values()]
+    default_group_size = _get_default_kv_group_size(layer_counts)
+    if max_padding_ratio is None:
+        max_padding_ratio = _KV_GROUP_MAX_PADDING_RATIO.get()
+    group_size = _select_kv_group_size(
+        layer_counts,
+        max_padding_ratio=max_padding_ratio,
+    )
+    if group_size != default_group_size:
+        default_num_groups, default_padding = _evaluate_kv_group_size(
+            layer_counts,
+            default_group_size,
+        )
+        num_groups, padding_layers = _evaluate_kv_group_size(
+            layer_counts,
+            group_size,
+        )
+        mode = "dspark" if max_padding_ratio is not None else "padding_safe"
+        logger.info_once(
+            "[KV-GROUP-OPT] mode=%s selected group_size=%d for "
+            "layer_counts=%s: groups %d->%d, padding_layers %d->%d, "
+            "padding_ratio=%.2f%%",
+            mode,
+            group_size,
+            tuple(sorted(layer_counts)),
+            default_num_groups,
+            num_groups,
+            default_padding,
+            padding_layers,
+            padding_layers / sum(layer_counts) * 100,
+        )
+
+    grouped_layers: list[list[str]] = []
+    for layers in same_type_layers.values():
+        num_padding_layers = group_size - len(layers) % group_size
+        if num_padding_layers != group_size:
+            logger.warning(
+                "Add %d padding layers, may waste at most %.2f%% KV cache memory",
+                num_padding_layers,
+                num_padding_layers / len(layers) * 100,
+            )
+        num_groups = cdiv(len(layers), group_size)
+        for group_idx in range(num_groups):
+            # Keep upstream's stride split so PP ranks see balanced groups.
+            grouped_layers.append(layers[group_idx::num_groups])
+
+    return create_kv_cache_group_specs(kv_cache_spec, grouped_layers)
+
+
 
 
 def _ascend_resolve_kv_cache_block_sizes(
@@ -109,6 +251,13 @@ def _try_get_full_allocation_fallback_groups(
 
 
 def get_kv_cache_groups(vllm_config: VllmConfig, kv_cache_spec: dict[str, KVCacheSpec]) -> list[KVCacheGroupSpec]:
+    # Two independent patches share this entry point: the DSpark padding
+    # budget below, and the full-allocation fallback this branch already
+    # carried for GLM-5.2. Nest them so neither is lost.
+    speculative_config = vllm_config.speculative_config
+    use_dspark = speculative_config is not None and speculative_config.use_dspark()
+    max_padding_ratio = DSPARK_KV_GROUP_MAX_PADDING_RATIO if use_dspark else None
+    context_token = _KV_GROUP_MAX_PADDING_RATIO.set(max_padding_ratio)
     try:
         return _orig_get_kv_cache_groups(vllm_config, kv_cache_spec)
     except NotImplementedError as exc:
@@ -128,6 +277,8 @@ def get_kv_cache_groups(vllm_config: VllmConfig, kv_cache_spec: dict[str, KVCach
                 f"{spec_summary}."
             ) from exc
         return fallback_groups
+    finally:
+        _KV_GROUP_MAX_PADDING_RATIO.reset(context_token)
 
 
 def group_and_unify_kv_cache_specs(
@@ -322,6 +473,7 @@ def _get_kv_cache_config_deepseek_v4(
 vllm.v1.core.kv_cache_utils.resolve_kv_cache_block_sizes = _ascend_resolve_kv_cache_block_sizes
 vllm.v1.core.kv_cache_utils.get_kv_cache_groups = get_kv_cache_groups
 vllm.v1.core.kv_cache_utils.group_and_unify_kv_cache_specs = group_and_unify_kv_cache_specs
+vllm.v1.core.kv_cache_utils._get_kv_cache_groups_uniform_page_size = _get_kv_cache_groups_uniform_page_size
 vllm.v1.core.kv_cache_utils._get_kv_cache_groups_uniform_groups = _get_kv_cache_groups_uniform_groups
 # vLLM v0.24.0 renamed _get_kv_cache_config_deepseek_v4 to _get_kv_cache_config_packed and
 # get_kv_cache_config_from_groups now calls _get_kv_cache_config_packed directly, bypassing
