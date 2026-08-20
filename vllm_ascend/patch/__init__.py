@@ -280,16 +280,17 @@
 #       A small heterogeneous DSpark draft bucket can therefore split a much
 #       larger Mamba bucket into many groups and multiply metadata overhead.
 #    How:
-#       Keep a padding-safe Pareto selector by default. For DSpark, propagate a
-#       context-local 20% padding budget from get_kv_cache_groups and select the
-#       width that minimizes group count. The patched core functions are shared
-#       by scheduler and workers; other speculative methods keep the safe path.
+#       VLLM_ASCEND_KV_GROUP_MIN_SIZE (opt-in, 0 disables the patch) raises the
+#       group width to at least that many layers, so the user can tell the
+#       grouping the real width of their model (e.g. 16 for a DSpark draft).
+#       The patched core functions are shared by scheduler and workers; with the
+#       env var unset the path delegates to upstream bit-for-bit.
 #    Related PR (if no, explain why):
 #       No upstream PR yet; this is the implementation of the reviewed DSpark
 #       KV grouping recovery plan.
 #    Future Plan:
-#       Upstream the Pareto group-size selector and remove this patch after the
-#       supported vLLM version contains it.
+#       Upstream a configurable group-size override and remove this patch after
+#       the supported vLLM version contains it.
 #
 # ** 8. File: platform/patch_mamba_config.py**
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
