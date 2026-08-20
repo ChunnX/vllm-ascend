@@ -104,10 +104,10 @@ env_variables: dict[str, Callable[[], Any]] = {
     # Control the aclrtMemcpyBatchAsync compile path for KV cache offloading.
     # "1": force enable, "0": force disable, None: auto-detect from CANN headers.
     "VLLM_ASCEND_ENABLE_BATCH_MEMCPY": lambda: os.getenv("VLLM_ASCEND_ENABLE_BATCH_MEMCPY", None),
-    # Enable npu_fused_infer_attention_sink for the DSpark draft model's attention
-    # (parallel-drafting, non-causal, GQA, head_dim=128). The sink op takes
-    # device-side seq_lens directly and does tiling on AICPU, removing the
-    # seq_lens.tolist() host sync in the draft hot path. Disabled by default.
+    # Enable npu_fused_infer_attention_sink for the parallel-drafting (DSpark /
+    # DFlash) draft model's non-causal attention. The sink op takes device-side
+    # seq_lens directly and does tiling on AICPU, removing the seq_lens.tolist()
+    # host sync in the draft hot path. Disabled by default.
     "VLLM_ASCEND_ENABLE_DSPARK_FIA_SINK": lambda: bool(
         int(os.getenv("VLLM_ASCEND_ENABLE_DSPARK_FIA_SINK", "0"))
     ),
