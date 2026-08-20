@@ -12,8 +12,8 @@ from vllm_ascend.attention.attention_v1 import (
     AscendAttentionState,
     AscendC8AttentionBackendImpl,
     _build_fia_sink_seq_tensors,
-    _dspark_fia_sink_requested,
     _ensure_fia_sink_ops_registered,
+    _fia_sink_requested,
     _get_or_compute_fia_sink_inputs,
 )
 from vllm_ascend.attention.utils import (
@@ -31,23 +31,24 @@ LARGE_HEAD_PREFILL_PATH = "vllm_ascend.device.utils.npu_large_head_prefill_atten
 
 
 class TestAttentionGraphHelpers(TestBase):
-    def test_fia_sink_is_scoped_to_dspark(self):
-        with patch.object(attn_module, "_DSPARK_FIA_SINK_ENABLED", True):
+    def test_fia_sink_is_scoped_to_parallel_drafting(self):
+        with patch.object(attn_module, "_FIA_SINK_ENABLED", True):
             self.assertTrue(
-                _dspark_fia_sink_requested(
+                _fia_sink_requested(
                     SimpleNamespace(method="dspark", parallel_drafting=True)
                 )
             )
-            self.assertFalse(
-                _dspark_fia_sink_requested(
+            self.assertTrue(
+                _fia_sink_requested(
                     SimpleNamespace(method="dflash", parallel_drafting=True)
                 )
             )
             self.assertFalse(
-                _dspark_fia_sink_requested(
-                    SimpleNamespace(method="draft_model", parallel_drafting=True)
+                _fia_sink_requested(
+                    SimpleNamespace(method="dspark", parallel_drafting=False)
                 )
             )
+            self.assertFalse(_fia_sink_requested(None))
 
     def test_fia_sink_builds_legal_full_graph_padding_lengths(self):
         seq_lens = torch.tensor([19, 23, 0, 0], dtype=torch.int32)
@@ -202,15 +203,15 @@ class TestAscendAttentionMetadataBuilder(TestBase):
 
         self.assertFalse(result)
 
-    def test_dspark_sink_builder_delegates_capability_checks_to_operator(self):
+    def test_fia_sink_builder_delegates_capability_checks_to_operator(self):
         self.mock_vllm_config.speculative_config = SimpleNamespace(
-            method="dspark",
+            method="dflash",
             parallel_drafting=True,
             num_speculative_tokens=7,
         )
 
         with (
-            patch.object(attn_module, "_DSPARK_FIA_SINK_ENABLED", True),
+            patch.object(attn_module, "_FIA_SINK_ENABLED", True),
             patch.object(attn_module, "_ensure_fia_sink_ops_registered") as ensure_ops,
         ):
             builder = AscendAttentionMetadataBuilder(
@@ -219,9 +220,9 @@ class TestAscendAttentionMetadataBuilder(TestBase):
                 self.mock_vllm_config,
                 self.mock_device,
             )
-            builder._enable_dspark_fia_sink()
+            builder._enable_fia_sink()
 
-        self.assertTrue(builder._dspark_fia_sink_enabled)
+        self.assertTrue(builder._fia_sink_enabled)
         ensure_ops.assert_called_once_with()
 
     def test_unpadded_preserves_internal_seq_lens_cpu(self):
