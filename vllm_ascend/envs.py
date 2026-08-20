@@ -87,10 +87,10 @@ env_variables: dict[str, Callable[[], Any]] = {
     # (safe for Ascend 910B/A3). Set to a positive value to override when
     # auto-detection is unavailable or for debugging UB overflow issues.
     "VLLM_ASCEND_ROPE_UB_SIZE_KB": lambda: int(os.getenv("VLLM_ASCEND_ROPE_UB_SIZE_KB") or 0),
-    # Enable npu_fused_infer_attention_sink for the DSpark draft model's attention
-    # (parallel-drafting, non-causal, GQA, head_dim=128). The sink op takes
-    # device-side seq_lens directly and does tiling on AICPU, removing the
-    # seq_lens.tolist() host sync in the draft hot path. Disabled by default.
+    # Enable npu_fused_infer_attention_sink for the parallel-drafting (DSpark /
+    # DFlash) draft model's non-causal attention. The sink op takes device-side
+    # seq_lens directly and does tiling on AICPU, removing the seq_lens.tolist()
+    # host sync in the draft hot path. Disabled by default.
     "VLLM_ASCEND_ENABLE_DSPARK_FIA_SINK": lambda: bool(
         int(os.getenv("VLLM_ASCEND_ENABLE_DSPARK_FIA_SINK", "0"))
     ),
