@@ -78,20 +78,25 @@ _FIA_SINK_REQUIRED_OPS = (
 )
 _fia_sink_ops_registered = False
 
-# When enabled, non-causal DSpark draft attention is dispatched to
-# npu_fused_infer_attention_sink, which accepts device-side seq_lens and
-# computes tiling on AICPU. Tensor-shape and attention-topology capability
-# checks are intentionally delegated to the custom op so this integration does
-# not narrow the operator's supported domain to one validated model shape.
-_DSPARK_FIA_SINK_ENABLED = bool(envs_ascend.VLLM_ASCEND_ENABLE_DSPARK_FIA_SINK)
+# When enabled, non-causal parallel-drafting (DSpark / DFlash) attention is
+# dispatched to npu_fused_infer_attention_sink, which accepts device-side
+# seq_lens and computes tiling on AICPU. Tensor-shape and attention-topology
+# capability checks are intentionally delegated to the custom op so this
+# integration does not narrow the operator's supported domain to one validated
+# model shape.
+_FIA_SINK_ENABLED = bool(envs_ascend.VLLM_ASCEND_ENABLE_DSPARK_FIA_SINK)
 
 
-def _dspark_fia_sink_requested(speculative_config: Any | None) -> bool:
-    """Return whether this config explicitly requests the DSpark sink path."""
+def _fia_sink_requested(speculative_config: Any | None) -> bool:
+    """Return whether this config requests the parallel-drafting sink path.
+
+    Upstream sets ``parallel_drafting`` exactly when the speculative method is
+    ``dflash`` or ``dspark`` (see ``SpeculativeConfig.__post_init__``), so this
+    is the general gate for those methods rather than a hardcoded method name.
+    """
     return bool(
-        _DSPARK_FIA_SINK_ENABLED
+        _FIA_SINK_ENABLED
         and speculative_config is not None
-        and getattr(speculative_config, "method", None) == "dspark"
         and getattr(speculative_config, "parallel_drafting", False)
     )
 
@@ -144,17 +149,18 @@ def _build_fia_sink_seq_tensors(
     num_tokens: int,
     seq_lens: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Build legal device-side TND lengths for uniform DSpark query blocks.
+    """Build legal device-side TND lengths for uniform parallel-drafting queries.
 
     FULL graph replay pads the request bucket. The producer leaves padded
     query_start_loc entries at the real-token boundary and padded KV lengths at
-    zero, neither of which is legal for FIA sink. DSpark queries are uniform, so
-    derive cumulative Q lengths from static shapes and map dummy KV lengths to 1.
+    zero, neither of which is legal for FIA sink. DSpark/DFlash queries are
+    uniform, so derive cumulative Q lengths from static shapes and map dummy KV
+    lengths to 1.
     """
     num_reqs = seq_lens.shape[0]
     if num_reqs <= 0 or num_tokens % num_reqs != 0:
         raise RuntimeError(
-            "DSpark FIA sink requires a non-empty uniform query batch: "
+            "Parallel-drafting FIA sink requires a non-empty uniform query batch: "
             f"num_tokens={num_tokens}, num_reqs={num_reqs}"
         )
     query_tokens_per_req = num_tokens // num_reqs
@@ -296,8 +302,8 @@ class AscendMetadata:
     # prefill reshape_and_cache event
     reshape_cache_event: torch.npu.Event = None
     # Dispatch this layer's attention to npu_fused_infer_attention_sink
-    # (device-side seq_lens + AICPU tiling). Set by the builder for the DSpark
-    # draft (parallel-drafting + non-causal + head_dim=128).
+    # (device-side seq_lens + AICPU tiling). Set by the builder only for the
+    # parallel-drafting (DSpark/DFlash) draft's non-causal attention.
     use_fia_sink: bool = False
 
 
@@ -332,8 +338,8 @@ class AscendAttentionMetadataBuilder(AttentionMetadataBuilder[AscendMetadata]):
         )
 
         self.speculative_config = vllm_config.speculative_config
-        self._dspark_fia_sink_requested = _dspark_fia_sink_requested(self.speculative_config)
-        self._dspark_fia_sink_enabled = False
+        self._fia_sink_requested = _fia_sink_requested(self.speculative_config)
+        self._fia_sink_enabled = False
         self.decode_threshold = 1
         if self.speculative_config:
             spec_token_num = self.speculative_config.num_speculative_tokens
@@ -350,12 +356,12 @@ class AscendAttentionMetadataBuilder(AttentionMetadataBuilder[AscendMetadata]):
         self.chunked_prefill_enabled = scheduler_config.enable_chunked_prefill
         self.attn_mask_builder = AttentionMaskBuilder(self.device)
 
-    def _enable_dspark_fia_sink(self) -> None:
+    def _enable_fia_sink(self) -> None:
         """Load sink ops; the operator validates its supported input domain."""
-        if self._dspark_fia_sink_enabled:
+        if self._fia_sink_enabled:
             return
         _ensure_fia_sink_ops_registered()
-        self._dspark_fia_sink_enabled = True
+        self._fia_sink_enabled = True
 
     @classmethod
     def get_cudagraph_support(
@@ -435,15 +441,22 @@ class AscendAttentionMetadataBuilder(AttentionMetadataBuilder[AscendMetadata]):
         # Get attn_mask from singleton AttentionMaskBuilder
         attn_mask = self.attn_mask_builder.get_attention_mask(common_attn_metadata.causal, self.model_config)
 
-        # DSpark draft attention: parallel-drafting + non-causal + head_dim=128.
-        # Its seq_lens depends on the device-side rejected-token count, so the
+        # Parallel-drafting (DSpark/DFlash) draft attention is non-causal and
+        # its seq_lens depends on the device-side rejected-token count, so the
         # host-side seq_lens list is unavailable without a sync. Route it to
         # npu_fused_infer_attention_sink which consumes device-side seq_lens
         # (AICPU tiling), keeping the buffers on device. The custom op owns
         # validation of head topology, dimensions, dtype and other capabilities.
-        if self._dspark_fia_sink_requested and not common_attn_metadata.causal:
-            self._enable_dspark_fia_sink()
-        use_fia_sink = self._dspark_fia_sink_enabled and not common_attn_metadata.causal
+        #
+        # Two guarantees gate this path:
+        # - `self._fia_sink_requested` is `parallel_drafting`, which upstream
+        #   sets exactly for dflash/dspark (never eagle/mtp/ngram or no spec).
+        # - `not causal` is the draft-vs-target discriminator: the target/main
+        #   model is always causal, and only the parallel-drafting draft runs
+        #   non-causal attention, so the main model can never reach the sink.
+        if self._fia_sink_requested and not common_attn_metadata.causal:
+            self._enable_fia_sink()
+        use_fia_sink = self._fia_sink_enabled and not common_attn_metadata.causal
 
         if use_fia_sink:
             # Keep seq_lens / query_start_loc on device (no .tolist() sync) and
@@ -1405,13 +1418,14 @@ class AscendAttentionBackendImpl(AttentionImpl):
     def _use_fia_sink(self, attn_metadata: AscendMetadata) -> bool:
         """Whether this layer's attention should use the sink operator.
 
-        The builder flags the DSpark non-causal draft and clears the host-side
-        sequence-length lists. Head topology, head-dim and dtype validity is
-        delegated to the sink operator (which receives those as inputs), but
-        sparse_mode is hardcoded to 0 (non-causal full attention) here and
-        atten_mask / learnable_sink are not forwarded, so sliding-window and
-        learnable-sink layers cannot be delegated and must fail loudly instead
-        of silently computing full attention.
+        The builder flags the parallel-drafting (DSpark/DFlash) non-causal
+        draft and clears the host-side sequence-length lists. Head topology,
+        head-dim and dtype validity is delegated to the sink operator (which
+        receives those as inputs), but sparse_mode is hardcoded to 0
+        (non-causal full attention) here and atten_mask / learnable_sink are not
+        forwarded, so sliding-window and learnable-sink layers cannot be
+        delegated and must fail loudly instead of silently computing full
+        attention.
         """
         # Require the flag to be exactly True rather than merely truthy. The
         # builder sets a real bool, and the next branch raises rather than
@@ -1422,11 +1436,11 @@ class AscendAttentionBackendImpl(AttentionImpl):
             return False
         if self.sliding_window is not None or self.sinks is not None:
             raise RuntimeError(
-                "DSpark FIA sink hardcodes sparse_mode=0 (non-causal full "
-                "attention) and does not forward atten_mask / learnable_sink, "
-                "so sliding-window and learnable-sink layers are not supported. "
-                "Disable VLLM_ASCEND_ENABLE_DSPARK_FIA_SINK or use a draft model "
-                "without sliding window / learnable sinks."
+                "Parallel-drafting FIA sink hardcodes sparse_mode=0 (non-causal "
+                "full attention) and does not forward atten_mask / "
+                "learnable_sink, so sliding-window and learnable-sink layers are "
+                "not supported. Disable VLLM_ASCEND_ENABLE_DSPARK_FIA_SINK or use "
+                "a draft model without sliding window / learnable sinks."
             )
         return True
 
@@ -1439,7 +1453,7 @@ class AscendAttentionBackendImpl(AttentionImpl):
         output: torch.Tensor,
         kv_cache=None,
     ) -> torch.Tensor:
-        """DSpark draft attention via npu_fused_infer_attention_sink.
+        """Parallel-drafting (DSpark/DFlash) attention via the sink operator.
 
         The draft seq_lens depends on the device-side rejected-token count, so a
         host copy is a sync. The sink operator accepts device-side
@@ -1470,7 +1484,7 @@ class AscendAttentionBackendImpl(AttentionImpl):
         num_reqs = attn_metadata.seq_lens.shape[0]
         if block_table.shape[0] < num_reqs:
             raise RuntimeError(
-                "DSpark FIA sink block table has fewer rows than requests: "
+                "Parallel-drafting FIA sink block table has fewer rows than requests: "
                 f"rows={block_table.shape[0]}, num_reqs={num_reqs}"
             )
         block_table = block_table[:num_reqs]
@@ -1549,7 +1563,7 @@ class AscendAttentionBackendImpl(AttentionImpl):
         # runner v2, there is not capturing attribute in forward_context,
         # just use getattr to avoid attribute error.
         if self._use_fia_sink(attn_metadata):
-            # DSpark draft: sink op handles eager and aclgraph capture uniformly.
+            # Parallel-drafting draft: sink handles eager and aclgraph capture.
             return self._forward_fia_sink(query, key, value, attn_metadata, output, kv_cache)
         if _EXTRA_CTX.capturing:
             if self.sinks is not None:
