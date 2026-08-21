@@ -94,8 +94,8 @@ def _get_kv_cache_groups_uniform_page_size(
             grouped_layers.append(layers[group_idx::num_groups])
 
     # TEMPORARY: verify the runtime group count; delete after checking.
-    print(
-        f"[KV_GROUP_MIN_SIZE] min_size={min_size} layer_counts={sorted(layer_counts)} "
+    logger.info(
+        f"KV Group min_size={min_size} layer_counts={sorted(layer_counts)} "
         f"group_size={group_size} num_groups={len(grouped_layers)}"
     )
 
