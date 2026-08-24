@@ -20,6 +20,10 @@ from vllm.triton_utils import HAS_TRITON
 from vllm_ascend.utils import is_310p
 
 if HAS_TRITON:
+    # First, so the hook is in place before any kernel can be launched. No-op
+    # unless VLLM_ASCEND_TRACE_TRITON_OPS=1.
+    import vllm_ascend.patch.worker.patch_triton_op_trace  # noqa
+
     import vllm_ascend.patch.worker.patch_triton
     import vllm_ascend.patch.worker.patch_v2.patch_triton  # noqa
 
