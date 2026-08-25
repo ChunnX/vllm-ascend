@@ -1,4 +1,5 @@
 from vllm.triton_utils import triton
+from vllm.v1.sample.ops import topk_topp_sampler
 from vllm.v1.worker.gpu import input_batch, model_runner, structured_outputs
 from vllm.v1.worker.gpu.metrics import logits as metrics_logits
 from vllm.v1.worker.gpu.sample import bad_words, gumbel, logprob, penalties, prompt_logprob, sampler, states
@@ -6,6 +7,7 @@ from vllm.v1.worker.gpu.spec_decode import rejection_sampler, rejection_sampler_
 from vllm.v1.worker.gpu.spec_decode.dflash import speculator as dflash_speculator
 from vllm.v1.worker.gpu.spec_decode.eagle import speculator
 
+from vllm_ascend.ops.triton.v2.sample.apply_top_k_top_p_triton import apply_top_k_top_p_triton
 from vllm_ascend.worker.v2.input_batch import post_update
 from vllm_ascend.worker.v2.sample.bad_words import apply_bad_words
 from vllm_ascend.worker.v2.sample.gumbel import apply_temperature, gumbel_sample
@@ -38,3 +40,4 @@ rejection_sampler_utils.rejection_sample = npu_rejection_sample
 rejection_sampler.rejection_sample = npu_rejection_sample
 dflash_speculator._prepare_dflash_inputs_kernel = _prepare_dflash_inputs_kernel_ascend
 metrics_logits.libdevice = triton.language.extra.cann.libdevice
+topk_topp_sampler.apply_top_k_top_p_triton = apply_top_k_top_p_triton
