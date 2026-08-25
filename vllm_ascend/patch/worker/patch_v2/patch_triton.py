@@ -26,7 +26,7 @@ from vllm_ascend.ops.triton.v2.sample.thinking_budget import (
     _load_effective_token_ascend,
     _update_committed_marker_cache_kernel_ascend,
 )
-from vllm_ascend.worker.v2.sample.apply_top_k_top_p import apply_top_k_top_p_npu
+from vllm_ascend.worker.v2.sample.apply_top_k_top_p import apply_top_k_top_p, apply_top_k_top_p_npu
 from vllm_ascend.worker.v2.sample.bad_words import apply_bad_words
 from vllm_ascend.worker.v2.sample.gumbel import apply_temperature
 from vllm_ascend.worker.v2.sample.logprob import compute_token_logprobs, compute_topk_logprobs
@@ -74,3 +74,7 @@ rejection_sampler.get_num_nans = get_num_nans
 thinking_budget._load_effective_token = _load_effective_token_ascend
 # TODO: Remove after Triton-Ascend 3.6.0 is the minimum supported version.
 thinking_budget._update_committed_marker_cache_kernel = _update_committed_marker_cache_kernel_ascend
+# sampler and states read top-k/top-p from their own module globals, ahead of
+# topk_topp_sampler's own dispatch. Point those at the CANN kernel.
+sampler.apply_top_k_top_p = apply_top_k_top_p
+states.apply_top_k_top_p = apply_top_k_top_p
