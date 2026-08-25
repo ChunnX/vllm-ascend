@@ -11,7 +11,7 @@ from vllm_ascend.ops.triton.v2.apply_grammar_bitmask import _apply_grammar_bitma
 from vllm_ascend.ops.triton.v2.mamba.precopy import precopy_mamba_align_fused_kernel
 from vllm_ascend.ops.triton.v2.metrics.num_nans import get_num_nans
 from vllm_ascend.ops.triton.v2.sample.fill_logprob_token_idx import _fill_logprob_token_ids_kernel
-from vllm_ascend.worker.v2.sample.apply_top_k_top_p import apply_top_k_top_p_npu
+from vllm_ascend.worker.v2.sample.apply_top_k_top_p import apply_top_k_top_p, apply_top_k_top_p_npu
 from vllm_ascend.worker.v2.sample.bad_words import apply_bad_words
 from vllm_ascend.worker.v2.sample.gumbel import apply_temperature, gumbel_sample
 from vllm_ascend.worker.v2.sample.logprob import compute_token_logprobs, compute_topk_logprobs
@@ -54,3 +54,7 @@ logprob._fill_logprob_token_ids_kernel = _fill_logprob_token_ids_kernel
 # For now, use the Ascend-specific implementation.
 sampler.get_num_nans = get_num_nans
 rejection_sampler.get_num_nans = get_num_nans
+# sampler and states read top-k/top-p from their own module globals, ahead of
+# topk_topp_sampler's own dispatch. Point those at the CANN kernel.
+sampler.apply_top_k_top_p = apply_top_k_top_p
+states.apply_top_k_top_p = apply_top_k_top_p
