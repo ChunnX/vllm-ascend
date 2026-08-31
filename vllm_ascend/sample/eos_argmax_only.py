@@ -64,10 +64,15 @@ from vllm.v1.sample.logits_processor import LogitsProcessor
 EOS_TOKEN_IDS_ENV = "VLLM_ASCEND_EOS_ARGMAX_ONLY_IDS"
 
 # Runner-up token ids that make an eos win suspicious rather than decisive. Empty leaves
-# rule 2 off. Set this to the id of "\n\n", which you can read off the tokenizer with
-# `tokenizer.encode("\n\n", add_special_tokens=False)`; it has to come back as a single id
-# for the rule to be expressible on logits. Overridable at runtime, see the env name below.
-SOFT_STOP_RIVAL_TOKEN_IDS: tuple[int, ...] = ()
+# rule 2 off.
+#
+# 271 is "\n\n" for the qwen3.6-27b tokenizer this branch targets. It is tokenizer
+# specific, so re-derive it for any other model and check the id printed at startup:
+#
+#     tokenizer.encode("\n\n", add_special_tokens=False)   # -> [271]
+#
+# It has to come back as a single id, otherwise the rule cannot be expressed on logits.
+SOFT_STOP_RIVAL_TOKEN_IDS: tuple[int, ...] = (271,)
 SOFT_STOP_RIVAL_IDS_ENV = "VLLM_ASCEND_EOS_SOFT_STOP_RIVAL_IDS"
 
 # How far ahead of the rival an eos has to be, in nat, to be taken at face value.
