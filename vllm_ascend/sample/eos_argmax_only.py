@@ -14,24 +14,38 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-"""A logits processor that only lets the model stop when stopping is the best option.
+"""A logits processor that only lets the model stop when stopping is clearly the best option.
 
-Sampling picks the winner of an exponential race, ``argmax(probs / q)`` with
-``q ~ Exp(1)`` (see ``vllm_ascend.sample.sampler.random_sample``). That draws exactly in
-proportion to the probabilities, so a low-probability end-of-sequence token is still
-picked at its own rate rather than never. Measured on a 1500-run sweep of one agent
-trajectory, 50 of 1428 turns ended on an eos token that was not the argmax -- one of them
-at 2.45% against a 43.48% alternative -- and every one of those turns was a truncated
-answer or a half-emitted tool call.
+Sampling picks the winner of an exponential race, ``argmax(probs / q)`` with ``q ~ Exp(1)``
+(see ``vllm_ascend.sample.sampler.random_sample``). That draws exactly in proportion to the
+probabilities, so a low-probability end-of-sequence token is still picked at its own rate.
+Two rules follow from that, both stateless -- they read only the current step's logits and
+never touch the generated token ids, which matters here because under async scheduling
+``output_token_ids`` holds -1 placeholders and silently disables everything that does
+depend on them (``bad_words``, the penalties).
 
-This processor masks the eos tokens whenever some other token has a higher logit, which
-restores greedy semantics for eos alone and leaves every other token sampled as before.
-On the same sweep it would have blocked all 50 bad endings and none of the 1378 good ones,
-because a turn that genuinely ends has eos as the argmax by a wide margin.
+Rule 1, always on: mask an eos token whenever another token scores higher. This restores
+greedy semantics for eos alone and leaves the rest of the distribution sampled as before.
 
-Prefer this over ``logit_bias`` on the eos ids. A fixed bias is capped by how much margin
-a legitimate ending has (~6.4 nat on the measured trajectory); push past that and normal
-endings break too. This rule is adaptive and has no such ceiling.
+Rule 2, on once ``SOFT_STOP_RIVAL_TOKEN_IDS`` is set: mask an eos that *is* the argmax when
+it leads the runner-up by less than ``SOFT_STOP_MARGIN`` and that runner-up is one of the
+rival ids -- in practice the "\\n\\n" token. A turn about to emit a tool call writes
+``:\\n\\n<tool_call>``, so the fork between stopping and continuing shows up as eos against
+"\\n\\n" specifically. Measured over 1500 runs of one agent trajectory:
+
+    runner-up at the eos step   good endings          bad endings
+    "\\n"                        1107 / 1283           0 / 19
+    "<tool_call>"                  97 / 1283           0 / 19
+    "\\n\\n"                        38 / 1283 (3.0%)    15 / 19 (79%)
+
+Gating on the rival is what makes rule 2 cheap. At a margin of 4 it blocks 15 of the 19 bad
+endings for 1 of 1283 good ones (0.08%); the same margin without the gate blocks 19 but
+costs 148 (11.5%), because a legitimate ending is usually followed by "\\n", not "\\n\\n".
+A false positive here is mild as well -- the turn emits one more blank line and then ends,
+rather than being forced to keep writing past a finished tool call.
+
+The four remaining bad endings had runner-ups like " try" or " check" and are out of reach
+of any rule of this shape; they need a retry at the request level.
 
 Enable it by passing the fully qualified class name to vLLM::
 
@@ -49,6 +63,17 @@ from vllm.v1.sample.logits_processor import LogitsProcessor
 # Comma separated token ids, overriding whatever is discovered from the model config.
 EOS_TOKEN_IDS_ENV = "VLLM_ASCEND_EOS_ARGMAX_ONLY_IDS"
 
+# Runner-up token ids that make an eos win suspicious rather than decisive. Empty leaves
+# rule 2 off. Set this to the id of "\n\n", which you can read off the tokenizer with
+# `tokenizer.encode("\n\n", add_special_tokens=False)`; it has to come back as a single id
+# for the rule to be expressible on logits. Overridable at runtime, see the env name below.
+SOFT_STOP_RIVAL_TOKEN_IDS: tuple[int, ...] = ()
+SOFT_STOP_RIVAL_IDS_ENV = "VLLM_ASCEND_EOS_SOFT_STOP_RIVAL_IDS"
+
+# How far ahead of the rival an eos has to be, in nat, to be taken at face value.
+SOFT_STOP_MARGIN = 4.0
+SOFT_STOP_MARGIN_ENV = "VLLM_ASCEND_EOS_SOFT_STOP_MARGIN"
+
 
 def _as_id_list(value) -> list[int]:
     """generation_config stores eos_token_id as either a single id or a list of them."""
@@ -59,11 +84,18 @@ def _as_id_list(value) -> list[int]:
     return [int(token_id) for token_id in value]
 
 
+def _ids_from_env(name: str) -> list[int]:
+    raw = os.getenv(name)
+    if not raw:
+        return []
+    return sorted({int(part) for part in raw.replace(" ", "").split(",") if part})
+
+
 def _resolve_eos_token_ids(vllm_config) -> list[int]:
     """Collect every token id that ends a turn, most explicit source first."""
-    override = os.getenv(EOS_TOKEN_IDS_ENV)
+    override = _ids_from_env(EOS_TOKEN_IDS_ENV)
     if override:
-        return sorted({int(part) for part in override.replace(" ", "").split(",") if part})
+        return override
 
     model_config = vllm_config.model_config
     token_ids: set[int] = set()
@@ -76,23 +108,35 @@ def _resolve_eos_token_ids(vllm_config) -> list[int]:
 
 
 class EosArgmaxOnly(LogitsProcessor):
-    """Suppress an end-of-sequence token unless it is the highest-scoring token.
-
-    Stateless: it reads only the logits of the current step and never touches the
-    generated token ids. That matters on this platform, because under async scheduling
-    ``output_token_ids`` holds -1 placeholders rather than real ids, which silently
-    disables everything that does depend on them (``bad_words``, the penalties).
-    """
+    """Suppress an end-of-sequence token unless it wins clearly. See the module docstring."""
 
     def __init__(self, vllm_config, device: torch.device, is_pin_memory: bool) -> None:
         eos_token_ids = _resolve_eos_token_ids(vllm_config)
+        rival_token_ids = _ids_from_env(SOFT_STOP_RIVAL_IDS_ENV) or list(SOFT_STOP_RIVAL_TOKEN_IDS)
+        self.margin = float(os.getenv(SOFT_STOP_MARGIN_ENV, SOFT_STOP_MARGIN))
+
         self.eos_token_ids = torch.tensor(eos_token_ids, device=device, dtype=torch.long)
-        if eos_token_ids:
-            logger.info("EosArgmaxOnly enabled for eos token ids %s", eos_token_ids)
-        else:
+        self.rival_token_ids = torch.tensor(rival_token_ids, device=device, dtype=torch.long)
+
+        if not eos_token_ids:
             logger.warning(
                 "EosArgmaxOnly found no eos token ids and will do nothing. Set %s to enable it.",
                 EOS_TOKEN_IDS_ENV,
+            )
+        elif rival_token_ids:
+            logger.info(
+                "EosArgmaxOnly enabled for eos token ids %s, also rejecting an eos that leads "
+                "rival ids %s by less than %.2f nat",
+                eos_token_ids,
+                rival_token_ids,
+                self.margin,
+            )
+        else:
+            logger.info(
+                "EosArgmaxOnly enabled for eos token ids %s, argmax rule only. Set %s to the "
+                "id of the two-newline token to also reject a narrow win over it.",
+                eos_token_ids,
+                SOFT_STOP_RIVAL_IDS_ENV,
             )
 
     def is_argmax_invariant(self) -> bool:
@@ -105,13 +149,27 @@ class EosArgmaxOnly(LogitsProcessor):
     def apply(self, logits: torch.Tensor) -> torch.Tensor:
         if not self.eos_token_ids.numel():
             return logits
+
+        # topk(2) gives both what rule 1 needs (the row max) and what rule 2 needs (which
+        # token is the runner-up, and by how much it loses).
+        values, indices = torch.topk(logits, 2, dim=-1)
+        row_max = values[:, :1]
         eos_logits = logits[:, self.eos_token_ids]
-        # Comparing against the global max rather than the max over non-eos tokens gives the
-        # same answer -- an eos below the global max is beaten by something -- and saves
-        # materialising a second [batch, vocab] tensor on every step.
-        row_max = logits.max(dim=-1, keepdim=True).values
+
+        # Rule 1: an eos beaten by anything is not a real ending.
+        suppress = eos_logits < row_max
+
+        if self.rival_token_ids.numel():
+            top1_is_eos = (indices[:, :1] == self.eos_token_ids.view(1, -1)).any(dim=-1)
+            top2_is_rival = (indices[:, 1:2] == self.rival_token_ids.view(1, -1)).any(dim=-1)
+            narrow = (values[:, 0] - values[:, 1]) < self.margin
+            # Rule 2 fires on the eos that *is* the argmax, so pair the row-level condition
+            # with the per-eos "this is the one on top" test.
+            fires = (top1_is_eos & top2_is_rival & narrow).unsqueeze(1)
+            suppress = suppress | (fires & (eos_logits >= row_max))
+
         logits[:, self.eos_token_ids] = torch.where(
-            eos_logits < row_max,
+            suppress,
             torch.full_like(eos_logits, float("-inf")),
             eos_logits,
         )
