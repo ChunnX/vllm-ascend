@@ -58,7 +58,9 @@ read once at startup::
     VLLM_ASCEND_EOS_SOFT_STOP=0            rule 1 only
     (default)                              rules 1 and 2
 
-Note that vLLM rejects custom logits processors when speculative decoding is enabled.
+Upstream vLLM rejects custom logits processors when speculative decoding is enabled.
+``vllm_ascend.patch.worker.patch_logits_processors`` narrows that to processors which do
+not declare ``supports_spec_decode``, so this one runs with MTP on.
 """
 
 import os
@@ -148,6 +150,14 @@ def _resolve_eos_token_ids(vllm_config) -> list[int]:
 class EosArgmaxOnly(LogitsProcessor):
     """Suppress an end-of-sequence token unless it wins clearly. See the module docstring."""
 
+    # Read by vllm_ascend.patch.worker.patch_logits_processors, which lets a processor
+    # carrying this flag through the speculative decoding path that upstream closes off.
+    # Only claim it for a rule that is row-local and stateless, as this one is: under
+    # speculative decoding the logits tensor holds one row per draft position, several of
+    # them belonging to the same request, so anything needing a row-to-request mapping --
+    # min_p and logit_bias, which is why upstream refuses them -- would be wrong here.
+    supports_spec_decode = True
+
     def __init__(self, vllm_config, device: torch.device, is_pin_memory: bool) -> None:
         eos_token_ids = _resolve_eos_token_ids(vllm_config)
         rival_token_ids = _resolve_rival_token_ids()
@@ -182,6 +192,14 @@ class EosArgmaxOnly(LogitsProcessor):
 
     def update_state(self, batch_update) -> None:
         """No per-request state to track."""
+
+    def apply_with_spec_decode(self, logits: torch.Tensor, num_draft_tokens: list[int]) -> torch.Tensor:
+        """Speculative decoding hook. See ``supports_spec_decode``.
+
+        The rule is row-local, so the draft positions need no different treatment and
+        ``num_draft_tokens`` -- the row-to-request mapping -- goes unused.
+        """
+        return self.apply(logits)
 
     def apply(self, logits: torch.Tensor) -> torch.Tensor:
         if not self.eos_token_ids.numel():
