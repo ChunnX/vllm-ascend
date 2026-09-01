@@ -51,6 +51,13 @@ Enable it by passing the fully qualified class name to vLLM::
 
     --logits-processors vllm_ascend.sample.eos_argmax_only:EosArgmaxOnly
 
+The three variants worth comparing, each needing its own process since the environment is
+read once at startup::
+
+    (no --logits-processors flag)          both rules off
+    VLLM_ASCEND_EOS_SOFT_STOP=0            rule 1 only
+    (default)                              rules 1 and 2
+
 Note that vLLM rejects custom logits processors when speculative decoding is enabled.
 """
 
@@ -75,6 +82,10 @@ EOS_TOKEN_IDS_ENV = "VLLM_ASCEND_EOS_ARGMAX_ONLY_IDS"
 SOFT_STOP_RIVAL_TOKEN_IDS: tuple[int, ...] = (271,)
 SOFT_STOP_RIVAL_IDS_ENV = "VLLM_ASCEND_EOS_SOFT_STOP_RIVAL_IDS"
 
+# Set to 0/false/off to run rule 1 alone without editing the source, which is how the two
+# variants get compared. Rule 1 has no switch: drop --logits-processors for that baseline.
+SOFT_STOP_ENABLED_ENV = "VLLM_ASCEND_EOS_SOFT_STOP"
+
 # How far ahead of the rival an eos has to be, in nat, to be taken at face value.
 SOFT_STOP_MARGIN = 4.0
 SOFT_STOP_MARGIN_ENV = "VLLM_ASCEND_EOS_SOFT_STOP_MARGIN"
@@ -94,6 +105,28 @@ def _ids_from_env(name: str) -> list[int]:
     if not raw:
         return []
     return sorted({int(part) for part in raw.replace(" ", "").split(",") if part})
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in ("", "0", "false", "off", "no")
+
+
+def _resolve_rival_token_ids() -> list[int]:
+    """Which runner-up ids arm rule 2. Empty means rule 2 is off.
+
+    An unset ids variable keeps the built-in default, while an explicitly empty one turns
+    rule 2 off -- the `or` shorthand cannot tell those apart, and being unable to disable
+    rule 2 from the environment is what makes an A/B impossible.
+    """
+    if not _env_flag(SOFT_STOP_ENABLED_ENV, True):
+        return []
+    raw = os.getenv(SOFT_STOP_RIVAL_IDS_ENV)
+    if raw is None:
+        return list(SOFT_STOP_RIVAL_TOKEN_IDS)
+    return _ids_from_env(SOFT_STOP_RIVAL_IDS_ENV)
 
 
 def _resolve_eos_token_ids(vllm_config) -> list[int]:
@@ -117,7 +150,7 @@ class EosArgmaxOnly(LogitsProcessor):
 
     def __init__(self, vllm_config, device: torch.device, is_pin_memory: bool) -> None:
         eos_token_ids = _resolve_eos_token_ids(vllm_config)
-        rival_token_ids = _ids_from_env(SOFT_STOP_RIVAL_IDS_ENV) or list(SOFT_STOP_RIVAL_TOKEN_IDS)
+        rival_token_ids = _resolve_rival_token_ids()
         self.margin = float(os.getenv(SOFT_STOP_MARGIN_ENV, SOFT_STOP_MARGIN))
 
         self.eos_token_ids = torch.tensor(eos_token_ids, device=device, dtype=torch.long)
@@ -138,10 +171,9 @@ class EosArgmaxOnly(LogitsProcessor):
             )
         else:
             logger.info(
-                "EosArgmaxOnly enabled for eos token ids %s, argmax rule only. Set %s to the "
-                "id of the two-newline token to also reject a narrow win over it.",
+                "EosArgmaxOnly enabled for eos token ids %s, argmax rule only (rule 2 off via %s).",
                 eos_token_ids,
-                SOFT_STOP_RIVAL_IDS_ENV,
+                SOFT_STOP_ENABLED_ENV,
             )
 
     def is_argmax_invariant(self) -> bool:
