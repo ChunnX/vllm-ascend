@@ -40,9 +40,6 @@ import vllm.v1.sample.logits_processor as lp
 import vllm.v1.sample.rejection_sampler as rs
 from vllm.logger import logger
 
-# Where model_runner_v1 keeps its own reference to build_logitsprocs, see below.
-_MODEL_RUNNER_MODULE = "vllm_ascend.worker.model_runner_v1"
-
 _original_build_logitsprocs = lp.build_logitsprocs
 _original_apply_logits_processors = rs.RejectionSampler.apply_logits_processors
 
@@ -95,20 +92,42 @@ def apply_logits_processors(self, logits, sampling_metadata, metadata):
     return logits
 
 
+def _rebind_existing_references() -> list[str]:
+    """Repoint every module that already imported build_logitsprocs by name.
+
+    Two of them do, and both bind it before this patch runs: vllm's gpu_model_runner, and
+    vllm_ascend's model_runner_v1 -- which imports gpu_model_runner at its line 85 and only
+    pulls this patch package in at its line 111. Rebinding the attribute on the defining
+    module alone therefore misses both, and NPUModelRunner subclasses GPUModelRunner, so
+    either call site can be the one that runs.
+
+    Scanning is deliberate. Naming the modules means missing the next one that imports it,
+    and the failure mode is a silent fall-through to the original, which is what happened
+    when this patch first shipped naming only model_runner_v1. Iterating over sys.modules
+    also avoids importing a module that may still be initialising, which would be a cycle.
+    """
+    rebound = []
+    for name, module in list(sys.modules.items()):
+        if module is None:
+            continue
+        try:
+            if getattr(module, "build_logitsprocs", None) is _original_build_logitsprocs:
+                module.build_logitsprocs = build_logitsprocs
+                rebound.append(name)
+        except Exception:  # a lazily initialised module may raise on attribute access
+            continue
+    return rebound
+
+
 lp.build_logitsprocs = build_logitsprocs
 rs.RejectionSampler.apply_logits_processors = apply_logits_processors
+_rebound = _rebind_existing_references()
 
-# model_runner_v1 does `from vllm.v1.sample.logits_processor import build_logitsprocs` at
-# import time, and only pulls this patch package in further down its own import block, so
-# by now it holds the original function and rebinding the module attribute above misses it.
-# Reach into the half-initialised module rather than importing it, which would be a cycle.
-_model_runner = sys.modules.get(_MODEL_RUNNER_MODULE)
-if _model_runner is not None and hasattr(_model_runner, "build_logitsprocs"):
-    _model_runner.build_logitsprocs = build_logitsprocs
-else:
-    logger.warning(
-        "%s was not importing when patch_logits_processors ran, so its build_logitsprocs "
-        "reference is unpatched and a custom logits processor will still be rejected under "
-        "speculative decoding.",
-        _MODEL_RUNNER_MODULE,
-    )
+# Grep for this line to tell "the patch is loaded" from "the patch never ran", which the
+# error message alone cannot: the original raise and this module's raise share a prefix.
+logger.info(
+    "patch_logits_processors active: spec-decode-safe custom logits processors allowed; "
+    "rebound build_logitsprocs in %d already-imported module(s): %s",
+    len(_rebound),
+    _rebound,
+)
