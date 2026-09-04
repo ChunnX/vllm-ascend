@@ -261,7 +261,14 @@ class NPUPlatform(Platform):
         key = (attn_selector_config.use_mla, attn_selector_config.use_sparse)
         backend_key = (*key, use_compress)
 
-        if attn_selector_config.use_pcp and attn_selector_config.use_dcp:
+        # `use_dcp` was added to AttentionSelectorConfig after v0.27.1, which
+        # vllm-ascend still supports (Dockerfile pins VLLM_TAG=v0.27.1 and the
+        # tree carries vllm_version_is("0.27.1") branches). Reading it as an
+        # attribute survives there only because `use_pcp` is False and short-
+        # circuits; with PCP enabled it raises AttributeError instead of the
+        # NotImplementedError this check is meant to give.
+        use_dcp = getattr(attn_selector_config, "use_dcp", False)
+        if attn_selector_config.use_pcp and use_dcp:
             raise NotImplementedError("Ascend MRV2 does not support PCP and DCP simultaneously yet.")
 
         if not attn_selector_config.use_pcp and _validate_fa3_backend(key, attn_selector_config):

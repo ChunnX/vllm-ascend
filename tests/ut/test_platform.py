@@ -1,4 +1,5 @@
 import importlib
+import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -24,6 +25,12 @@ from vllm_ascend.utils import (
     AscendDeviceType,
 )
 
+
+# `use_dcp` joined AttentionSelectorConfig after v0.27.1, which vllm-ascend still
+# supports (Dockerfile pins VLLM_TAG=v0.27.1). Constructing it there raises
+# TypeError, so the cases that need it are skipped rather than quietly turned
+# into a different combination.
+_HAS_USE_DCP = "use_dcp" in AttentionSelectorConfig._fields
 
 # Prefix of the warning NPUPlatform emits for a backend it cannot provide.
 _UNAVAILABLE_BACKEND_LOG_PREFIX = "Attention backend %s was requested"
@@ -1711,7 +1718,9 @@ class TestNPUPlatform(TestBase):
         )
         for use_mla, use_pcp, use_dcp, expected_backend in cases:
             with self.subTest(use_mla=use_mla, use_pcp=use_pcp, use_dcp=use_dcp):
-                attn_selector_config = AttentionSelectorConfig(
+                if use_dcp and not _HAS_USE_DCP:
+                    self.skipTest("use_dcp joined AttentionSelectorConfig after v0.27.1")
+                kwargs = dict(
                     dtype=torch.float16,
                     head_size=0,
                     kv_cache_dtype=None,
@@ -1719,11 +1728,14 @@ class TestNPUPlatform(TestBase):
                     use_mla=use_mla,
                     use_sparse=False,
                     use_pcp=use_pcp,
-                    use_dcp=use_dcp,
                 )
+                if _HAS_USE_DCP:
+                    kwargs["use_dcp"] = use_dcp
+                attn_selector_config = AttentionSelectorConfig(**kwargs)
                 result = self.platform.get_attn_backend_cls(None, attn_selector_config)
                 self.assertEqual(result, expected_backend)
 
+    @unittest.skipUnless(_HAS_USE_DCP, "use_dcp joined AttentionSelectorConfig after v0.27.1")
     def test_get_attn_backend_cls_rejects_pcp_and_dcp(self):
         attn_selector_config = AttentionSelectorConfig(
             dtype=torch.float16,
