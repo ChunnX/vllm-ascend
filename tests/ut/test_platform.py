@@ -25,6 +25,10 @@ from vllm_ascend.utils import (
 )
 
 
+# Prefix of the warning NPUPlatform emits for a backend it cannot provide.
+_UNAVAILABLE_BACKEND_LOG_PREFIX = "Attention backend %s was requested"
+
+
 class TestNPUPlatform(TestBase):
     @staticmethod
     def mock_vllm_config():
@@ -1657,7 +1661,7 @@ class TestNPUPlatform(TestBase):
             use_mla=True,
             use_sparse=False,
         )
-        result = self.platform.get_attn_backend_cls("ascend", attn_selector_config)
+        result = self.platform.get_attn_backend_cls(None, attn_selector_config)
         self.assertEqual(result, "vllm_ascend.attention.mla_v1.AscendMLABackend")
 
     @patch("vllm_ascend.platform.get_ascend_config")
@@ -1672,7 +1676,7 @@ class TestNPUPlatform(TestBase):
             use_mla=False,
             use_sparse=False,
         )
-        result = self.platform.get_attn_backend_cls("ascend", attn_selector_config)
+        result = self.platform.get_attn_backend_cls(None, attn_selector_config)
         self.assertEqual(result, "vllm_ascend.attention.attention_v1.AscendAttentionBackend")
 
     @patch("vllm_ascend.platform.get_ascend_config")
@@ -1717,7 +1721,7 @@ class TestNPUPlatform(TestBase):
                     use_pcp=use_pcp,
                     use_dcp=use_dcp,
                 )
-                result = self.platform.get_attn_backend_cls("ascend", attn_selector_config)
+                result = self.platform.get_attn_backend_cls(None, attn_selector_config)
                 self.assertEqual(result, expected_backend)
 
     def test_get_attn_backend_cls_rejects_pcp_and_dcp(self):
@@ -1730,7 +1734,7 @@ class TestNPUPlatform(TestBase):
             use_dcp=True,
         )
         with self.assertRaisesRegex(NotImplementedError, "does not support PCP and DCP simultaneously"):
-            self.platform.get_attn_backend_cls("ascend", attn_selector_config)
+            self.platform.get_attn_backend_cls(None, attn_selector_config)
 
     def test_get_attn_backend_cls_selects_sfa_pcp_backend(self):
         attn_selector_config = AttentionSelectorConfig(
@@ -1742,7 +1746,7 @@ class TestNPUPlatform(TestBase):
             use_sparse=True,
             use_pcp=True,
         )
-        result = self.platform.get_attn_backend_cls("ascend", attn_selector_config)
+        result = self.platform.get_attn_backend_cls(None, attn_selector_config)
         self.assertEqual(result, "vllm_ascend.attention.sfa_v1.AscendSFABackend")
 
     def test_get_attn_backend_cls_rejects_unsupported_pcp_backend(self):
@@ -1756,7 +1760,7 @@ class TestNPUPlatform(TestBase):
             use_pcp=True,
         )
         with self.assertRaisesRegex(NotImplementedError, "PCP does not support attention backend"):
-            self.platform.get_attn_backend_cls("ascend", attn_selector_config)
+            self.platform.get_attn_backend_cls(None, attn_selector_config)
 
     @patch("vllm_ascend.platform.import_module")
     @patch("vllm_ascend.platform.util.find_spec", return_value=object())
@@ -1795,9 +1799,95 @@ class TestNPUPlatform(TestBase):
             use_batch_invariant=True,
         )
 
-        result = self.platform.get_attn_backend_cls(AttentionBackendEnum.FLASH_ATTN, attn_selector_config)
+        result = self.platform.get_attn_backend_cls(None, attn_selector_config)
 
         self.assertEqual(result, "vllm_ascend.attention.attention_v1.AscendAttentionBackend")
+
+    @patch("vllm_ascend.platform.get_ascend_config")
+    def test_get_attn_backend_cls_accepts_custom_selected_backend(self, mock_get_ascend_config):
+        """CUSTOM is the slot vllm-ascend registers under, so it means "ours"."""
+        mock_get_ascend_config.return_value.rl_config.enabled = False
+        mock_get_ascend_config.return_value.rl_config.enable_training_consistency = False
+        attn_selector_config = AttentionSelectorConfig(
+            dtype=torch.float16,
+            head_size=0,
+            kv_cache_dtype=None,
+            block_size=128,
+            use_mla=False,
+            use_sparse=False,
+        )
+
+        result = self.platform.get_attn_backend_cls(AttentionBackendEnum.CUSTOM, attn_selector_config)
+
+        self.assertEqual(result, "vllm_ascend.attention.attention_v1.AscendAttentionBackend")
+
+    @patch("vllm_ascend.platform.logger.warning_once")
+    @patch("vllm_ascend.platform.get_ascend_config")
+    def test_get_attn_backend_cls_reports_backend_from_another_platform(
+        self, mock_get_ascend_config, mock_warning_once
+    ):
+        """A backend Ascend cannot provide is named in the log, not dropped.
+
+        The target model's --attention-backend is already reset by
+        _fix_incompatible_config, so the request that actually reaches this hook
+        is a draft's --speculative-config attention_backend. That one was being
+        dropped in silence.
+        """
+        mock_get_ascend_config.return_value.rl_config.enabled = False
+        mock_get_ascend_config.return_value.rl_config.enable_training_consistency = False
+        attn_selector_config = AttentionSelectorConfig(
+            dtype=torch.float16,
+            head_size=0,
+            kv_cache_dtype=None,
+            block_size=128,
+            use_mla=False,
+            use_sparse=False,
+        )
+
+        for backend in (AttentionBackendEnum.FLASH_ATTN, AttentionBackendEnum.TRITON_ATTN):
+            with self.subTest(backend=backend.name):
+                mock_warning_once.reset_mock()
+
+                result = self.platform.get_attn_backend_cls(backend, attn_selector_config)
+
+                self.assertEqual(result, "vllm_ascend.attention.attention_v1.AscendAttentionBackend")
+                # `logger` is shared, so match this message rather than the call count.
+                self.assertTrue(
+                    any(
+                        call.args[0].startswith(_UNAVAILABLE_BACKEND_LOG_PREFIX) and backend.name in call.args
+                        for call in mock_warning_once.call_args_list
+                    ),
+                    f"no warning named {backend.name}: {mock_warning_once.call_args_list}",
+                )
+
+    @patch("vllm_ascend.platform.logger.warning_once")
+    @patch("vllm_ascend.platform.get_ascend_config")
+    def test_get_attn_backend_cls_stays_quiet_for_platform_choice(self, mock_get_ascend_config, mock_warning_once):
+        """None and CUSTOM both mean "ours", so neither should warn."""
+        mock_get_ascend_config.return_value.rl_config.enabled = False
+        mock_get_ascend_config.return_value.rl_config.enable_training_consistency = False
+        attn_selector_config = AttentionSelectorConfig(
+            dtype=torch.float16,
+            head_size=0,
+            kv_cache_dtype=None,
+            block_size=128,
+            use_mla=False,
+            use_sparse=False,
+        )
+
+        for selected in (None, AttentionBackendEnum.CUSTOM):
+            with self.subTest(selected=selected):
+                mock_warning_once.reset_mock()
+
+                self.platform.get_attn_backend_cls(selected, attn_selector_config)
+
+                self.assertFalse(
+                    any(
+                        call.args[0].startswith(_UNAVAILABLE_BACKEND_LOG_PREFIX)
+                        for call in mock_warning_once.call_args_list
+                    ),
+                    f"unexpected warning: {mock_warning_once.call_args_list}",
+                )
 
     def test_get_punica_wrapper(self):
         result = self.platform.get_punica_wrapper()
