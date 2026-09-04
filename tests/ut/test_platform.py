@@ -5,6 +5,7 @@ import pytest
 import torch
 from vllm.config.compilation import CompilationMode, CUDAGraphMode
 from vllm.platforms import PlatformEnum
+from vllm.v1.attention.backends.registry import AttentionBackendEnum
 from vllm.v1.attention.selector import AttentionSelectorConfig  # type: ignore
 
 from tests.ut.base import TestBase
@@ -15,6 +16,10 @@ from vllm_ascend.utils import (
     COMPRESSED_TENSORS_METHOD,
     AscendDeviceType,
 )
+
+
+# Prefix of the warning NPUPlatform emits for a backend it cannot provide.
+_UNAVAILABLE_BACKEND_LOG_PREFIX = "Attention backend %s was requested"
 
 
 class TestNPUPlatform(TestBase):
@@ -1023,6 +1028,126 @@ class TestNPUPlatform(TestBase):
         )
         result = self.platform.get_attn_backend_cls("ascend", attn_selector_config)
         self.assertEqual(result, "vllm_ascend.attention.attention_v1.AscendAttentionBackend")
+
+    def test_get_attn_backend_cls_routes_parallel_drafting_draft_to_fia_sink(self):
+        """The draft and its target no longer have to share one backend.
+
+        `use_non_causal` is what upstream sets for a DSpark/DFlash draft, and it
+        is part of the key `_cached_get_attn_backend` memoizes on, so the two
+        models resolve independently.
+        """
+        import vllm_ascend.attention.fia_sink_v1 as sink_module
+
+        def selector(**overrides):
+            fields = {
+                "dtype": torch.float16,
+                "head_size": 128,
+                "kv_cache_dtype": None,
+                "block_size": 128,
+                "use_mla": False,
+                "use_sparse": False,
+            }
+            fields.update(overrides)
+            return AttentionSelectorConfig(**fields)
+
+        with patch.object(sink_module, "_FIA_SINK_ENABLED", True):
+            draft = self.platform.get_attn_backend_cls(None, selector(use_non_causal=True))
+            target = self.platform.get_attn_backend_cls(None, selector(use_non_causal=False))
+
+        self.assertEqual(draft, "vllm_ascend.attention.fia_sink_v1.AscendFIASinkBackend")
+        self.assertEqual(target, "vllm_ascend.attention.attention_v1.AscendAttentionBackend")
+
+    def test_get_attn_backend_cls_keeps_fia_sink_opt_in(self):
+        """Without the env var nothing changes, including for a draft layer."""
+        attn_selector_config = AttentionSelectorConfig(
+            dtype=torch.float16,
+            head_size=128,
+            kv_cache_dtype=None,
+            block_size=128,
+            use_mla=False,
+            use_sparse=False,
+            use_non_causal=True,
+        )
+
+        result = self.platform.get_attn_backend_cls(None, attn_selector_config)
+
+        self.assertEqual(result, "vllm_ascend.attention.attention_v1.AscendAttentionBackend")
+
+    def test_get_attn_backend_cls_accepts_custom_selected_backend(self):
+        """CUSTOM is the slot vllm-ascend registers under, so it means "ours"."""
+        attn_selector_config = AttentionSelectorConfig(
+            dtype=torch.float16,
+            head_size=0,
+            kv_cache_dtype=None,
+            block_size=128,
+            use_mla=False,
+            use_sparse=False,
+        )
+
+        result = self.platform.get_attn_backend_cls(AttentionBackendEnum.CUSTOM, attn_selector_config)
+
+        self.assertEqual(result, "vllm_ascend.attention.attention_v1.AscendAttentionBackend")
+
+    @patch("vllm_ascend.platform.logger.warning_once")
+    def test_get_attn_backend_cls_reports_backend_from_another_platform(self, mock_warning_once):
+        """A backend Ascend cannot provide is named in the log, not dropped.
+
+        The target model's --attention-backend is already reset by
+        _fix_incompatible_config, so the request that actually reaches this hook
+        is a draft's --speculative-config attention_backend. That one was being
+        dropped in silence.
+
+        FLASH_ATTN is deliberately not in this list: on this branch it selects the
+        FA3 backend when `_validate_fa3_backend` accepts, so it is not always a
+        backend Ascend cannot provide.
+        """
+        attn_selector_config = AttentionSelectorConfig(
+            dtype=torch.float16,
+            head_size=0,
+            kv_cache_dtype=None,
+            block_size=128,
+            use_mla=False,
+            use_sparse=False,
+        )
+
+        backend = AttentionBackendEnum.TRITON_ATTN
+        result = self.platform.get_attn_backend_cls(backend, attn_selector_config)
+
+        self.assertEqual(result, "vllm_ascend.attention.attention_v1.AscendAttentionBackend")
+        # `logger` is shared, so match this message rather than the call count.
+        self.assertTrue(
+            any(
+                call.args[0].startswith(_UNAVAILABLE_BACKEND_LOG_PREFIX) and backend.name in call.args
+                for call in mock_warning_once.call_args_list
+            ),
+            f"no warning named {backend.name}: {mock_warning_once.call_args_list}",
+        )
+
+    @patch("vllm_ascend.platform.logger.warning_once")
+    def test_get_attn_backend_cls_stays_quiet_for_platform_choice(self, mock_warning_once):
+        """None and CUSTOM both mean "ours", so neither should warn."""
+        attn_selector_config = AttentionSelectorConfig(
+            dtype=torch.float16,
+            head_size=0,
+            kv_cache_dtype=None,
+            block_size=128,
+            use_mla=False,
+            use_sparse=False,
+        )
+
+        for selected in (None, AttentionBackendEnum.CUSTOM):
+            with self.subTest(selected=selected):
+                mock_warning_once.reset_mock()
+
+                self.platform.get_attn_backend_cls(selected, attn_selector_config)
+
+                self.assertFalse(
+                    any(
+                        call.args[0].startswith(_UNAVAILABLE_BACKEND_LOG_PREFIX)
+                        for call in mock_warning_once.call_args_list
+                    ),
+                    f"unexpected warning: {mock_warning_once.call_args_list}",
+                )
 
     def test_get_punica_wrapper(self):
         result = self.platform.get_punica_wrapper()
