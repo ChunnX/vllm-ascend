@@ -1889,6 +1889,57 @@ class TestNPUPlatform(TestBase):
                     f"unexpected warning: {mock_warning_once.call_args_list}",
                 )
 
+    @patch("vllm_ascend.platform.get_ascend_config")
+    def test_get_attn_backend_cls_routes_parallel_drafting_draft_to_fia_sink(self, mock_get_ascend_config):
+        """The draft and its target no longer have to share one backend.
+
+        `use_non_causal` is what upstream sets for a DSpark/DFlash draft, and it
+        is part of the key `_cached_get_attn_backend` memoizes on, so the two
+        models resolve independently.
+        """
+        import vllm_ascend.attention.fia_sink_v1 as sink_module
+
+        mock_get_ascend_config.return_value.rl_config.enabled = False
+        mock_get_ascend_config.return_value.rl_config.enable_training_consistency = False
+
+        def selector(**overrides):
+            fields = {
+                "dtype": torch.float16,
+                "head_size": 128,
+                "kv_cache_dtype": None,
+                "block_size": 128,
+                "use_mla": False,
+                "use_sparse": False,
+            }
+            fields.update(overrides)
+            return AttentionSelectorConfig(**fields)
+
+        with patch.object(sink_module, "_FIA_SINK_ENABLED", True):
+            draft = self.platform.get_attn_backend_cls(None, selector(use_non_causal=True))
+            target = self.platform.get_attn_backend_cls(None, selector(use_non_causal=False))
+
+        self.assertEqual(draft, "vllm_ascend.attention.fia_sink_v1.AscendFIASinkBackend")
+        self.assertEqual(target, "vllm_ascend.attention.attention_v1.AscendAttentionBackend")
+
+    @patch("vllm_ascend.platform.get_ascend_config")
+    def test_get_attn_backend_cls_keeps_fia_sink_opt_in(self, mock_get_ascend_config):
+        """Without the env var nothing changes, including for a draft layer."""
+        mock_get_ascend_config.return_value.rl_config.enabled = False
+        mock_get_ascend_config.return_value.rl_config.enable_training_consistency = False
+        attn_selector_config = AttentionSelectorConfig(
+            dtype=torch.float16,
+            head_size=128,
+            kv_cache_dtype=None,
+            block_size=128,
+            use_mla=False,
+            use_sparse=False,
+            use_non_causal=True,
+        )
+
+        result = self.platform.get_attn_backend_cls(None, attn_selector_config)
+
+        self.assertEqual(result, "vllm_ascend.attention.attention_v1.AscendAttentionBackend")
+
     def test_get_punica_wrapper(self):
         result = self.platform.get_punica_wrapper()
 

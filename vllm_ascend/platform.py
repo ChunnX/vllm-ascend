@@ -286,6 +286,18 @@ class NPUPlatform(Platform):
         if get_current_hardware_profile().attention_backend_family is AttentionBackendFamily.COMPATIBILITY:
             return compatibility_backend_map.get(key, compatibility_backend_map[(False, False)])
 
+        # A parallel-drafting (DSpark / DFlash) draft reads its KV length from a
+        # device tensor the verify kernel has just written, so it wants the
+        # operator that takes those lengths on device. It is a separate backend
+        # rather than a mode of the GQA one because that is the level the
+        # difference lives at -- see vllm_ascend/attention/fia_sink_v1.py for
+        # what follows from it. Opt-in through VLLM_ASCEND_ENABLE_DSPARK_FIA_SINK.
+        if key == (False, False) and not attn_selector_config.use_pcp:
+            from vllm_ascend.attention.fia_sink_v1 import fia_sink_selected
+
+            if fia_sink_selected(attn_selector_config):
+                return "vllm_ascend.attention.fia_sink_v1.AscendFIASinkBackend"
+
         if attn_selector_config.use_pcp:
             pcp_backend_map = {
                 (True, False, False): "vllm_ascend.attention.mla_v1.AscendMLABackend",
