@@ -47,6 +47,7 @@ from collections.abc import Callable
 import torch
 from vllm.config import VllmConfig
 from vllm.forward_context import get_forward_context
+from vllm.logger import logger
 from vllm.v1.kv_cache_interface import AttentionSpec
 
 import vllm_ascend.envs as envs_ascend
@@ -204,6 +205,18 @@ class AscendFIASinkMetadataBuilder(AscendAttentionMetadataBuilder):
         # Fail at construction if the operator package is missing, rather than on
         # the first forward of a served request.
         _ensure_fia_sink_ops_registered()
+
+        # Selection now happens at layer-construction time rather than inside
+        # build(), so nothing at runtime reveals which backend a layer ended up
+        # with. Registering the operator does not show it either -- the wheel can
+        # import while no layer selects this backend. Say it once here, so a run
+        # on hardware can confirm the routing this refactor moved.
+        logger.info(
+            "Ascend FIA sink backend selected for %d %s draft attention layer(s): %s",
+            len(layer_names),
+            getattr(speculative_config, "method", "parallel-drafting"),
+            layer_names,
+        )
 
     def _build_fia_seq_inputs(
         self,
