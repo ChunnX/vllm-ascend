@@ -150,6 +150,18 @@ class TestFIASinkMetadataBuilder(TestBase):
 
         self.assertIsInstance(builder, AscendFIASinkMetadataBuilder)
 
+    def test_logs_that_a_layer_actually_reached_this_backend(self):
+        """Routing moved to construction time, so it needs to be observable.
+
+        Operator registration only proves the wheel imported; this is the line
+        that shows a layer selected this backend.
+        """
+        with patch.object(sink_module.logger, "info") as mock_info:
+            self._build(["model.layers.0.self_attn.attn"])
+
+        mock_info.assert_called_once()
+        self.assertIn("model.layers.0.self_attn.attn", str(mock_info.call_args.args))
+
     def test_refuses_a_model_without_parallel_drafting(self):
         """use_non_causal is not exclusive to drafts -- DiffusionGemma sets it.
 
