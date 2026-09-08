@@ -88,9 +88,27 @@ class TestFIASinkSelection(TestBase):
 
 class TestFIASinkBackendWiring(TestBase):
     def test_backend_names_its_own_builder_and_impl(self):
-        self.assertEqual(AscendFIASinkBackend.get_name(), "ASCEND_FIA_SINK")
         self.assertIs(AscendFIASinkBackend.get_builder_cls(), AscendFIASinkMetadataBuilder)
         self.assertIs(AscendFIASinkBackend.get_impl_cls(), AscendFIASinkImpl)
+
+    def test_name_resolves_through_the_attention_backend_enum(self):
+        """`Attention.__init__` looks the name up in AttentionBackendEnum.
+
+        A name of this backend's own would raise there, at model load, the first
+        time a draft layer selected it -- which no CPU unit test constructing the
+        backend directly would reach. AscendAttentionBackend and AscendFABackend
+        answer "CUSTOM" for the same reason.
+        """
+        from vllm.v1.attention.backends.registry import AttentionBackendEnum
+
+        from vllm_ascend.attention.attention_v1 import AscendAttentionBackend
+
+        self.assertEqual(AscendFIASinkBackend.get_name(), AscendAttentionBackend.get_name())
+        # The exact call Attention.__init__ makes; raises ValueError on an unknown name.
+        self.assertIs(
+            AttentionBackendEnum[AscendFIASinkBackend.get_name()],
+            AttentionBackendEnum.CUSTOM,
+        )
 
     def test_kv_cache_layout_is_inherited_unchanged(self):
         """The draft shares the target's cache pool, so the layout must match.
