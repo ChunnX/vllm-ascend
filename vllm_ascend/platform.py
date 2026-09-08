@@ -848,16 +848,17 @@ class NPUPlatform(Platform):
         # difference lives at -- see vllm_ascend/attention/fia_sink_v1.py for
         # what follows from it. Opt-in through VLLM_ASCEND_ENABLE_DSPARK_FIA_SINK.
         if key == (False, False):
-            from vllm_ascend.attention.fa4_v1 import fa4_selected
             from vllm_ascend.attention.fia_sink_v1 import fia_sink_selected
+            from vllm_ascend.attention.flash_attn_npu_v1 import flash_attn_npu_selected
 
-            # FA4 is asked first because `fia_sink_selected` has no head-size test:
-            # it would claim a head_dim the sink operator cannot serve and fail on
-            # the first forward. `fa4_selected` yields the sink operator's own head
-            # sizes back to it whenever that flag is on, so with both enabled every
-            # layer still resolves to exactly one backend.
-            if fa4_selected(attn_selector_config):
-                return "vllm_ascend.attention.fa4_v1.AscendFA4Backend"
+            # flash-attention-npu is asked first because `fia_sink_selected` has no
+            # head-size test: it would claim a head_dim the sink operator cannot
+            # serve and fail on the first forward. `flash_attn_npu_selected` yields
+            # the sink operator's own head sizes back to it whenever that flag is
+            # on, so with both enabled every layer still resolves to exactly one
+            # backend.
+            if flash_attn_npu_selected(attn_selector_config):
+                return "vllm_ascend.attention.flash_attn_npu_v1.AscendFlashAttnNpuBackend"
 
             if fia_sink_selected(attn_selector_config):
                 return "vllm_ascend.attention.fia_sink_v1.AscendFIASinkBackend"

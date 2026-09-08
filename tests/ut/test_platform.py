@@ -1057,8 +1057,8 @@ class TestNPUPlatform(TestBase):
         self.assertEqual(draft, "vllm_ascend.attention.fia_sink_v1.AscendFIASinkBackend")
         self.assertEqual(target, "vllm_ascend.attention.attention_v1.AscendAttentionBackend")
 
-    def test_get_attn_backend_cls_keeps_fia_sink_opt_in(self):
-        """Without the env var nothing changes, including for a draft layer."""
+    def test_get_attn_backend_cls_keeps_draft_backends_opt_in(self):
+        """With neither env var set nothing changes, including for a draft layer."""
         attn_selector_config = AttentionSelectorConfig(
             dtype=torch.float16,
             head_size=128,
@@ -1073,19 +1073,10 @@ class TestNPUPlatform(TestBase):
 
         self.assertEqual(result, "vllm_ascend.attention.attention_v1.AscendAttentionBackend")
 
-    def test_get_attn_backend_cls_routes_unsupported_head_size_to_fa4(self):
-        """head_dim 256 is the gap the sink operator leaves; FA4 covers it.
-
-        FA4 is asked first in get_attn_backend_cls precisely because
-        `fia_sink_selected` has no head-size test and would otherwise claim this
-        layer and fail on the first forward.
-        """
-        import vllm_ascend.attention.fa4_v1 as fa4_module
-        import vllm_ascend.attention.fia_sink_v1 as sink_module
-
-        attn_selector_config = AttentionSelectorConfig(
+    def _non_causal_selector(self, head_size):
+        return AttentionSelectorConfig(
             dtype=torch.float16,
-            head_size=256,
+            head_size=head_size,
             kv_cache_dtype=None,
             block_size=128,
             use_mla=False,
@@ -1093,36 +1084,43 @@ class TestNPUPlatform(TestBase):
             use_non_causal=True,
         )
 
-        with (
-            patch.object(fa4_module, "_FA4_ENABLED", True),
-            patch.object(fa4_module, "_FIA_SINK_ENABLED", True),
-            patch.object(sink_module, "_FIA_SINK_ENABLED", True),
-        ):
-            result = self.platform.get_attn_backend_cls(None, attn_selector_config)
+    def test_get_attn_backend_cls_routes_unsupported_head_size_to_flash_attn_npu(self):
+        """head_dim 256 is the gap the sink operator leaves; the wheel covers it.
 
-        self.assertEqual(result, "vllm_ascend.attention.fa4_v1.AscendFA4Backend")
+        flash-attention-npu is asked first in get_attn_backend_cls precisely
+        because `fia_sink_selected` has no head-size test and would otherwise claim
+        this layer and fail on the first forward. Either generation of the wheel
+        answers, since the backend class is the same and the generation is its
+        internal detail.
+        """
+        import vllm_ascend.attention.fia_sink_v1 as sink_module
+        import vllm_ascend.attention.flash_attn_npu_v1 as fa_module
+
+        for generation in ("v3", "v4"):
+            with self.subTest(generation=generation):
+                with (
+                    patch.object(fa_module, "_SELECTED", generation),
+                    patch.object(fa_module, "_FIA_SINK_ENABLED", True),
+                    patch.object(sink_module, "_FIA_SINK_ENABLED", True),
+                ):
+                    result = self.platform.get_attn_backend_cls(None, self._non_causal_selector(256))
+
+                self.assertEqual(
+                    result,
+                    "vllm_ascend.attention.flash_attn_npu_v1.AscendFlashAttnNpuBackend",
+                )
 
     def test_get_attn_backend_cls_leaves_sink_head_sizes_to_the_sink_backend(self):
-        """With both flags on, each layer still resolves to exactly one backend."""
-        import vllm_ascend.attention.fa4_v1 as fa4_module
+        """With both enabled, each layer still resolves to exactly one backend."""
         import vllm_ascend.attention.fia_sink_v1 as sink_module
-
-        attn_selector_config = AttentionSelectorConfig(
-            dtype=torch.float16,
-            head_size=128,
-            kv_cache_dtype=None,
-            block_size=128,
-            use_mla=False,
-            use_sparse=False,
-            use_non_causal=True,
-        )
+        import vllm_ascend.attention.flash_attn_npu_v1 as fa_module
 
         with (
-            patch.object(fa4_module, "_FA4_ENABLED", True),
-            patch.object(fa4_module, "_FIA_SINK_ENABLED", True),
+            patch.object(fa_module, "_SELECTED", "v4"),
+            patch.object(fa_module, "_FIA_SINK_ENABLED", True),
             patch.object(sink_module, "_FIA_SINK_ENABLED", True),
         ):
-            result = self.platform.get_attn_backend_cls(None, attn_selector_config)
+            result = self.platform.get_attn_backend_cls(None, self._non_causal_selector(128))
 
         self.assertEqual(result, "vllm_ascend.attention.fia_sink_v1.AscendFIASinkBackend")
 

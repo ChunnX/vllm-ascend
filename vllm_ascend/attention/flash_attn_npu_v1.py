@@ -1,0 +1,560 @@
+#
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
+# Copyright 2023 The vLLM team.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# This file is a part of the vllm-ascend project.
+#
+"""Parallel-drafting draft attention on the flash-attention-npu wheel.
+
+Same problem as `fia_sink_v1.py`, different operator. A DSpark/DFlash draft reads
+a KV length that only exists on device -- the scheduled length minus the tokens
+this step rejected -- so serving it through an entry point that wants a host-side
+list costs a device-to-host sync every metadata build.
+`npu_fused_infer_attention_sink` solved that by taking the lengths as device
+tensors and tiling on AICPU. It only serves head sizes 128, 192 and 512, which
+leaves a model with head_dim 256 without a path.
+
+flash-attention-npu has the same property through a different door.
+`get_scheduler_metadata` runs an AICPU kernel over the device-side `cu_seqlens_q`
+and `cache_seqlens` and writes a tiling blob that the forward then consumes
+without touching the host. And its forward does not bin head_dim into a kernel
+template -- it is a runtime field of that blob -- so everything up to its
+`head_size <= 256` check is one code path.
+
+Two generations of that wheel offer it, and which one is better here is an open
+question, so this backend can call either. They are not successive: the repo
+maintains v2, v3 and v4 side by side, and v4 is the inference-shaped fork of v3
+rather than its replacement -- it drops the in-kernel KV append (`k_new`/`v_new`)
+that a framework managing its own KV cache never uses, which also costs it
+`flash_attn_with_kvcache` as an entry point. What is known so far:
+
+  v3  reaches the paged AICPU-metadata path through `flash_attn_with_kvcache`.
+      Validates the metadata against the call (`_validate_scheduler_metadata`),
+      including the page-capacity bound that v4 leaves implicit. Registers fake
+      impls, so it survives dynamo tracing. Its 950 backend has the metadata op.
+  v4  reaches it through `flash_attn_varlen_func`, one function for varlen +
+      paged + metadata. Leaner forward inner loop and more L1, which may or may
+      not show up as throughput -- the wheel ships no benchmark comparing them.
+      No fake impls, and its 950 backend has no metadata op at all.
+
+Pick with VLLM_ASCEND_DSPARK_FLASH_ATTN_NPU=v3|v4; unset disables the backend.
+
+Everything downstream of "the builder leaves the host-side sequence lists unset"
+is the sink backend's, for the sink backend's reasons: the metadata, the forward,
+the full-graph replay path that skips layers without a `seq_lens_list`, the
+per-forward metadata cache that keeps captured addresses stable, and the per-build
+causal fallback for a DFlash draft whose KV cache groups disagree.
+
+Named for the wheel rather than a generation: `fa3_v1.py` in this package is a
+different backend on a different wheel (`flash_attn_npu_v3`), so `fa3`/`fa4` here
+would read as a reference to it.
+"""
+
+import importlib
+from collections.abc import Callable
+from typing import Any
+
+import torch
+from vllm.config import VllmConfig
+from vllm.forward_context import get_forward_context
+from vllm.logger import logger
+from vllm.v1.kv_cache_interface import AttentionSpec
+
+import vllm_ascend.envs as envs_ascend
+from vllm_ascend.attention.attention_v1 import (
+    AscendAttentionBackend,
+    AscendAttentionBackendImpl,
+    AscendAttentionMetadataBuilder,
+    AscendMetadata,
+)
+from vllm_ascend.attention.utils import AscendCommonAttentionMetadata
+
+_FA_NPU_META_CACHE_ATTR = "_ascend_fa_npu_meta_cache"
+_loaded_modules: dict[str, Any] = {}
+
+# Head sizes `npu_fused_infer_attention_sink` serves. A layer outside this set is
+# what this backend exists for; a layer inside it keeps the sink operator, which
+# is the path that has been run on hardware.
+FIA_SINK_HEAD_SIZES = (128, 192, 512)
+
+# Both generations check `head_size_og <= 256` in their forward, and head_dim is a
+# tiling field rather than a template axis, so everything at or below that bound
+# is the same kernel.
+FA_NPU_MAX_HEAD_SIZE = 256
+
+
+class _Generation:
+    """One flash-attention-npu API generation.
+
+    `get_scheduler_metadata` takes the same keywords in both, so only the forward
+    call differs; each subclass supplies that plus the module it lives in.
+    """
+
+    key: str
+    module_name: str
+    required_attrs: tuple[str, ...]
+
+    @staticmethod
+    def forward(module, **kwargs) -> torch.Tensor:
+        raise NotImplementedError
+
+
+class _V4(_Generation):
+    key = "v4"
+    module_name = "flash_attn_npu_4"
+    required_attrs = ("flash_attn_varlen_func", "get_scheduler_metadata")
+
+    @staticmethod
+    def forward(
+        module,
+        *,
+        query,
+        key_cache,
+        value_cache,
+        cu_seqlens_q,
+        seqused_k,
+        page_table,
+        max_seqlen_q,
+        max_seqlen_k,
+        softmax_scale,
+        scheduler_metadata,
+    ) -> torch.Tensor:
+        return module.flash_attn_varlen_func(
+            query,
+            key_cache,
+            value_cache,
+            cu_seqlens_q=cu_seqlens_q,
+            seqused_k=seqused_k,
+            page_table=page_table,
+            max_seqlen_q=max_seqlen_q,
+            max_seqlen_k=max_seqlen_k,
+            softmax_scale=softmax_scale,
+            causal=False,
+            window_size=(-1, -1),
+            scheduler_metadata=scheduler_metadata,
+            num_splits=0,
+            return_lse=False,
+        )
+
+
+class _V3(_Generation):
+    key = "v3"
+    module_name = "flash_attn_npu_3"
+    required_attrs = ("flash_attn_with_kvcache", "get_scheduler_metadata")
+
+    @staticmethod
+    def forward(
+        module,
+        *,
+        query,
+        key_cache,
+        value_cache,
+        cu_seqlens_q,
+        seqused_k,
+        page_table,
+        max_seqlen_q,
+        max_seqlen_k,
+        softmax_scale,
+        scheduler_metadata,
+    ) -> torch.Tensor:
+        # v3's flash_attn_varlen_func takes neither page_table nor
+        # scheduler_metadata -- the paged AICPU-metadata path is
+        # flash_attn_with_kvcache, whose `cache_seqlens` is v4's `seqused_k`.
+        #
+        # No max_seqlen_k: it derives the KV bound itself as
+        # k_cache.shape[1] * page_table.shape[1], and _validate_scheduler_metadata
+        # rejects metadata built against a different one. That is the same
+        # page-capacity invariant the metadata call below is given explicitly, so
+        # v3 checks what v4 takes on trust.
+        del max_seqlen_k
+        return module.flash_attn_with_kvcache(
+            query,
+            key_cache,
+            value_cache,
+            cache_seqlens=seqused_k,
+            page_table=page_table,
+            cu_seqlens_q=cu_seqlens_q,
+            max_seqlen_q=max_seqlen_q,
+            softmax_scale=softmax_scale,
+            causal=False,
+            window_size=(-1, -1),
+            rotary_interleaved=False,
+            scheduler_metadata=scheduler_metadata,
+            num_splits=0,
+            return_softmax_lse=False,
+        )
+
+
+_GENERATIONS: dict[str, type[_Generation]] = {gen.key: gen for gen in (_V3, _V4)}
+
+_SELECTED = (envs_ascend.VLLM_ASCEND_DSPARK_FLASH_ATTN_NPU or "").strip().lower()
+# Mirrors the sink module's own read of its flag, so both halves of the head-size
+# split are decided from constants fixed at import.
+_FIA_SINK_ENABLED = bool(envs_ascend.VLLM_ASCEND_ENABLE_DSPARK_FIA_SINK)
+
+
+def selected_generation() -> type[_Generation] | None:
+    """The generation this process routes draft attention to, or None.
+
+    A typo raises rather than silently disabling the backend: an unrecognised
+    value is a request that cannot be served, not a request to serve nothing.
+    """
+    if not _SELECTED:
+        return None
+    generation = _GENERATIONS.get(_SELECTED)
+    if generation is None:
+        raise RuntimeError(
+            f"VLLM_ASCEND_DSPARK_FLASH_ATTN_NPU={_SELECTED!r} is not a "
+            "flash-attention-npu generation this backend serves. Expected one of "
+            f"{', '.join(sorted(_GENERATIONS))}, or unset to disable it."
+        )
+    return generation
+
+
+def _load(generation: type[_Generation]):
+    """Import the wheel's module once, failing with something actionable."""
+    cached = _loaded_modules.get(generation.key)
+    if cached is not None:
+        return cached
+
+    try:
+        module = importlib.import_module(generation.module_name)
+    except (ImportError, OSError) as exc:
+        raise RuntimeError(
+            f"VLLM_ASCEND_DSPARK_FLASH_ATTN_NPU={generation.key} requires the "
+            "flash-attn-npu wheel built with "
+            f"FLASH_ATTN_BUILD_VERSION={generation.key} for Ascend910. Install it and "
+            "source the matching CANN environment."
+        ) from exc
+
+    missing = [name for name in generation.required_attrs if not hasattr(module, name)]
+    if missing:
+        # The package picks its interface from the device name at import time, so a
+        # build for another device exports a different set -- say that rather than
+        # letting it fail later as an attribute error.
+        raise RuntimeError(
+            f"{generation.module_name} imported but does not expose "
+            f"{', '.join(missing)}. The Ascend910 {generation.key} interface provides "
+            "them; a build for another device does not."
+        )
+    _loaded_modules[generation.key] = module
+    return module
+
+
+def _get_or_compute_inputs(
+    cache_key: tuple,
+    compute: Callable[[], tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Compute device seq tensors and scheduler metadata once per forward/signature.
+
+    Mirrors the sink backend's cache and for the same reason: during aclgraph
+    capture the first layer records the conversion and the AICPU metadata launch,
+    later layers reuse the same tensors, and replay reruns one metadata launch per
+    signature with every captured address stable. Eager forwards get a fresh
+    context-local cache each step. The cache is separate from the sink one because
+    the payload is -- `cu_seqlens_q` here is int32 and B+1 long.
+    """
+    forward_context = get_forward_context()
+    cache = getattr(forward_context, _FA_NPU_META_CACHE_ATTR, None)
+    if cache is None:
+        cache = {}
+        setattr(forward_context, _FA_NPU_META_CACHE_ATTR, cache)
+    if cache_key not in cache:
+        cache[cache_key] = compute()
+    return cache[cache_key]
+
+
+def _build_seq_tensors(num_tokens: int, seq_lens: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Build legal device-side TND lengths for uniform parallel-drafting queries.
+
+    Same repair the sink backend makes, in this wheel's dtypes. FULL graph replay
+    pads the request bucket: the producer leaves padded `query_start_loc` entries at
+    the real-token boundary and padded KV lengths at zero. DSpark/DFlash queries are
+    uniform, so cumulative Q lengths come from the static shapes instead, and dummy
+    KV lengths map to 1 -- a zero-length request is not a shape the tiling has been
+    exercised on, and one padded token of attention is discarded downstream anyway.
+
+    Both generations want `cu_seqlens_q` with a leading zero and B+1 entries, and
+    TORCH_CHECK the dtype of each as int32.
+    """
+    num_reqs = seq_lens.shape[0]
+    if num_reqs <= 0 or num_tokens % num_reqs != 0:
+        raise RuntimeError(
+            "Parallel-drafting flash-attention-npu requires a non-empty uniform query "
+            f"batch: num_tokens={num_tokens}, num_reqs={num_reqs}"
+        )
+    query_tokens_per_req = num_tokens // num_reqs
+    cu_seqlens_q = torch.arange(num_reqs + 1, dtype=torch.int32, device=seq_lens.device) * query_tokens_per_req
+    seqused_k = seq_lens.to(torch.int32).clamp_min(1)
+    return cu_seqlens_q, seqused_k
+
+
+def flash_attn_npu_selected(attn_selector_config: object) -> bool:
+    """Whether this layer's attention should be routed to flash-attention-npu.
+
+    Reads only fields of ``AttentionSelectorConfig``, which is part of the key
+    ``_cached_get_attn_backend`` memoizes on -- a predicate that reached for
+    ``get_current_vllm_config()`` would be answered once and reused for every
+    later config that hashed the same.
+
+    The layer test is the sink backend's, for the same reasons: ``use_non_causal``
+    is what upstream sets for a parallel-drafting draft, and sliding-window or
+    learnable-sink layers are excluded because this call passes
+    ``causal=False, window_size=(-1, -1)`` and no sink tensor.
+
+    On top of that, ``head_size``. Above 256 the forward refuses the call, and
+    inside the sink operator's own set the sink operator keeps the layer: that is
+    the path with hardware runs behind it. So this backend claims exactly the gap
+    -- which is where a head_dim 256 model falls.
+    """
+    if selected_generation() is None:
+        return False
+    if not getattr(attn_selector_config, "use_non_causal", False):
+        return False
+    if getattr(attn_selector_config, "has_sliding_window", False):
+        return False
+    if getattr(attn_selector_config, "has_sink", False):
+        return False
+    head_size = getattr(attn_selector_config, "head_size", 0)
+    if not 0 < head_size <= FA_NPU_MAX_HEAD_SIZE:
+        return False
+    if head_size in FIA_SINK_HEAD_SIZES and _FIA_SINK_ENABLED:
+        return False
+    return True
+
+
+class AscendFlashAttnNpuMetadataBuilder(AscendAttentionMetadataBuilder):
+    """Builds draft metadata that keeps the sequence lengths on device."""
+
+    def __init__(
+        self,
+        kv_cache_spec: AttentionSpec,
+        layer_names: list[str],
+        vllm_config: VllmConfig,
+        device: torch.device,
+    ):
+        super().__init__(kv_cache_spec, layer_names, vllm_config, device)
+
+        # `flash_attn_npu_selected` keys off `use_non_causal`, which a target model
+        # can also carry (DiffusionGemma). Only a parallel-drafting draft has the
+        # uniform query shape `_build_seq_tensors` derives lengths from, so refuse
+        # the layer here, where the full config is in hand, rather than producing
+        # quietly wrong lengths.
+        speculative_config = vllm_config.speculative_config
+        if not (speculative_config is not None and getattr(speculative_config, "parallel_drafting", False)):
+            raise RuntimeError(
+                "The Ascend flash-attention-npu backend serves parallel-drafting "
+                "(DSpark / DFlash) draft attention, but these layers belong to a model "
+                f"without parallel drafting: {layer_names}. Unset "
+                "VLLM_ASCEND_DSPARK_FLASH_ATTN_NPU."
+            )
+
+        generation = selected_generation()
+        # Fail at construction if the wheel is missing, rather than on the first
+        # forward of a served request.
+        _load(generation)
+
+        logger.info(
+            "Ascend flash-attention-npu backend (%s) selected for %d %s draft "
+            "attention layer(s) (head_size=%s): %s",
+            generation.key,
+            len(layer_names),
+            getattr(speculative_config, "method", "parallel-drafting"),
+            getattr(kv_cache_spec, "head_size", "unknown"),
+            layer_names,
+        )
+
+    def _build_fia_seq_inputs(
+        self,
+        common_attn_metadata: AscendCommonAttentionMetadata,
+        num_reqs: int,
+        query_start_loc_cpu: torch.Tensor,
+        seq_lens: torch.Tensor,
+        block_table: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, list[int] | None, list[int] | None, torch.Tensor, torch.Tensor | None]:
+        """Keep the device-side lengths; leave the host-side lists unset.
+
+        Identical in intent to `AscendFIASinkMetadataBuilder._build_fia_seq_inputs`
+        -- the base builder calls `.tolist()` on both, which for this draft is a
+        device-to-host sync on a value the verify kernel has only just written, and
+        `seq_lens_list` being None is also what keeps these layers out of the
+        per-step `graph_task_update` loop in `update_graph_params`.
+
+        Causality is per build, not per layer: a DFlash draft can carry a different
+        flag for each KV cache group, so one backend's layers see both. This call
+        passes `causal=False`, so a causal group has to keep the ordinary path --
+        and `AscendFlashAttnNpuImpl` reads the same `causal` field to make the
+        matching choice.
+        """
+        if common_attn_metadata.causal:
+            return super()._build_fia_seq_inputs(
+                common_attn_metadata,
+                num_reqs,
+                query_start_loc_cpu,
+                seq_lens,
+                block_table,
+            )
+
+        query_start_loc = common_attn_metadata.query_start_loc[: num_reqs + 1]
+        return query_start_loc, None, None, seq_lens, block_table
+
+
+class AscendFlashAttnNpuImpl(AscendAttentionBackendImpl):
+    """Runs draft attention through flash-attention-npu, in eager and in graph."""
+
+    def forward_fused_infer_attention(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        attn_metadata: AscendMetadata,
+        output: torch.Tensor,
+        kv_cache=None,
+    ):
+        # A DFlash draft can mix causal and non-causal KV cache groups, so this is
+        # decided per build rather than per layer. The builder made the same call
+        # from the same field: a causal group kept its host-side lengths, which is
+        # what the ordinary path below needs.
+        if attn_metadata.causal:
+            return super().forward_fused_infer_attention(query, key, value, attn_metadata, output, kv_cache)
+
+        return self._forward_flash_attn_npu(query, key, value, attn_metadata, output, kv_cache)
+
+    def _forward_flash_attn_npu(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        attn_metadata: AscendMetadata,
+        output: torch.Tensor,
+        kv_cache=None,
+    ) -> torch.Tensor:
+        """Parallel-drafting (DSpark/DFlash) attention via flash-attention-npu.
+
+        `get_scheduler_metadata` runs the AICPU tiling kernel over the device-side
+        `cu_seqlens_q` / `seqused_k`, so no `seq_lens.tolist()` is needed, and the
+        forward given that blob takes the no-host-work branch. Both are issued
+        inline so aclgraph captures them together and replay re-reads the draft's
+        stable device buffers.
+        """
+        generation = selected_generation()
+        module = _load(generation)
+
+        if self.key_cache is None and kv_cache is not None:
+            self.key_cache, self.value_cache = kv_cache[0], kv_cache[1]
+        if self.key_cache is None:
+            raise RuntimeError("key_cache is None in _forward_flash_attn_npu")
+
+        # The wheel's paged layout is (num_blocks, page_size, num_kv_heads,
+        # head_size), which is the Ascend KV cache shape already -- no view needed,
+        # unlike the sink operator's BnBsH.
+        _, block_size, _, _ = self.key_cache.shape
+        key_cache = self.key_cache
+        value_cache = self.value_cache
+
+        num_tokens = attn_metadata.num_actual_tokens
+        query = query[:num_tokens]
+
+        num_reqs = attn_metadata.seq_lens.shape[0]
+        block_table = attn_metadata.block_tables
+        if block_table.shape[0] < num_reqs:
+            raise RuntimeError(
+                "Parallel-drafting flash-attention-npu block table has fewer rows than "
+                f"requests: rows={block_table.shape[0]}, num_reqs={num_reqs}"
+            )
+        block_table = block_table[:num_reqs]
+
+        # `get_scheduler_metadata` derives the block-table row stride the kernel
+        # indexes with as ceil(max_seqlen_k / page_size), so max_seqlen_k has to be
+        # the page capacity this block table was allocated at, not the actual
+        # maximum KV length. Passing the actual max would silently mis-address paged
+        # KV under v4, which does not check it; v3 rejects the mismatch.
+        max_seqlen_k = block_table.shape[1] * block_size
+        query_tokens_per_req = num_tokens // num_reqs if num_reqs else 0
+
+        cache_key = (
+            generation.key,
+            attn_metadata.seq_lens.data_ptr(),
+            num_tokens,
+            num_reqs,
+            self.num_heads,
+            self.num_kv_heads,
+            self.head_size,
+            block_size,
+            max_seqlen_k,
+        )
+
+        def compute_inputs() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+            cu_seqlens_q, seqused_k = _build_seq_tensors(num_tokens, attn_metadata.seq_lens)
+            # Keyword-identical across the generations for everything passed here.
+            scheduler_metadata = module.get_scheduler_metadata(
+                batch_size=num_reqs,
+                max_seqlen_q=query_tokens_per_req,
+                max_seqlen_k=max_seqlen_k,
+                num_heads_q=self.num_heads,
+                num_heads_kv=self.num_kv_heads,
+                headdim=self.head_size,
+                cache_seqlens=seqused_k,
+                qkv_dtype=query.dtype,
+                headdim_v=self.head_size,
+                cu_seqlens_q=cu_seqlens_q,
+                page_size=block_size,
+                causal=False,
+                window_size=(-1, -1),
+                softmax_scale=self.scale,
+            )
+            return cu_seqlens_q, seqused_k, scheduler_metadata
+
+        cu_seqlens_q, seqused_k, scheduler_metadata = _get_or_compute_inputs(cache_key, compute_inputs)
+
+        attn_output = generation.forward(
+            module,
+            query=query,
+            key_cache=key_cache,
+            value_cache=value_cache,
+            cu_seqlens_q=cu_seqlens_q,
+            seqused_k=seqused_k,
+            page_table=block_table,
+            max_seqlen_q=query_tokens_per_req,
+            max_seqlen_k=max_seqlen_k,
+            softmax_scale=self.scale,
+            scheduler_metadata=scheduler_metadata,
+        )
+        attn_output = attn_output.view(num_tokens, self.num_heads, self.head_size)
+        output[:num_tokens] = attn_output[:num_tokens]
+        return output
+
+
+class AscendFlashAttnNpuBackend(AscendAttentionBackend):
+    """`AscendAttentionBackend` with the draft's flash-attention-npu builder and impl.
+
+    Everything that decides KV cache layout -- `get_kv_cache_shape`,
+    `get_required_kv_cache_layout`, `indexes_kv_by_block_stride` -- is inherited
+    unchanged and deliberately so, exactly as for the sink backend: the draft
+    shares the target's cache pool, and `get_required_kv_cache_layout` is applied
+    through a process-global setter, so a second layout here would not stay on this
+    backend's layers. Both generations want that same layout.
+    """
+
+    @staticmethod
+    def get_name() -> str:
+        return "ASCEND_FLASH_ATTN_NPU"
+
+    @staticmethod
+    def get_impl_cls() -> type["AscendFlashAttnNpuImpl"]:
+        return AscendFlashAttnNpuImpl
+
+    @staticmethod
+    def get_builder_cls() -> type["AscendFlashAttnNpuMetadataBuilder"]:
+        return AscendFlashAttnNpuMetadataBuilder
