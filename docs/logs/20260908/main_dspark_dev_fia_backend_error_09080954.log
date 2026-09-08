@@ -1,0 +1,133 @@
+(Worker pid=363493) ERROR 09-08 01:49:40 [multiproc_executor.py:912] WorkerProc failed to start.
+(Worker pid=363493) ERROR 09-08 01:49:40 [multiproc_executor.py:912] Traceback (most recent call last):
+(Worker pid=363493) ERROR 09-08 01:49:40 [multiproc_executor.py:912]   File "/vllm-workspace/vllm/vllm/platforms/interface.py", line 267, in device_control_id_to_physical_device_id
+(Worker pid=363493) ERROR 09-08 01:49:40 [multiproc_executor.py:912]     return int(device_id)
+(Worker pid=363493) ERROR 09-08 01:49:40 [multiproc_executor.py:912]            ^^^^^^^^^^^^^^
+(Worker pid=363493) ERROR 09-08 01:49:40 [multiproc_executor.py:912] ValueError: invalid literal for int() with base 10: '3s'
+(Worker pid=363493) ERROR 09-08 01:49:40 [multiproc_executor.py:912] 
+(Worker pid=363493) ERROR 09-08 01:49:40 [multiproc_executor.py:912] The above exception was the direct cause of the following exception:
+(Worker pid=363493) ERROR 09-08 01:49:40 [multiproc_executor.py:912] 
+(Worker pid=363493) ERROR 09-08 01:49:40 [multiproc_executor.py:912] Traceback (most recent call last):
+(Worker pid=363493) ERROR 09-08 01:49:40 [multiproc_executor.py:912]   File "/vllm-workspace/vllm/vllm/v1/executor/multiproc_executor.py", line 879, in worker_main
+(Worker pid=363493) ERROR 09-08 01:49:40 [multiproc_executor.py:912]     worker = WorkerProc(*args, **kwargs)
+(Worker pid=363493) ERROR 09-08 01:49:40 [multiproc_executor.py:912]              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker pid=363493) ERROR 09-08 01:49:40 [multiproc_executor.py:912]   File "/vllm-workspace/vllm/vllm/tracing/otel.py", line 178, in sync_wrapper
+(Worker pid=363493) ERROR 09-08 01:49:40 [multiproc_executor.py:912]     return func(*args, **kwargs)
+(Worker pid=363493) ERROR 09-08 01:49:40 [multiproc_executor.py:912]            ^^^^^^^^^^^^^^^^^^^^^
+(Worker pid=363493) ERROR 09-08 01:49:40 [multiproc_executor.py:912]   File "/vllm-workspace/vllm/vllm/v1/executor/multiproc_executor.py", line 640, in __init__
+(Worker pid=363493) ERROR 09-08 01:49:40 [multiproc_executor.py:912]     self.worker.init_device()
+(Worker pid=363493) ERROR 09-08 01:49:40 [multiproc_executor.py:912]   File "/vllm-workspace/vllm/vllm/v1/worker/worker_base.py", line 331, in init_device
+(Worker pid=363493) ERROR 09-08 01:49:40 [multiproc_executor.py:912]     self.worker.init_device()  # type: ignore
+(Worker pid=363493) ERROR 09-08 01:49:40 [multiproc_executor.py:912]     ^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker pid=363493) ERROR 09-08 01:49:40 [multiproc_executor.py:912]   File "/vllm-workspace/vllm-ascend/vllm_ascend/worker/worker.py", line 482, in init_device
+(Worker pid=363493) ERROR 09-08 01:49:40 [multiproc_executor.py:912]     self.device = self._init_device()
+(Worker pid=363493) ERROR 09-08 01:49:40 [multiproc_executor.py:912]                   ^^^^^^^^^^^^^^^^^^^
+(Worker pid=363493) ERROR 09-08 01:49:40 [multiproc_executor.py:912]   File "/vllm-workspace/vllm-ascend/vllm_ascend/worker/worker.py", line 420, in _init_device
+(Worker pid=363493) ERROR 09-08 01:49:40 [multiproc_executor.py:912]     visible_device_index = current_platform.logical_device_id_to_visible_device_id(self.local_rank)
+(Worker pid=363493) ERROR 09-08 01:49:40 [multiproc_executor.py:912]                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker pid=363493) ERROR 09-08 01:49:40 [multiproc_executor.py:912]   File "/vllm-workspace/vllm/vllm/platforms/interface.py", line 329, in logical_device_id_to_visible_device_id
+(Worker pid=363493) ERROR 09-08 01:49:40 [multiproc_executor.py:912]     cls.device_control_id_to_physical_device_id(physical_id)
+(Worker pid=363493) ERROR 09-08 01:49:40 [multiproc_executor.py:912]   File "/vllm-workspace/vllm/vllm/platforms/interface.py", line 269, in device_control_id_to_physical_device_id
+(Worker pid=363493) ERROR 09-08 01:49:40 [multiproc_executor.py:912]     raise ValueError(
+(Worker pid=363493) ERROR 09-08 01:49:40 [multiproc_executor.py:912] ValueError: Non-integer device ID '3s' is not supported by npu.
+(Worker pid=363494) ERROR 09-08 01:49:40 [multiproc_executor.py:912] WorkerProc failed to start.
+(Worker pid=363494) ERROR 09-08 01:49:40 [multiproc_executor.py:912] Traceback (most recent call last):
+(Worker pid=363494) ERROR 09-08 01:49:40 [multiproc_executor.py:912]   File "/vllm-workspace/vllm/vllm/platforms/interface.py", line 267, in device_control_id_to_physical_device_id
+(Worker pid=363494) ERROR 09-08 01:49:40 [multiproc_executor.py:912]     return int(device_id)
+(Worker pid=363494) ERROR 09-08 01:49:40 [multiproc_executor.py:912]            ^^^^^^^^^^^^^^
+(Worker pid=363494) ERROR 09-08 01:49:40 [multiproc_executor.py:912] ValueError: invalid literal for int() with base 10: '3s'
+(Worker pid=363494) ERROR 09-08 01:49:40 [multiproc_executor.py:912] 
+(Worker pid=363494) ERROR 09-08 01:49:40 [multiproc_executor.py:912] The above exception was the direct cause of the following exception:
+(Worker pid=363494) ERROR 09-08 01:49:40 [multiproc_executor.py:912] 
+(Worker pid=363494) ERROR 09-08 01:49:40 [multiproc_executor.py:912] Traceback (most recent call last):
+(Worker pid=363494) ERROR 09-08 01:49:40 [multiproc_executor.py:912]   File "/vllm-workspace/vllm/vllm/v1/executor/multiproc_executor.py", line 879, in worker_main
+(Worker pid=363494) ERROR 09-08 01:49:40 [multiproc_executor.py:912]     worker = WorkerProc(*args, **kwargs)
+(Worker pid=363494) ERROR 09-08 01:49:40 [multiproc_executor.py:912]              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker pid=363494) ERROR 09-08 01:49:40 [multiproc_executor.py:912]   File "/vllm-workspace/vllm/vllm/tracing/otel.py", line 178, in sync_wrapper
+(Worker pid=363494) ERROR 09-08 01:49:40 [multiproc_executor.py:912]     return func(*args, **kwargs)
+(Worker pid=363494) ERROR 09-08 01:49:40 [multiproc_executor.py:912]            ^^^^^^^^^^^^^^^^^^^^^
+(Worker pid=363494) ERROR 09-08 01:49:40 [multiproc_executor.py:912]   File "/vllm-workspace/vllm/vllm/v1/executor/multiproc_executor.py", line 640, in __init__
+(Worker pid=363494) ERROR 09-08 01:49:40 [multiproc_executor.py:912]     self.worker.init_device()
+(Worker pid=363494) ERROR 09-08 01:49:40 [multiproc_executor.py:912]   File "/vllm-workspace/vllm/vllm/v1/worker/worker_base.py", line 331, in init_device
+(Worker pid=363494) ERROR 09-08 01:49:40 [multiproc_executor.py:912]     self.worker.init_device()  # type: ignore
+(Worker pid=363494) ERROR 09-08 01:49:40 [multiproc_executor.py:912]     ^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker pid=363494) ERROR 09-08 01:49:40 [multiproc_executor.py:912]   File "/vllm-workspace/vllm-ascend/vllm_ascend/worker/worker.py", line 482, in init_device
+(Worker pid=363494) ERROR 09-08 01:49:40 [multiproc_executor.py:912]     self.device = self._init_device()
+(Worker pid=363494) ERROR 09-08 01:49:40 [multiproc_executor.py:912]                   ^^^^^^^^^^^^^^^^^^^
+(Worker pid=363494) ERROR 09-08 01:49:40 [multiproc_executor.py:912]   File "/vllm-workspace/vllm-ascend/vllm_ascend/worker/worker.py", line 420, in _init_device
+(Worker pid=363494) ERROR 09-08 01:49:40 [multiproc_executor.py:912]     visible_device_index = current_platform.logical_device_id_to_visible_device_id(self.local_rank)
+(Worker pid=363494) ERROR 09-08 01:49:40 [multiproc_executor.py:912]                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker pid=363494) ERROR 09-08 01:49:40 [multiproc_executor.py:912]   File "/vllm-workspace/vllm/vllm/platforms/interface.py", line 323, in logical_device_id_to_visible_device_id
+(Worker pid=363494) ERROR 09-08 01:49:40 [multiproc_executor.py:912]     physical_device_id = cls.device_id_to_physical_device_id(device_id)
+(Worker pid=363494) ERROR 09-08 01:49:40 [multiproc_executor.py:912]                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker pid=363494) ERROR 09-08 01:49:40 [multiproc_executor.py:912]   File "/vllm-workspace/vllm/vllm/platforms/interface.py", line 310, in device_id_to_physical_device_id
+(Worker pid=363494) ERROR 09-08 01:49:40 [multiproc_executor.py:912]     return cls.device_control_id_to_physical_device_id(physical_device_id)
+(Worker pid=363494) ERROR 09-08 01:49:40 [multiproc_executor.py:912]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker pid=363494) ERROR 09-08 01:49:40 [multiproc_executor.py:912]   File "/vllm-workspace/vllm/vllm/platforms/interface.py", line 269, in device_control_id_to_physical_device_id
+(Worker pid=363494) ERROR 09-08 01:49:40 [multiproc_executor.py:912]     raise ValueError(
+(Worker pid=363494) ERROR 09-08 01:49:40 [multiproc_executor.py:912] ValueError: Non-integer device ID '3s' is not supported by npu.
+(EngineCore pid=363131) INFO 09-08 01:49:40 [multiproc_executor.py:440] [shutdown] Executor: waiting for worker exit count=4
+(Worker pid=363491) ERROR 09-08 01:49:40 [multiproc_executor.py:912] WorkerProc failed to start.
+(Worker pid=363491) ERROR 09-08 01:49:40 [multiproc_executor.py:912] Traceback (most recent call last):
+(Worker pid=363491) ERROR 09-08 01:49:40 [multiproc_executor.py:912]   File "/vllm-workspace/vllm/vllm/platforms/interface.py", line 267, in device_control_id_to_physical_device_id
+(Worker pid=363491) ERROR 09-08 01:49:40 [multiproc_executor.py:912]     return int(device_id)
+(Worker pid=363491) ERROR 09-08 01:49:40 [multiproc_executor.py:912]            ^^^^^^^^^^^^^^
+(Worker pid=363491) ERROR 09-08 01:49:40 [multiproc_executor.py:912] ValueError: invalid literal for int() with base 10: '3s'
+(Worker pid=363491) ERROR 09-08 01:49:40 [multiproc_executor.py:912] 
+(Worker pid=363491) ERROR 09-08 01:49:40 [multiproc_executor.py:912] The above exception was the direct cause of the following exception:
+(Worker pid=363491) ERROR 09-08 01:49:40 [multiproc_executor.py:912] 
+(Worker pid=363491) ERROR 09-08 01:49:40 [multiproc_executor.py:912] Traceback (most recent call last):
+(Worker pid=363491) ERROR 09-08 01:49:40 [multiproc_executor.py:912]   File "/vllm-workspace/vllm/vllm/v1/executor/multiproc_executor.py", line 879, in worker_main
+(Worker pid=363491) ERROR 09-08 01:49:40 [multiproc_executor.py:912]     worker = WorkerProc(*args, **kwargs)
+(Worker pid=363491) ERROR 09-08 01:49:40 [multiproc_executor.py:912]              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker pid=363491) ERROR 09-08 01:49:40 [multiproc_executor.py:912]   File "/vllm-workspace/vllm/vllm/tracing/otel.py", line 178, in sync_wrapper
+(Worker pid=363491) ERROR 09-08 01:49:40 [multiproc_executor.py:912]     return func(*args, **kwargs)
+(Worker pid=363491) ERROR 09-08 01:49:40 [multiproc_executor.py:912]            ^^^^^^^^^^^^^^^^^^^^^
+(Worker pid=363491) ERROR 09-08 01:49:40 [multiproc_executor.py:912]   File "/vllm-workspace/vllm/vllm/v1/executor/multiproc_executor.py", line 640, in __init__
+(Worker pid=363491) ERROR 09-08 01:49:40 [multiproc_executor.py:912]     self.worker.init_device()
+(Worker pid=363491) ERROR 09-08 01:49:40 [multiproc_executor.py:912]   File "/vllm-workspace/vllm/vllm/v1/worker/worker_base.py", line 331, in init_device
+(Worker pid=363491) ERROR 09-08 01:49:40 [multiproc_executor.py:912]     self.worker.init_device()  # type: ignore
+(Worker pid=363491) ERROR 09-08 01:49:40 [multiproc_executor.py:912]     ^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker pid=363491) ERROR 09-08 01:49:40 [multiproc_executor.py:912]   File "/vllm-workspace/vllm-ascend/vllm_ascend/worker/worker.py", line 482, in init_device
+(Worker pid=363491) ERROR 09-08 01:49:40 [multiproc_executor.py:912]     self.device = self._init_device()
+(Worker pid=363491) ERROR 09-08 01:49:40 [multiproc_executor.py:912]                   ^^^^^^^^^^^^^^^^^^^
+(Worker pid=363491) ERROR 09-08 01:49:40 [multiproc_executor.py:912]   File "/vllm-workspace/vllm-ascend/vllm_ascend/worker/worker.py", line 420, in _init_device
+(Worker pid=363491) ERROR 09-08 01:49:40 [multiproc_executor.py:912]     visible_device_index = current_platform.logical_device_id_to_visible_device_id(self.local_rank)
+(Worker pid=363491) ERROR 09-08 01:49:40 [multiproc_executor.py:912]                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker pid=363491) ERROR 09-08 01:49:40 [multiproc_executor.py:912]   File "/vllm-workspace/vllm/vllm/platforms/interface.py", line 329, in logical_device_id_to_visible_device_id
+(Worker pid=363491) ERROR 09-08 01:49:40 [multiproc_executor.py:912]     cls.device_control_id_to_physical_device_id(physical_id)
+(Worker pid=363491) ERROR 09-08 01:49:40 [multiproc_executor.py:912]   File "/vllm-workspace/vllm/vllm/platforms/interface.py", line 269, in device_control_id_to_physical_device_id
+(Worker pid=363491) ERROR 09-08 01:49:40 [multiproc_executor.py:912]     raise ValueError(
+(Worker pid=363491) ERROR 09-08 01:49:40 [multiproc_executor.py:912] ValueError: Non-integer device ID '3s' is not supported by npu.
+(Worker pid=363492) ERROR 09-08 01:49:40 [multiproc_executor.py:912] WorkerProc failed to start.
+(Worker pid=363492) ERROR 09-08 01:49:40 [multiproc_executor.py:912] Traceback (most recent call last):
+(Worker pid=363492) ERROR 09-08 01:49:40 [multiproc_executor.py:912]   File "/vllm-workspace/vllm/vllm/platforms/interface.py", line 267, in device_control_id_to_physical_device_id
+(Worker pid=363492) ERROR 09-08 01:49:40 [multiproc_executor.py:912]     return int(device_id)
+(Worker pid=363492) ERROR 09-08 01:49:40 [multiproc_executor.py:912]            ^^^^^^^^^^^^^^
+(Worker pid=363492) ERROR 09-08 01:49:40 [multiproc_executor.py:912] ValueError: invalid literal for int() with base 10: '3s'
+(Worker pid=363492) ERROR 09-08 01:49:40 [multiproc_executor.py:912] 
+(Worker pid=363492) ERROR 09-08 01:49:40 [multiproc_executor.py:912] The above exception was the direct cause of the following exception:
+(Worker pid=363492) ERROR 09-08 01:49:40 [multiproc_executor.py:912] 
+(Worker pid=363492) ERROR 09-08 01:49:40 [multiproc_executor.py:912] Traceback (most recent call last):
+(Worker pid=363492) ERROR 09-08 01:49:40 [multiproc_executor.py:912]   File "/vllm-workspace/vllm/vllm/v1/executor/multiproc_executor.py", line 879, in worker_main
+(Worker pid=363492) ERROR 09-08 01:49:40 [multiproc_executor.py:912]     worker = WorkerProc(*args, **kwargs)
+(Worker pid=363492) ERROR 09-08 01:49:40 [multiproc_executor.py:912]              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker pid=363492) ERROR 09-08 01:49:40 [multiproc_executor.py:912]   File "/vllm-workspace/vllm/vllm/tracing/otel.py", line 178, in sync_wrapper
+(Worker pid=363492) ERROR 09-08 01:49:40 [multiproc_executor.py:912]     return func(*args, **kwargs)
+(Worker pid=363492) ERROR 09-08 01:49:40 [multiproc_executor.py:912]            ^^^^^^^^^^^^^^^^^^^^^
+(Worker pid=363492) ERROR 09-08 01:49:40 [multiproc_executor.py:912]   File "/vllm-workspace/vllm/vllm/v1/executor/multiproc_executor.py", line 640, in __init__
+(Worker pid=363492) ERROR 09-08 01:49:40 [multiproc_executor.py:912]     self.worker.init_device()
+(Worker pid=363492) ERROR 09-08 01:49:40 [multiproc_executor.py:912]   File "/vllm-workspace/vllm/vllm/v1/worker/worker_base.py", line 331, in init_device
+(Worker pid=363492) ERROR 09-08 01:49:40 [multiproc_executor.py:912]     self.worker.init_device()  # type: ignore
+(Worker pid=363492) ERROR 09-08 01:49:40 [multiproc_executor.py:912]     ^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker pid=363492) ERROR 09-08 01:49:40 [multiproc_executor.py:912]   File "/vllm-workspace/vllm-ascend/vllm_ascend/worker/worker.py", line 482, in init_device
+(Worker pid=363492) ERROR 09-08 01:49:40 [multiproc_executor.py:912]     self.device = self._init_device()
+(Worker pid=363492) ERROR 09-08 01:49:40 [multiproc_executor.py:912]                   ^^^^^^^^^^^^^^^^^^^
+(Worker pid=363492) ERROR 09-08 01:49:40 [multiproc_executor.py:912]   File "/vllm-workspace/vllm-ascend/vllm_ascend/worker/worker.py", line 420, in _init_device
+(Worker pid=363492) ERROR 09-08 01:49:40 [multiproc_executor.py:912]     visible_device_index = current_platform.logical_device_id_to_visible_device_id(self.local_rank)
+(Worker pid=363492) ERROR 09-08 01:49:40 [multiproc_executor.py:912]                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker pid=363492) ERROR 09-08 01:49:40 [multiproc_executor.py:912]   File "/vllm-workspace/vllm/vllm/platforms/interface.py", line 329, in logical_device_id_to_visible_device_id
+(Worker pid=363492) ERROR 09-08 01:49:40 [multiproc_executor.py:912]     cls.device_control_id_to_physical_device_id(physical_id)
+(Worker pid=363492) ERROR 09-08 01:49:40 [multiproc_executor.py:912]   File "/vllm-workspace/vllm/vllm/platforms/interface.py", line 269, in device_control_id_to_physical_device_id
+(Worker pid=363492) ERROR 09-08 01:49:40 [multiproc_executor.py:912]     raise ValueError(
+(Worker pid=363492) ERROR 09-08 01:49:40 [multiproc_executor.py:912] ValueError: Non-integer device ID '3s' is not supported by npu.
