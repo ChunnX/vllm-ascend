@@ -399,7 +399,12 @@ class AscendFIASinkBackend(AscendAttentionBackend):
 
     @staticmethod
     def get_name() -> str:
-        return "ASCEND_FIA_SINK"
+        # `Attention.__init__` does `AttentionBackendEnum[backend.get_name()]`,
+        # so this has to name a member of that enum, not this class. CUSTOM is
+        # the slot vllm-ascend registers under, which is why AscendAttentionBackend
+        # and AscendFABackend both answer with it too. The MLA backends are free to
+        # use their own names only because MLAAttention does not do that lookup.
+        return "CUSTOM"
 
     @staticmethod
     def get_impl_cls() -> type["AscendFIASinkImpl"]:
