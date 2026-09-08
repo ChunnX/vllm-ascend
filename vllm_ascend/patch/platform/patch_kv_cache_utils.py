@@ -90,13 +90,19 @@ def _get_kv_cache_groups_uniform_page_size(
     longer drag the width down and split a large Mamba/attention bucket into
     many groups.
     """
-    kimi_k3_groups = _get_kimi_k3_dspark_mixed_kv_cache_groups(kv_cache_spec)
-    if kimi_k3_groups is not None:
-        return kimi_k3_groups
-
     if min_size is None:
         min_size = _KV_GROUP_MIN_SIZE.get()
+
+    # VLLM_ASCEND_KV_GROUP_MIN_SIZE is an explicit width from whoever launched
+    # the server. The Kimi K3 grouping is a shape heuristic: it matches on layer
+    # name prefixes and spec equality, not on model identity, so it also claims
+    # any model with the same signature -- Qwen3.6 + DSpark among them. When both
+    # apply the instruction wins, because otherwise setting the variable does
+    # nothing at all on exactly the models it was written for, without saying so.
     if min_size is None or min_size <= 0:
+        kimi_k3_groups = _get_kimi_k3_dspark_mixed_kv_cache_groups(kv_cache_spec)
+        if kimi_k3_groups is not None:
+            return kimi_k3_groups
         return _orig_get_kv_cache_groups_uniform_page_size(kv_cache_spec)
 
     same_type_layers: dict[KVCacheSpec, list[str]] = defaultdict(list)
