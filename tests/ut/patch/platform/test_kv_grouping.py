@@ -98,6 +98,42 @@ def test_without_min_size_delegates_to_upstream(monkeypatch) -> None:
     assert _get_kv_cache_groups_uniform_page_size(kv_cache_specs, min_size=0) is sentinel
 
 
+def test_min_size_takes_precedence_over_the_kimi_k3_heuristic(monkeypatch) -> None:
+    """An explicit width beats a shape match, or the variable silently no-ops.
+
+    The Kimi K3 grouping matches on layer-name prefixes and spec equality rather
+    than model identity, so it also claims Qwen3.6 + DSpark -- the exact shape
+    VLLM_ASCEND_KV_GROUP_MIN_SIZE was written for. Running it first made the
+    variable dead on those models with nothing in the log to say so.
+    """
+    kv_cache_specs = _make_dspark_kv_cache_specs()
+    kimi_sentinel = object()
+    monkeypatch.setattr(
+        kv_cache_utils_patch,
+        "_get_kimi_k3_dspark_mixed_kv_cache_groups",
+        lambda kv_cache_spec: kimi_sentinel,
+    )
+
+    groups = _get_kv_cache_groups_uniform_page_size(kv_cache_specs, min_size=16)
+
+    assert groups is not kimi_sentinel
+    assert len(groups) == 5
+
+
+def test_kimi_k3_heuristic_still_wins_when_no_width_is_configured(monkeypatch) -> None:
+    """With the variable unset, main's grouping is untouched."""
+    kv_cache_specs = _make_dspark_kv_cache_specs()
+    kimi_sentinel = object()
+    monkeypatch.setattr(
+        kv_cache_utils_patch,
+        "_get_kimi_k3_dspark_mixed_kv_cache_groups",
+        lambda kv_cache_spec: kimi_sentinel,
+    )
+
+    assert _get_kv_cache_groups_uniform_page_size(kv_cache_specs) is kimi_sentinel
+    assert _get_kv_cache_groups_uniform_page_size(kv_cache_specs, min_size=0) is kimi_sentinel
+
+
 def test_get_kv_cache_groups_scopes_min_size_from_env(monkeypatch) -> None:
     observed: list[int | None] = []
 
