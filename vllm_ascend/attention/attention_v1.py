@@ -15,7 +15,6 @@
 # This file is a part of the vllm-ascend project.
 #
 
-import importlib
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any

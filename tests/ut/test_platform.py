@@ -1073,6 +1073,59 @@ class TestNPUPlatform(TestBase):
 
         self.assertEqual(result, "vllm_ascend.attention.attention_v1.AscendAttentionBackend")
 
+    def test_get_attn_backend_cls_routes_unsupported_head_size_to_fa4(self):
+        """head_dim 256 is the gap the sink operator leaves; FA4 covers it.
+
+        FA4 is asked first in get_attn_backend_cls precisely because
+        `fia_sink_selected` has no head-size test and would otherwise claim this
+        layer and fail on the first forward.
+        """
+        import vllm_ascend.attention.fa4_v1 as fa4_module
+        import vllm_ascend.attention.fia_sink_v1 as sink_module
+
+        attn_selector_config = AttentionSelectorConfig(
+            dtype=torch.float16,
+            head_size=256,
+            kv_cache_dtype=None,
+            block_size=128,
+            use_mla=False,
+            use_sparse=False,
+            use_non_causal=True,
+        )
+
+        with (
+            patch.object(fa4_module, "_FA4_ENABLED", True),
+            patch.object(fa4_module, "_FIA_SINK_ENABLED", True),
+            patch.object(sink_module, "_FIA_SINK_ENABLED", True),
+        ):
+            result = self.platform.get_attn_backend_cls(None, attn_selector_config)
+
+        self.assertEqual(result, "vllm_ascend.attention.fa4_v1.AscendFA4Backend")
+
+    def test_get_attn_backend_cls_leaves_sink_head_sizes_to_the_sink_backend(self):
+        """With both flags on, each layer still resolves to exactly one backend."""
+        import vllm_ascend.attention.fa4_v1 as fa4_module
+        import vllm_ascend.attention.fia_sink_v1 as sink_module
+
+        attn_selector_config = AttentionSelectorConfig(
+            dtype=torch.float16,
+            head_size=128,
+            kv_cache_dtype=None,
+            block_size=128,
+            use_mla=False,
+            use_sparse=False,
+            use_non_causal=True,
+        )
+
+        with (
+            patch.object(fa4_module, "_FA4_ENABLED", True),
+            patch.object(fa4_module, "_FIA_SINK_ENABLED", True),
+            patch.object(sink_module, "_FIA_SINK_ENABLED", True),
+        ):
+            result = self.platform.get_attn_backend_cls(None, attn_selector_config)
+
+        self.assertEqual(result, "vllm_ascend.attention.fia_sink_v1.AscendFIASinkBackend")
+
     def test_get_attn_backend_cls_accepts_custom_selected_backend(self):
         """CUSTOM is the slot vllm-ascend registers under, so it means "ours"."""
         attn_selector_config = AttentionSelectorConfig(

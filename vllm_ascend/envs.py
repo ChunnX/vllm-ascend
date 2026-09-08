@@ -111,6 +111,13 @@ env_variables: dict[str, Callable[[], Any]] = {
     "VLLM_ASCEND_ENABLE_DSPARK_FIA_SINK": lambda: bool(
         int(os.getenv("VLLM_ASCEND_ENABLE_DSPARK_FIA_SINK", "0"))
     ),
+    # Enable flash_attn_npu_4 for the parallel-drafting draft's non-causal
+    # attention. Same motivation as the FIA sink flag above -- device-side
+    # seq_lens, tiling on AICPU -- for the head sizes the sink operator does not
+    # serve. The two backends cover different head-size domains, so both flags
+    # can be on: see vllm_ascend/attention/fa4_v1.py for how a layer is routed.
+    # Requires the flash-attn-npu wheel (v4, Ascend910). Disabled by default.
+    "VLLM_ASCEND_ENABLE_DSPARK_FA4": lambda: bool(int(os.getenv("VLLM_ASCEND_ENABLE_DSPARK_FA4", "0"))),
     # Minimum KV-cache group width (layers per group). 0 disables the override
     # and keeps upstream grouping exactly. A positive value raises the group
     # width to at least this many layers, so a small heterogeneous draft bucket
