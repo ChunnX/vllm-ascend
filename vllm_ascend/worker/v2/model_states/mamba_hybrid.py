@@ -21,15 +21,17 @@ from typing import Any
 import numpy as np
 import torch
 from vllm.config.compilation import CUDAGraphMode
-from vllm.v1.kv_cache_interface import KVCacheConfig
+from vllm.v1.kv_cache_interface import KVCacheConfig, MambaSpec
 from vllm.v1.worker.gpu.model_states.mamba_hybrid import (
     MambaHybridAttnMetadata,
     MambaHybridModelState,
 )
+from vllm.v1.worker import mamba_utils
 from vllm.v1.worker.utils import AttentionGroup
 
 from vllm_ascend.worker.v2.attn_utils import build_attn_metadata
 from vllm_ascend.worker.v2.input_batch import AscendInputBatch
+from vllm_ascend.utils import vllm_version_is
 from vllm_ascend.worker.v2.model_states.default import AscendModelState
 
 
@@ -40,6 +42,28 @@ class AscendMambaHybridModelState(MambaHybridModelState, AscendModelState):
     :class:`MambaHybridModelState`. ``AscendModelState`` remains the second
     base so cooperative ``super()`` calls retain the Ascend model-state MRO.
     """
+
+    def _get_mamba_group_info(self, kv_cache_config: KVCacheConfig) -> tuple[list[int], MambaSpec]:
+        """Find the Mamba groups, including ones behind a uniform-type wrapper.
+
+        Worker-side KV configs keep ``UniformTypeKVCacheSpecs`` so each layer's
+        physical page layout survives, and the Kimi K3 mixed grouping in
+        ``patch_kv_cache_utils`` produces exactly that for its Mamba groups --
+        for any model matching its shape signature, which Qwen3.6 + DSpark does.
+
+        v0.27.1 scans the groups here with a bare ``isinstance(spec, MambaSpec)``
+        that a wrapper fails, and asserts "no mamba layers in the model" on the
+        first forward. vLLM main delegates to ``mamba_utils.get_mamba_groups``
+        instead, which unwraps; vllm-ascend patches that helper for the same
+        reason. Delegate to it here too, so the one consumer the patch could not
+        reach behaves like the rest.
+        """
+        if not vllm_version_is("0.27.1"):
+            return super()._get_mamba_group_info(kv_cache_config)
+
+        if self._mamba_spec is None:
+            self._mamba_group_ids, self._mamba_spec = mamba_utils.get_mamba_groups(kv_cache_config)
+        return self._mamba_group_ids, self._mamba_spec
 
     def prepare_attn(
         self,

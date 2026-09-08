@@ -69,6 +69,51 @@ def test_mamba_model_state_inherits_upstream_state_management():
     assert AscendMambaHybridModelState.postprocess_state is MambaHybridModelState.postprocess_state
 
 
+def test_mamba_group_lookup_sees_uniform_type_wrapped_groups():
+    """The Kimi K3 mixed grouping wraps its Mamba groups; v0.27.1 cannot read that.
+
+    Upstream v0.27.1 scans the groups with a bare isinstance(spec, MambaSpec)
+    and asserts "no mamba layers in the model" on the first forward. vLLM main
+    delegates to mamba_utils.get_mamba_groups, which unwraps -- and vllm-ascend
+    patches that helper for the same reason -- so the override routes there too.
+    """
+    state = AscendMambaHybridModelState.__new__(AscendMambaHybridModelState)
+    state._mamba_spec = None
+    state._mamba_group_ids = []
+    kv_cache_config = SimpleNamespace(kv_cache_groups=[object(), object()])
+    spec = MagicMock(name="mamba_spec")
+
+    with (
+        patch("vllm_ascend.worker.v2.model_states.mamba_hybrid.vllm_version_is", return_value=True),
+        patch(
+            "vllm_ascend.worker.v2.model_states.mamba_hybrid.mamba_utils.get_mamba_groups",
+            return_value=([1], spec),
+        ) as get_groups,
+    ):
+        group_ids, mamba_spec = state._get_mamba_group_info(kv_cache_config)
+        # Second call must reuse the cached answer, as upstream's does.
+        state._get_mamba_group_info(kv_cache_config)
+
+    assert group_ids == [1]
+    assert mamba_spec is spec
+    get_groups.assert_called_once_with(kv_cache_config)
+
+
+def test_mamba_group_lookup_defers_to_upstream_off_v0_27_1():
+    """vLLM main already delegates, so the override must not shadow it there."""
+    state = AscendMambaHybridModelState.__new__(AscendMambaHybridModelState)
+    kv_cache_config = SimpleNamespace(kv_cache_groups=[])
+
+    with (
+        patch("vllm_ascend.worker.v2.model_states.mamba_hybrid.vllm_version_is", return_value=False),
+        patch.object(MambaHybridModelState, "_get_mamba_group_info", return_value=([2], "spec")) as base,
+    ):
+        result = state._get_mamba_group_info(kv_cache_config)
+
+    assert result == ([2], "spec")
+    base.assert_called_once_with(kv_cache_config)
+
+
 def test_prepare_inputs_propagates_padded_request_count():
     model_runner_path = Path(__file__).resolve().parents[3] / "vllm_ascend" / "worker" / "v2" / "model_runner.py"
     module = ast.parse(model_runner_path.read_text(encoding="utf-8"))
