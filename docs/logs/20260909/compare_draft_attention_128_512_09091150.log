@@ -1,0 +1,43 @@
+[root@13c974345b90 scripts]# python compare_draft_attention.py --head-size 128 --kv-max 512
+device      : Ascend910B4
+shape       : batch=8 q/req=4 heads=16/2 head_size=128 dtype=bf16
+paged KV    : block_size=128 capacity=2048 per request
+kv lengths  : [64, 128, 192, 256, 320, 384, 448, 512]
+flash decode: False (tiling predicate; --kv-max under 1024 turns it off)
+noise floor : 9.750e-04 (same maths in bf16 on CPU vs fp32)
+
+[fa_v3]
+[W909 03:42:24.057304110 TensorFactories.cpp:340] Warning: Cannot create tensor with interal format while allow_internel_format=False, tensor will be created with base format. (function operator())
+  flow of fa_v3:
+    [prep] flash_attn_npu_3.get_scheduler_metadata(cu_seqlens_q=(9,):int32, cache_seqlens=(8,):int32, max_seqlen_k=2048, page_size=128, note=AICPU tiling; max_seqlen_k is the page capacity, not the actual max)
+    [attn] flash_attn_npu_3.flash_attn_with_kvcache(q=(32, 16, 128):bfloat16, k_cache=(128, 128, 2, 128):bfloat16, page_table=(8, 16):int32, cache_seqlens=(8,):int32, causal=False, note=KV bound derived and validated by v3 itself)
+  accuracy: max|err|=7.034e-04 rel=2.705e-03 vs fp32 golden -> ok
+  timing  : prep=0.184 ms  attn=0.306 ms  total=0.490 ms
+
+[fa_v4]
+  flow of fa_v4:
+    [prep] flash_attn_npu_4.get_scheduler_metadata(cu_seqlens_q=(9,):int32, cache_seqlens=(8,):int32, max_seqlen_k=2048, page_size=128, note=AICPU tiling; max_seqlen_k is the page capacity, not the actual max)
+    [attn] flash_attn_npu_4.flash_attn_varlen_func(q=(32, 16, 128):bfloat16, k_cache=(128, 128, 2, 128):bfloat16, page_table=(8, 16):int32, seqused_k=(8,):int32, max_seqlen_k=2048, causal=False)
+  accuracy: max|err|=7.034e-04 rel=2.705e-03 vs fp32 golden -> ok
+  timing  : prep=0.195 ms  attn=0.277 ms  total=0.471 ms
+
+[fia_sink]
+  flow of fia_sink:
+    [prep] torch.ops.custom._npu_fused_infer_attention_sink_metadata(actual_seq_lengths=(8,):int64, actual_seq_lengths_kv=(8,):int64, input_layout=TND, input_layout_kv=BnBsH, sink_num=0, note=AICPU tiling)
+    [attn] torch.ops.custom.npu_fused_infer_attention_sink(query=(32, 16, 128):bfloat16, key=(128, 128, 256):bfloat16, block_table=(8, 16):int32, meta_data=(1024,):int32, input_layout=TND, sparse_mode=0)
+  accuracy: max|err|=7.034e-04 rel=2.705e-03 vs fp32 golden -> ok
+  timing  : prep=0.239 ms  attn=0.270 ms  total=0.509 ms
+
+[torch_npu_fia]
+  flow of torch_npu_fia:
+    [prep] seq_lens.tolist()(note=device-to-host sync)
+    [attn] torch_npu.npu_fused_infer_attention_score(query=(32, 16, 128):bfloat16, key=(128, 128, 256):bfloat16, block_table=(8, 16):int32, actual_seq_lengths=list[8](host), actual_seq_lengths_kv=list[8](host), input_layout=TND, sparse_mode=0)
+  accuracy: max|err|=7.034e-04 rel=2.705e-03 vs fp32 golden -> ok
+  timing  : prep=0.035 ms  attn=0.146 ms  total=0.181 ms
+
+summary (prep = per-step tiling or host sync; attn = per-layer)
+  backend        result    max|err|    prep ms   attn ms   note
+  fa_v3          ok        7.034e-04   0.184     0.306     
+  fa_v4          ok        7.034e-04   0.195     0.277     
+  fia_sink       ok        7.034e-04   0.239     0.270     
+  torch_npu_fia  ok        7.034e-04   0.035     0.146
