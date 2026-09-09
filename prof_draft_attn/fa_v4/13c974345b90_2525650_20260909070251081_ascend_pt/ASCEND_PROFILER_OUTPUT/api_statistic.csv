@@ -1,0 +1,18 @@
+Device_id,Level,API Name,Time(us),Count,Avg(us),Min(us),Max(us),Variance
+host,acl,aclnnArange,130.39,5,26.078,10.9,75.74,621.161
+host,acl,aclnnClampMin,51.88,5,10.376,8.57,12.63,2.601
+host,acl,aclnnInplaceFillScalar,65.78,5,13.156,11.76,17,3.779
+host,acl,aclnnMuls,57.19,5,11.438,8.76,15.29,6.205
+host,acl,aclrtGetCurrentContext,11.27,15,0.751,0.3,2.59,0.383
+host,acl,aclrtGetFunctionName,3.63,5,0.726,0.53,1.42,0.121
+host,acl,aclrtGetStreamAttribute,13.33,20,0.667,0.42,3.54,0.438
+host,acl,aclrtKernelArgsAppend,4.26,5,0.852,0.59,1.6,0.144
+host,acl,aclrtLaunchKernelWithConfig,57.18,5,11.436,7.13,21.11,29.301
+host,acl,aclrtLaunchKernelWithHostArgs,192.46,25,7.698,4.43,35.86,36.395
+host,acl,aclrtQueryEventStatus,32.93,12,2.744,1.09,9.34,6.326
+host,acl,aclrtRecordEvent,343.65,25,13.746,4.43,59.48,194.188
+host,acl,aclrtRegisterCpuFunc,10.28,5,2.056,1.35,4.12,1.093
+host,acl,aclrtSetCurrentContext,21.56,30,0.719,0.36,2.19,0.159
+host,acl,aclrtStreamWaitEvent,69.39,10,6.939,4.87,15.04,8.006
+host,acl,aclrtSynchronizeDeviceWithTimeout,29.57,1,29.57,29.57,29.57,0
+host,node,launch,445.37,30,14.846,5.51,59,160.103

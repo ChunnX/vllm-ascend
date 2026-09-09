@@ -1,0 +1,3 @@
+[2026-09-09-07:02:48.300] [INFO] [AscendProfiler_TraceViewParser:97] Profiler logger initialized at: /vllm-workspace/vllm-ascend/prof_draft_attn/torch_npu_fia/13c974345b90_2525650_20260909070245850_ascend_pt/logs/profiler_20260909070248_2526326_TraceViewParser.log
+[2026-09-09-07:02:48.300] [INFO] [AscendProfiler_TraceViewParser:53] TraceViewParser start.
+[2026-09-09-07:02:48.307] [INFO] [AscendProfiler_TraceViewParser:68] TraceViewParser finish.

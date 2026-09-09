@@ -1,0 +1,3 @@
+[2026-09-09-07:02:48.766] [INFO] [AscendProfiler_MemoryViewParser:97] Profiler logger initialized at: /vllm-workspace/vllm-ascend/prof_draft_attn/torch_npu_fia/13c974345b90_2525650_20260909070245850_ascend_pt/logs/profiler_20260909070248_2526334_MemoryViewParser.log
+[2026-09-09-07:02:48.767] [INFO] [AscendProfiler_MemoryViewParser:78] MemoryViewParser start.
+[2026-09-09-07:02:48.770] [INFO] [AscendProfiler_MemoryViewParser:89] MemoryViewParser finish.

@@ -1,0 +1,3 @@
+[2026-09-09-07:02:46.679] [INFO] [AscendProfiler_CANNExportParser:97] Profiler logger initialized at: /vllm-workspace/vllm-ascend/prof_draft_attn/torch_npu_fia/13c974345b90_2525650_20260909070245850_ascend_pt/logs/profiler_20260909070246_2526084_CANNExportParser.log
+[2026-09-09-07:02:46.679] [INFO] [AscendProfiler_CANNExportParser:51] CANNExportParser start.
+[2026-09-09-07:02:48.707] [INFO] [AscendProfiler_CANNExportParser:79] CANNExportParser finish.
