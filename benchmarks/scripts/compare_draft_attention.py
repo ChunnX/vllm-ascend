@@ -33,6 +33,13 @@ accuracy and cost can be read side by side:
                  anything up to 256 works. v3 goes through flash_attn_with_kvcache,
                  v4 through flash_attn_varlen_func.
 
+fa_v3 comes with a caveat measured on hardware: once the tiling turns flash decode
+on, its scheduler-metadata path returns zeros or garbage, because the split KV
+workspace is initialised only in the host tiling branch. v4 is correct either way.
+Flash decode is therefore reported for every run and recorded in the CSV -- a
+result that does not say which mode it measured cannot be compared with one that
+measured the other. `--kv-max` under 1024 turns it off at these shapes.
+
 `prep` and `attn` are timed separately on purpose. In a real step the draft builds
 its lengths and tiling once and every layer reuses them, so per-layer cost is
 `attn` while `prep` is paid once -- a backend can win on one and lose on the other.
@@ -50,13 +57,23 @@ Examples
 
     # collect a profile per backend (op_statistic.csv lands under --profile-dir)
     python compare_draft_attention.py --head-size 128 --profile
+
+    # a sweep is a shell loop plus --csv, which appends; --tag labels the build
+    for h in 64 128 192 256; do
+      for kv in 512 4096; do
+        python compare_draft_attention.py --head-size $h --kv-max $kv \
+            --csv runs.csv --tag "$(git -C ../flash-attention-npu rev-parse --short HEAD)"
+      done
+    done
 """
 
 from __future__ import annotations
 
 import argparse
+import csv
 import importlib
 import math
+import os
 import time
 import traceback
 from dataclasses import dataclass, field
@@ -88,6 +105,7 @@ class Config:
     head_size: int
     block_size: int
     max_blocks_per_seq: int
+    kv_max: int
     dtype: torch.dtype
     seed: int
 
@@ -109,6 +127,36 @@ class Config:
     def scale(self) -> float:
         return self.head_size**-0.5
 
+    def flash_decode(self, kv_lens: list[int]) -> bool | None:
+        """Whether the tiling will turn flash decode on for this shape.
+
+        Reproduced from the predicate the host and AICPU tiling share, rather than
+        read back out of a metadata blob, which would mean hand-computing the C++
+        layout of that struct. It is a label on the run, not something the run
+        depends on.
+
+        Worth labelling because it is not cosmetic: flash-attention-npu v3 returns
+        zeros or garbage on this exact shape once flash decode is on, while v4 is
+        correct either way. Any comparison that does not say which mode it measured
+        is not reproducible.
+        """
+        try:
+            cube = torch.npu.get_stream_limit(torch.npu.current_stream())["cube_core_num"]
+        except Exception:
+            return None
+        group = self.num_heads // self.num_kv_heads
+        num_tasks = self.batch * self.num_kv_heads
+        max_kv = max(kv_lens)
+        long_seq = num_tasks <= 0.8 * cube and max_kv >= cube * 512
+        short_seq = num_tasks <= 0.4 * cube and max_kv >= 1024
+        return (
+            self.q_per_req * group <= 128
+            and self.q_per_req <= 16
+            and max_kv >= 1024
+            and min(kv_lens) > 0
+            and (long_seq or short_seq)
+        )
+
 
 @dataclass
 class Inputs:
@@ -128,10 +176,13 @@ def build_inputs(cfg: Config) -> Inputs:
 
     num_blocks = cfg.batch * cfg.max_blocks_per_seq
     # Spread the KV lengths so a backend that mixes up per-request bounds shows it,
-    # and keep them inside the page capacity.
-    lo = max(1, cfg.kv_capacity // 8)
-    kv_lens = [lo + (cfg.kv_capacity - lo) * i // max(1, cfg.batch - 1) for i in range(cfg.batch)]
-    kv_lens = [min(length, cfg.kv_capacity) for length in kv_lens]
+    # and keep them inside the page capacity. The top of the spread is a knob
+    # because it is one of the terms deciding flash decode, and flash decode is
+    # where flash-attention-npu v3 and v4 were found to disagree.
+    top = min(cfg.kv_max, cfg.kv_capacity)
+    lo = max(1, top // 8)
+    kv_lens = [lo + (top - lo) * i // max(1, cfg.batch - 1) for i in range(cfg.batch)]
+    kv_lens = [max(1, min(length, cfg.kv_capacity)) for length in kv_lens]
 
     return Inputs(
         query=rand((cfg.num_tokens, cfg.num_heads, cfg.head_size)),
@@ -489,6 +540,62 @@ def accuracy(out: torch.Tensor, ref: torch.Tensor) -> tuple[float, float]:
     return diff.max().item(), (diff.max().item() / denom if denom > 0 else math.inf)
 
 
+@dataclass
+class Row:
+    backend: str
+    result: str
+    max_err: str
+    prep_ms: str
+    attn_ms: str
+    note: str
+
+
+CSV_FIELDS = [
+    "tag", "device", "backend", "result", "max_err", "noise_floor", "prep_ms", "attn_ms",
+    "batch", "q_per_req", "num_heads", "num_kv_heads", "head_size", "block_size",
+    "kv_capacity", "kv_max", "kv_lens", "flash_decode", "dtype", "note",
+]
+
+
+def write_csv(path: str, tag: str, cfg: Config, inp: Inputs, flash_decode, noise: float, rows) -> None:
+    """Append the run, so a shell loop over shapes accumulates one comparable table.
+
+    Every field the result depends on is written next to it, flash_decode included:
+    a row that does not say which mode it measured cannot be compared with one that
+    measured the other.
+    """
+    exists = os.path.exists(path)
+    with open(path, "a", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=CSV_FIELDS)
+        if not exists:
+            writer.writeheader()
+        for row in rows:
+            writer.writerow(
+                {
+                    "tag": tag,
+                    "device": torch_npu.npu.get_device_name(),
+                    "backend": row.backend,
+                    "result": row.result,
+                    "max_err": row.max_err,
+                    "noise_floor": f"{noise:.3e}",
+                    "prep_ms": row.prep_ms,
+                    "attn_ms": row.attn_ms,
+                    "batch": cfg.batch,
+                    "q_per_req": cfg.q_per_req,
+                    "num_heads": cfg.num_heads,
+                    "num_kv_heads": cfg.num_kv_heads,
+                    "head_size": cfg.head_size,
+                    "block_size": cfg.block_size,
+                    "kv_capacity": cfg.kv_capacity,
+                    "kv_max": cfg.kv_max,
+                    "kv_lens": " ".join(str(n) for n in inp.kv_lens_host),
+                    "flash_decode": flash_decode,
+                    "dtype": str(cfg.dtype).replace("torch.", ""),
+                    "note": row.note,
+                }
+            )
+
+
 def run_profile(name: str, prep, attn, directory: str, iters: int) -> None:
     path = f"{directory}/{name}"
     kwargs = {
@@ -534,6 +641,15 @@ def main() -> int:
     parser.add_argument("--profile", action="store_true")
     parser.add_argument("--profile-dir", default="./prof_draft_attn")
     parser.add_argument("--profile-iters", type=int, default=5)
+    parser.add_argument(
+        "--kv-max",
+        type=int,
+        default=0,
+        help="top of the KV length spread; 0 = the page capacity. Below 1024 keeps "
+        "flash decode off, which is the axis v3 and v4 disagree on",
+    )
+    parser.add_argument("--csv", help="append one row per backend here, so a sweep accumulates")
+    parser.add_argument("--tag", default="", help="free-form label recorded in the CSV, e.g. a build id")
     args = parser.parse_args()
 
     if torch.npu.device_count() == 0:
@@ -551,6 +667,7 @@ def main() -> int:
         head_size=args.head_size,
         block_size=args.block_size,
         max_blocks_per_seq=args.max_blocks_per_seq,
+        kv_max=args.kv_max or (args.max_blocks_per_seq * args.block_size),
         dtype=DTYPES[args.dtype],
         seed=args.seed,
     )
@@ -567,7 +684,9 @@ def main() -> int:
     )
     print(f"paged KV    : block_size={cfg.block_size} capacity={cfg.kv_capacity} per request")
     inp = build_inputs(cfg)
+    flash_decode = cfg.flash_decode(inp.kv_lens_host)
     print(f"kv lengths  : {inp.kv_lens_host}")
+    print(f"flash decode: {flash_decode} (tiling predicate; --kv-max under 1024 turns it off)")
 
     ref = golden(cfg, inp)
     noise, _ = accuracy(golden(cfg, inp, dtype=cfg.dtype), ref)
@@ -579,7 +698,7 @@ def main() -> int:
         reason = skip_reason(name, cfg, args.force)
         if reason:
             print(f"  skipped: {reason}\n")
-            rows.append((name, "skipped", "", "", reason))
+            rows.append(Row(name, "skipped", "", "", "", reason))
             continue
 
         flow = Flow(enabled=not args.no_flow)
@@ -592,7 +711,7 @@ def main() -> int:
             if args.force:
                 traceback.print_exc()
             print()
-            rows.append((name, "failed", "", "", f"{type(exc).__name__}: {exc}"))
+            rows.append(Row(name, "failed", "", "", "", f"{type(exc).__name__}: {exc}"))
             continue
 
         flow.show(name)
@@ -609,13 +728,20 @@ def main() -> int:
         if args.profile:
             run_profile(name, prep, attn, args.profile_dir, args.profile_iters)
         print()
-        rows.append((name, verdict, f"{max_abs:.3e}", f"{prep_ms:.3f}/{attn_ms:.3f}", ""))
+        rows.append(Row(name, verdict, f"{max_abs:.3e}", f"{prep_ms:.3f}", f"{attn_ms:.3f}", ""))
 
-    width = max(len(r[0]) for r in rows) if rows else 8
+    width = max(len(r.backend) for r in rows) if rows else 8
     print("summary (prep = per-step tiling or host sync; attn = per-layer)")
-    print(f"  {'backend'.ljust(width)}  {'result':8}  {'max|err|':10}  {'prep/attn ms':14}  note")
-    for name, verdict, err, timing, note in rows:
-        print(f"  {name.ljust(width)}  {verdict:8}  {err:10}  {timing:14}  {note}")
+    print(f"  {'backend'.ljust(width)}  {'result':8}  {'max|err|':10}  {'prep ms':8}  {'attn ms':8}  note")
+    for row in rows:
+        print(
+            f"  {row.backend.ljust(width)}  {row.result:8}  {row.max_err:10}  "
+            f"{row.prep_ms:8}  {row.attn_ms:8}  {row.note}"
+        )
+
+    if args.csv:
+        write_csv(args.csv, args.tag, cfg, inp, flash_decode, noise, rows)
+        print(f"\nappended {len(rows)} row(s) to {args.csv}")
     return 0
 
 
