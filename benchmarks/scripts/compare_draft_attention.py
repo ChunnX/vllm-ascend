@@ -90,6 +90,22 @@ SWA_INT_MAX = 2147483647
 # inside the operator, so the backend is skipped with a reason instead.
 FIA_SINK_HEAD_SIZES = (128, 192, 512)
 
+# Tensors that depend only on the batch shape, so they are built once and reused.
+# The E7 profile put the arange behind cu_seqlens_q at 11.9us of device time and
+# 26us of host time per call, to produce nine int32 values that cannot change
+# while the shape holds -- launch overhead on a tiny vector kernel, charged to
+# every backend that takes its lengths on device. Leaving it in the timed path
+# measures the harness rather than the operator.
+_STATIC_TENSORS: dict[tuple, torch.Tensor] = {}
+
+
+def static_tensor(key: tuple, build) -> torch.Tensor:
+    cached = _STATIC_TENSORS.get(key)
+    if cached is None:
+        cached = build()
+        _STATIC_TENSORS[key] = cached
+    return cached
+
 DTYPES = {"bf16": torch.bfloat16, "fp16": torch.float16}
 
 
@@ -325,8 +341,9 @@ def backend_fia_sink(cfg: Config, inp: Inputs, flow: Flow):
     def prep():
         # Cumulative q lengths from the static shape, KV lengths straight off the
         # device tensor -- no host round trip anywhere in here.
-        actual_seq_qlen = (
-            torch.arange(1, cfg.batch + 1, dtype=torch.int64, device=inp.seq_lens.device) * cfg.q_per_req
+        actual_seq_qlen = static_tensor(
+            ("sink_qlen", cfg.batch, cfg.q_per_req, str(inp.seq_lens.device)),
+            lambda: torch.arange(1, cfg.batch + 1, dtype=torch.int64, device=inp.seq_lens.device) * cfg.q_per_req,
         )
         actual_seq_kvlen = inp.seq_lens.to(torch.int64).clamp_min(1)
         flow.op(
@@ -401,7 +418,10 @@ def _backend_flash_attn_npu(cfg: Config, inp: Inputs, flow: Flow, generation: st
             raise RuntimeError(f"{module_name} has no {attr} (wrong device build?)")
 
     def prep():
-        cu_seqlens_q = torch.arange(cfg.batch + 1, dtype=torch.int32, device=inp.seq_lens.device) * cfg.q_per_req
+        cu_seqlens_q = static_tensor(
+            ("fa_cu_seqlens", cfg.batch, cfg.q_per_req, str(inp.seq_lens.device)),
+            lambda: torch.arange(cfg.batch + 1, dtype=torch.int32, device=inp.seq_lens.device) * cfg.q_per_req,
+        )
         seqused_k = inp.seq_lens.to(torch.int32).clamp_min(1)
         flow.op(
             "prep",
@@ -626,8 +646,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--batch", type=int, default=8, help="requests in the draft batch")
     parser.add_argument("--q-per-req", type=int, default=4, help="draft tokens per request (uniform)")
-    parser.add_argument("--num-heads", type=int, default=16)
-    parser.add_argument("--num-kv-heads", type=int, default=2)
+    # The Qwen3.6 draft's head topology. head_size defaults to 256 because that is
+    # the shape this whole comparison exists for: the draft currently runs at 128
+    # only because the sink operator cannot serve 256, while Qwen3.6-27B's own head
+    # dim is 256. Pass --head-size 128 to reproduce what is deployed today.
+    parser.add_argument("--num-heads", type=int, default=32)
+    parser.add_argument("--num-kv-heads", type=int, default=8)
     parser.add_argument("--head-size", type=int, default=256, help="128 to compare against fia_sink")
     parser.add_argument("--block-size", type=int, default=128)
     parser.add_argument("--max-blocks-per-seq", type=int, default=16, help="page capacity = this * block_size")
