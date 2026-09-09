@@ -58,6 +58,9 @@ Examples
     # collect a profile per backend (op_statistic.csv lands under --profile-dir)
     python compare_draft_attention.py --head-size 128 --profile
 
+    # measure what production actually runs: one captured NPUGraph, replayed
+    python compare_draft_attention.py --head-size 256 --graph --profile
+
     # a sweep is a shell loop plus --csv, which appends; --tag labels the build
     for h in 64 128 192 256; do
       for kv in 512 4096; do
@@ -281,6 +284,18 @@ class Flow:
             print(line)
 
 
+def axes(t, names: str) -> str:
+    """Render a shape with its axis names.
+
+    `key=(128, 128, 256)` is unreadable on its own: the first 128 is the block
+    count, the second is the page size, and 256 is kv_heads * head_size folded
+    together for BnBsH -- not a head dim of 256, which is what it looks like when
+    head_size really is 128. Naming the axes costs one string and removes the
+    ambiguity.
+    """
+    return f"{shape(t)} [{names}]"
+
+
 def shape(t) -> str:
     if t is None:
         return "None"
@@ -312,8 +327,8 @@ def backend_torch_npu_fia(cfg: Config, inp: Inputs, flow: Flow):
         flow.op(
             "attn",
             "torch_npu.npu_fused_infer_attention_score",
-            query=shape(inp.query),
-            key=shape(key),
+            query=axes(inp.query, "total_q, heads, head_size"),
+            key=axes(key, "blocks, page_size, kv_heads*head_size"),
             block_table=shape(inp.block_table),
             actual_seq_lengths=shape(q_lens),
             actual_seq_lengths_kv=shape(kv_lens),
@@ -390,8 +405,8 @@ def backend_fia_sink(cfg: Config, inp: Inputs, flow: Flow):
         flow.op(
             "attn",
             "torch.ops.custom.npu_fused_infer_attention_sink",
-            query=shape(inp.query),
-            key=shape(key),
+            query=axes(inp.query, "total_q, heads, head_size"),
+            key=axes(key, "blocks, page_size, kv_heads*head_size"),
             block_table=shape(inp.block_table),
             meta_data=shape(meta),
             input_layout="TND",
@@ -464,8 +479,8 @@ def _backend_flash_attn_npu(cfg: Config, inp: Inputs, flow: Flow, generation: st
         flow.op(
             "attn",
             "flash_attn_npu_4.flash_attn_varlen_func",
-            q=shape(inp.query),
-            k_cache=shape(inp.key_cache),
+            q=axes(inp.query, "total_q, heads, head_size"),
+            k_cache=axes(inp.key_cache, "blocks, page_size, kv_heads, head_size"),
             page_table=shape(inp.block_table),
             seqused_k=shape(seqused_k),
             max_seqlen_k=cfg.kv_capacity,
@@ -496,8 +511,8 @@ def _backend_flash_attn_npu(cfg: Config, inp: Inputs, flow: Flow, generation: st
         flow.op(
             "attn",
             "flash_attn_npu_3.flash_attn_with_kvcache",
-            q=shape(inp.query),
-            k_cache=shape(inp.key_cache),
+            q=axes(inp.query, "total_q, heads, head_size"),
+            k_cache=axes(inp.key_cache, "blocks, page_size, kv_heads, head_size"),
             page_table=shape(inp.block_table),
             cache_seqlens=shape(seqused_k),
             causal=False,
@@ -625,7 +640,51 @@ def write_csv(path: str, tag: str, cfg: Config, inp: Inputs, flash_decode, noise
             )
 
 
-def run_profile(name: str, prep, attn, directory: str, iters: int) -> None:
+# Which backends can have their prep captured. The AICPU-tiling ones can: their
+# prep is device work reading device tensors, so replay re-runs it against
+# whatever the sequence lengths hold now -- the whole reason they exist. The
+# ordinary FIA path cannot: its prep is a device-to-host copy, which a capturing
+# stream rejects outright. That asymmetry is not a detail of this harness; it is
+# the difference between a draft whose lengths can live on device and one whose
+# cannot.
+PREP_ON_DEVICE = {"fia_sink", "fa_v3", "fa_v4"}
+
+
+def capture(name: str, prep, attn, warmup: int):
+    """Capture a backend into an NPUGraph the way production would replay it.
+
+    Returns (step, out, note): `step` performs one replayed iteration and `out` is
+    the tensor the graph writes into, valid after each step.
+
+    For a backend whose prep is host-side, only the attention is captured and prep
+    runs eagerly before each replay -- which is what vllm-ascend does today. It
+    means the sequence lengths are baked into the captured kernel arguments, so a
+    replay with different lengths needs a per-step graph parameter update
+    (`update_graph_params` in attention_v1.py). The note says so, because the
+    timing below does not include it.
+    """
+    for _ in range(warmup):
+        attn(prep())
+    torch.npu.synchronize()
+
+    graph = torch.npu.NPUGraph()
+    if name in PREP_ON_DEVICE:
+        with torch.npu.graph(graph):
+            out = attn(prep())
+        return graph.replay, out, ""
+
+    prepared = prep()
+    with torch.npu.graph(graph):
+        out = attn(prepared)
+
+    def step():
+        prep()  # the host sync cannot go inside; it stays per-step, as in production
+        graph.replay()
+
+    return step, out, "lengths baked into the graph; needs graph_task_update per step"
+
+
+def run_profile(name: str, prep, attn, directory: str, iters: int, step=None) -> None:
     path = f"{directory}/{name}"
     kwargs = {
         "activities": [torch_npu.profiler.ProfilerActivity.CPU, torch_npu.profiler.ProfilerActivity.NPU],
@@ -644,7 +703,10 @@ def run_profile(name: str, prep, attn, directory: str, iters: int) -> None:
 
     with torch_npu.profiler.profile(**kwargs) as prof:
         for _ in range(iters):
-            attn(prep())
+            if step is not None:
+                step()
+            else:
+                attn(prep())
             prof.step()
     torch.npu.synchronize()
     print(f"  profile written to {path} (see its ASCEND_PROFILER_OUTPUT/op_statistic.csv)")
@@ -680,6 +742,12 @@ def main() -> int:
         default=0,
         help="top of the KV length spread; 0 = the page capacity. Below 1024 keeps "
         "flash decode off, which is the axis v3 and v4 disagree on",
+    )
+    parser.add_argument(
+        "--graph",
+        action="store_true",
+        help="capture each backend into an NPUGraph and measure replay, which is how "
+        "vllm-ascend runs it; eager numbers are dominated by host dispatch",
     )
     parser.add_argument("--csv", help="append one row per backend here, so a sweep accumulates")
     parser.add_argument("--tag", default="", help="free-form label recorded in the CSV, e.g. a build id")
@@ -750,21 +818,50 @@ def main() -> int:
         flow.show(name)
         flow.freeze()
 
+        step = None
+        note = ""
+        if args.graph:
+            try:
+                step, out, note = capture(name, prep, attn, args.warmup)
+            except Exception as exc:
+                # A failed capture leaves the stream in capture mode for the rest of
+                # the process, so every later backend would fail for a reason that is
+                # not its own. Stop rather than print a column of lies.
+                print(f"  capture failed: {type(exc).__name__}: {exc}")
+                traceback.print_exc()
+                rows.append(Row(name, "no-capture", "", "", "", f"{type(exc).__name__}: {exc}"))
+                print("\n  aborting: a failed capture poisons the stream for the rest of the process")
+                break
+            step()
+            torch.npu.synchronize()
+
         max_abs, rel = accuracy(out, ref)
-        prep_ms = bench(prep, args.warmup, args.iters)
-        prepared = prep()
-        attn_ms = bench(partial(attn, prepared), args.warmup, args.iters)
         verdict = "ok" if max_abs <= max(noise * 4, 1e-3) else "SUSPECT"
         print(f"  accuracy: max|err|={max_abs:.3e} rel={rel:.3e} vs fp32 golden -> {verdict}")
-        print(f"  timing  : prep={prep_ms:.3f} ms  attn={attn_ms:.3f} ms  total={prep_ms + attn_ms:.3f} ms")
+
+        if step is not None:
+            # One number, not two: replay is the whole captured step, and inside a
+            # graph the prep/attn split is no longer something the host can see.
+            step_ms = bench(step, args.warmup, args.iters)
+            print(f"  timing  : replay={step_ms:.3f} ms/step" + (f"  ({note})" if note else ""))
+            prep_ms, attn_ms = "", f"{step_ms:.3f}"
+        else:
+            prep_v = bench(prep, args.warmup, args.iters)
+            prepared = prep()
+            attn_v = bench(partial(attn, prepared), args.warmup, args.iters)
+            print(f"  timing  : prep={prep_v:.3f} ms  attn={attn_v:.3f} ms  total={prep_v + attn_v:.3f} ms")
+            prep_ms, attn_ms = f"{prep_v:.3f}", f"{attn_v:.3f}"
 
         if args.profile:
-            run_profile(name, prep, attn, args.profile_dir, args.profile_iters)
+            run_profile(name, prep, attn, args.profile_dir, args.profile_iters, step=step)
         print()
-        rows.append(Row(name, verdict, f"{max_abs:.3e}", f"{prep_ms:.3f}", f"{attn_ms:.3f}", ""))
+        rows.append(Row(name, verdict, f"{max_abs:.3e}", prep_ms, attn_ms, note))
 
     width = max(len(r.backend) for r in rows) if rows else 8
-    print("summary (prep = per-step tiling or host sync; attn = per-layer)")
+    if args.graph:
+        print("summary (graph replay; the attn column holds the whole captured step)")
+    else:
+        print("summary (prep = per-step tiling or host sync; attn = per-layer)")
     print(f"  {'backend'.ljust(width)}  {'result':8}  {'max|err|':10}  {'prep ms':8}  {'attn ms':8}  note")
     for row in rows:
         print(
