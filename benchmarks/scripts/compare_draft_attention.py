@@ -58,8 +58,9 @@ Examples
     # collect a profile per backend (op_statistic.csv lands under --profile-dir)
     python compare_draft_attention.py --head-size 128 --profile
 
-    # measure what production actually runs: one captured NPUGraph, replayed
-    python compare_draft_attention.py --head-size 256 --graph --profile
+    # measure what production actually runs: one captured NPUGraph, replayed,
+    # with a step shaped like a real draft -- one metadata build, five layers
+    python compare_draft_attention.py --head-size 256 --layers 5 --graph --profile
 
     # a sweep is a shell loop plus --csv, which appends; --tag labels the build
     for h in 64 128 192 256; do
@@ -614,11 +615,11 @@ class Row:
 CSV_FIELDS = [
     "tag", "device", "backend", "result", "max_err", "noise_floor", "prep_ms", "attn_ms",
     "batch", "q_per_req", "num_heads", "num_kv_heads", "head_size", "block_size",
-    "kv_capacity", "kv_max", "kv_lens", "flash_decode", "dtype", "note",
+    "kv_capacity", "kv_max", "kv_lens", "flash_decode", "layers", "dtype", "note",
 ]
 
 
-def write_csv(path: str, tag: str, cfg: Config, inp: Inputs, flash_decode, noise: float, rows) -> None:
+def write_csv(path: str, tag: str, cfg: Config, inp: Inputs, flash_decode, noise: float, rows, layers=1) -> None:
     """Append the run, so a shell loop over shapes accumulates one comparable table.
 
     Every field the result depends on is written next to it, flash_decode included:
@@ -651,6 +652,7 @@ def write_csv(path: str, tag: str, cfg: Config, inp: Inputs, flash_decode, noise
                     "kv_max": cfg.kv_max,
                     "kv_lens": " ".join(str(n) for n in inp.kv_lens_host),
                     "flash_decode": flash_decode,
+                    "layers": layers,
                     "dtype": str(cfg.dtype).replace("torch.", ""),
                     "note": row.note,
                 }
@@ -667,41 +669,72 @@ def write_csv(path: str, tag: str, cfg: Config, inp: Inputs, flash_decode, noise
 PREP_ON_DEVICE = {"fia_sink", "fa_v3", "fa_v4"}
 
 
-def capture(name: str, prep, attn, warmup: int):
-    """Capture a backend into an NPUGraph the way production would replay it.
+def make_step(prep, attn, layers: int):
+    """One decode step: build the tiling once, then run every draft layer on it.
 
-    Returns (step, out, note): `step` performs one replayed iteration and `out` is
-    the tensor the graph writes into, valid after each step.
+    This is the unit worth measuring, and it is not one attention call. In
+    production the metadata is built once per step and every draft layer reuses it
+    -- `_get_or_compute_inputs` in flash_attn_npu_v1.py caches it on the forward
+    context, and the sink backend does the same. Timing or profiling `attn(prep())`
+    charges the AICPU tiling to every layer, which at --layers 5 overstates it
+    fivefold and makes the backends that have no tiling op look better than they
+    are.
 
-    For a backend whose prep is host-side, only the attention is captured and prep
-    runs eagerly before each replay -- which is what vllm-ascend does today. It
-    means the sequence lengths are baked into the captured kernel arguments, so a
+    The host-side path gets the same treatment for the same reason: its
+    seq_lens.tolist() happens once in the metadata builder, not once per layer.
+    """
+
+    def step():
+        prepared = prep()
+        out = None
+        for _ in range(layers):
+            out = attn(prepared)
+        return out
+
+    return step
+
+
+def capture(name: str, prep, attn, layers: int, warmup: int):
+    """Capture one decode step into an NPUGraph the way production would replay it.
+
+    Returns (replay, out, note): `replay` performs one replayed step and `out` is
+    the tensor the last captured layer writes into, valid after each replay.
+
+    For a backend whose prep is device work the whole step goes inside, tiling
+    included -- that is the property this comparison is about, since replay then
+    re-runs the tiling against whatever the device-side lengths hold now.
+
+    For a backend whose prep is a host-side copy it cannot: a capturing stream
+    rejects the transfer. Only the layers are captured, prep runs per step outside,
+    and the sequence lengths end up baked into the captured kernel arguments -- so a
     replay with different lengths needs a per-step graph parameter update
-    (`update_graph_params` in attention_v1.py). The note says so, because the
-    timing below does not include it.
+    (`update_graph_params` in attention_v1.py). The note says so, because the timing
+    does not include it.
     """
     for _ in range(warmup):
-        attn(prep())
+        make_step(prep, attn, layers)()
     torch.npu.synchronize()
 
     graph = torch.npu.NPUGraph()
     if name in PREP_ON_DEVICE:
         with torch.npu.graph(graph):
-            out = attn(prep())
+            out = make_step(prep, attn, layers)()
         return graph.replay, out, ""
 
     prepared = prep()
     with torch.npu.graph(graph):
-        out = attn(prepared)
+        out = None
+        for _ in range(layers):
+            out = attn(prepared)
 
-    def step():
+    def replay():
         prep()  # the host sync cannot go inside; it stays per-step, as in production
         graph.replay()
 
-    return step, out, "lengths baked into the graph; needs graph_task_update per step"
+    return replay, out, "lengths baked into the graph; needs graph_task_update per step"
 
 
-def run_profile(name: str, prep, attn, directory: str, iters: int, step=None) -> None:
+def run_profile(name: str, prep, attn, layers: int, directory: str, iters: int, step=None) -> None:
     path = f"{directory}/{name}"
     kwargs = {
         "activities": [torch_npu.profiler.ProfilerActivity.CPU, torch_npu.profiler.ProfilerActivity.NPU],
@@ -722,11 +755,12 @@ def run_profile(name: str, prep, attn, directory: str, iters: int, step=None) ->
         # No prof.step(): there is no schedule, so the whole with-block is one
         # recording. Calling step() against no schedule is what produced
         # "Stop profiler while current state is RECORD ... incomplete parsed data".
+        eager_step = make_step(prep, attn, layers)
         for _ in range(iters):
             if step is not None:
                 step()
             else:
-                attn(prep())
+                eager_step()
         torch.npu.synchronize()
     torch.npu.synchronize()
     print(f"  profile written to {path} (see its ASCEND_PROFILER_OUTPUT/op_statistic.csv)")
@@ -764,6 +798,13 @@ def main() -> int:
         "flash decode off, which is the axis v3 and v4 disagree on",
     )
     parser.add_argument(
+        "--layers",
+        type=int,
+        default=1,
+        help="draft attention layers sharing one metadata build, which is how a step "
+        "is actually shaped; 1 keeps the per-call numbers comparable with earlier runs",
+    )
+    parser.add_argument(
         "--graph",
         action="store_true",
         help="capture each backend into an NPUGraph and measure replay, which is how "
@@ -778,6 +819,9 @@ def main() -> int:
         return 1
     if args.num_heads % args.num_kv_heads != 0:
         print("num_heads must be divisible by num_kv_heads")
+        return 1
+    if args.layers < 1:
+        print("--layers must be at least 1")
         return 1
 
     cfg = Config(
@@ -804,6 +848,7 @@ def main() -> int:
         f"head_size={cfg.head_size} dtype={args.dtype}"
     )
     print(f"paged KV    : block_size={cfg.block_size} capacity={cfg.kv_capacity} per request")
+    print(f"step shape  : {args.layers} draft layer(s) sharing one metadata build")
     inp = build_inputs(cfg)
     flash_decode = cfg.flash_decode(inp.kv_lens_host)
     print(f"kv lengths  : {inp.kv_lens_host}")
@@ -842,7 +887,7 @@ def main() -> int:
         note = ""
         if args.graph:
             try:
-                step, out, note = capture(name, prep, attn, args.warmup)
+                step, out, note = capture(name, prep, attn, args.layers, args.warmup)
             except Exception as exc:
                 # A failed capture leaves the stream in capture mode for the rest of
                 # the process, so every later backend would fail for a reason that is
@@ -863,17 +908,28 @@ def main() -> int:
             # One number, not two: replay is the whole captured step, and inside a
             # graph the prep/attn split is no longer something the host can see.
             step_ms = bench(step, args.warmup, args.iters)
-            print(f"  timing  : replay={step_ms:.3f} ms/step" + (f"  ({note})" if note else ""))
+            per_layer = step_ms / args.layers
+            print(
+                f"  timing  : replay={step_ms:.3f} ms/step over {args.layers} layer(s) "
+                f"= {per_layer:.3f} ms/layer" + (f"  ({note})" if note else "")
+            )
             prep_ms, attn_ms = "", f"{step_ms:.3f}"
         else:
             prep_v = bench(prep, args.warmup, args.iters)
             prepared = prep()
             attn_v = bench(partial(attn, prepared), args.warmup, args.iters)
-            print(f"  timing  : prep={prep_v:.3f} ms  attn={attn_v:.3f} ms  total={prep_v + attn_v:.3f} ms")
+            # prep is paid once per step, attn once per layer -- that ratio is the
+            # whole point of building the metadata on device, so state the total
+            # rather than leaving it to be recomputed from two columns.
+            step_v = bench(make_step(prep, attn, args.layers), args.warmup, args.iters)
+            print(
+                f"  timing  : prep={prep_v:.3f} ms  attn={attn_v:.3f} ms/layer  "
+                f"step={step_v:.3f} ms ({args.layers} layer(s) on one metadata build)"
+            )
             prep_ms, attn_ms = f"{prep_v:.3f}", f"{attn_v:.3f}"
 
         if args.profile:
-            run_profile(name, prep, attn, args.profile_dir, args.profile_iters, step=step)
+            run_profile(name, prep, attn, args.layers, args.profile_dir, args.profile_iters, step=step)
         print()
         rows.append(Row(name, verdict, f"{max_abs:.3e}", prep_ms, attn_ms, note))
 
@@ -890,7 +946,7 @@ def main() -> int:
         )
 
     if args.csv:
-        write_csv(args.csv, args.tag, cfg, inp, flash_decode, noise, rows)
+        write_csv(args.csv, args.tag, cfg, inp, flash_decode, noise, rows, layers=args.layers)
         print(f"\nappended {len(rows)} row(s) to {args.csv}")
     return 0
 
