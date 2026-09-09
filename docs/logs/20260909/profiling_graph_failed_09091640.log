@@ -1,0 +1,99 @@
+[root@13c974345b90 vllm-ascend]# python benchmarks/scripts/compare_draft_attention.py --head-size 256 --kv-max 4096 --backends torch_npu_fia,fa_v4 --graph --profile --profile-dir ./prof_graph_results_256
+device      : Ascend910B4
+shape       : batch=8 q/req=4 heads=32/8 head_size=256 dtype=bf16
+paged KV    : block_size=128 capacity=2048 per request
+kv lengths  : [256, 512, 768, 1024, 1280, 1536, 1792, 2048]
+flash decode: False (tiling predicate; --kv-max under 1024 turns it off)
+noise floor : 4.782e-04 (same maths in bf16 on CPU vs fp32)
+
+[torch_npu_fia]
+  flow of torch_npu_fia:
+    [prep] seq_lens.tolist()(note=device-to-host sync)
+    [attn] torch_npu.npu_fused_infer_attention_score(query=(32, 32, 256):bfloat16 [total_q, heads, head_size], key=(128, 128, 2048):bfloat16 [blocks, page_size, kv_heads*head_size], block_table=(8, 16):int32, actual_seq_lengths=list[8](host), actual_seq_lengths_kv=list[8](host), input_layout=TND, sparse_mode=0)
+  accuracy: max|err|=6.142e-04 rel=4.050e-03 vs fp32 golden -> ok
+  timing  : replay=0.136 ms/step  (lengths baked into the graph; needs graph_task_update per step)
+[2026-09-09 08:37:21] [WARNING] [2543195] profiler.py: Incorrect schedule: Stop profiler while current state is RECORD which may result in incomplete parsed data.
+[2026-09-09 08:37:22] [INFO] [2543637] profiler.py: Start parsing profiling data in sync mode at: /vllm-workspace/vllm-ascend/prof_graph_results_256/torch_npu_fia/13c974345b90_2543195_20260909083721300_ascend_pt
+[2026-09-09 08:37:23] [ERROR] [2543637] profiler.py: Failed to get acl to npu flow events. For details, please check the logs at: /vllm-workspace/vllm-ascend/prof_graph_results_256/torch_npu_fia/13c974345b90_2543195_20260909083721300_ascend_pt/logs
+[2026-09-09 08:37:24] [INFO] [2543646] profiler.py: CANN profiling data parsed in a total time of 0:00:02.028152
+[2026-09-09 08:37:25] [INFO] [2543637] profiler.py: All profiling data parsed in a total time of 0:00:03.426870
+  profile written to ./prof_graph_results_256/torch_npu_fia (see its ASCEND_PROFILER_OUTPUT/op_statistic.csv)
+
+[fa_v4]
+/usr/local/python3.12.13/lib/python3.12/site-packages/torch/autograd/function.py:583: UserWarning: Cannot create tensor with interal format while allow_internel_format=False, tensor will be created with base format. (Triggered internally at ../torch_npu/csrc/aten/common/TensorFactories.cpp:340.)
+  return super().apply(*args, **kwargs)  # type: ignore[misc]
+  flow of fa_v4:
+    [prep] flash_attn_npu_4.get_scheduler_metadata(cu_seqlens_q=(9,):int32, cache_seqlens=(8,):int32, max_seqlen_k=2048, page_size=128, note=AICPU tiling; max_seqlen_k is the page capacity, not the actual max)
+    [attn] flash_attn_npu_4.flash_attn_varlen_func(q=(32, 32, 256):bfloat16 [total_q, heads, head_size], k_cache=(128, 128, 8, 256):bfloat16 [blocks, page_size, kv_heads, head_size], page_table=(8, 16):int32, seqused_k=(8,):int32, max_seqlen_k=2048, causal=False)
+[E909 08:37:26.179423910 OpParamMaker.cpp:454] aclrtRecordEvent(inputReady, curHandle) failed
+Exception raised from operator() at /opt/x00873006/dspark_dev/flash-attention-npu/csrc/ascend910/flash_attn_npu_4/flash_api.cpp:131 (most recent call first):
+frame #0: c10::Error::Error(c10::SourceLocation, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >) + 0xc8 (0xffffae285978 in /usr/local/python3.12.13/lib/python3.12/site-packages/torch/lib/libc10.so)
+frame #1: c10::detail::torchCheckFail(char const*, char const*, unsigned int, char const*) + 0x6c (0xffffae229b8c in /usr/local/python3.12.13/lib/python3.12/site-packages/torch/lib/libc10.so)
+frame #2: <unknown function> + 0x1211a78 (0xfffe24b91a78 in /usr/local/python3.12.13/lib/python3.12/site-packages/flash_attn_npu_4/flash_attn_npu_4.cpython-312-aarch64-linux-gnu.so)
+frame #3: <unknown function> + 0x3a27284 (0xfffe00207284 in /usr/local/python3.12.13/lib/python3.12/site-packages/torch_npu/lib/libtorch_npu.so)
+frame #4: <unknown function> + 0xca83a0 (0xfffdfd4883a0 in /usr/local/python3.12.13/lib/python3.12/site-packages/torch_npu/lib/libtorch_npu.so)
+frame #5: <unknown function> + 0xca8f7c (0xfffdfd488f7c in /usr/local/python3.12.13/lib/python3.12/site-packages/torch_npu/lib/libtorch_npu.so)
+frame #6: <unknown function> + 0xca6e98 (0xfffdfd486e98 in /usr/local/python3.12.13/lib/python3.12/site-packages/torch_npu/lib/libtorch_npu.so)
+frame #7: <unknown function> + 0xd43cc (0xffffbbbd43cc in /lib64/libstdc++.so.6)
+frame #8: <unknown function> + 0x7f874 (0xffffbbdbf874 in /lib64/libc.so.6)
+frame #9: <unknown function> + 0xe7c8c (0xffffbbe27c8c in /lib64/libc.so.6)
+
+  capture failed: RuntimeError: The Inner error is reported as above. The process exits for this inner error, and the current working operator name is ascendc_fa_metadata.
+Since the operator is called asynchronously, the stacktrace may be inaccurate. If you want to get the accurate stacktrace, please set the environment variable ASCEND_LAUNCH_BLOCKING=1.
+Note: ASCEND_LAUNCH_BLOCKING=1 will force ops to run in synchronous mode, resulting in performance degradation. Please unset ASCEND_LAUNCH_BLOCKING in time after debugging.
+[ERROR] 2026-09-09-08:37:26 (PID:2543195, Device:0, RankID:-1) ERR00100 PTA call acl api failed.
+EH9999: Inner Error!
+EH9999[PID: 2543195] 2026-09-09-08:37:26.539.158 (EH9999):  record event failed, runtime result = 207000[FUNC:ReportCallError][FILE:log_inner.cpp][LINE:148]
+        TraceBack (most recent call last):
+
+Traceback (most recent call last):
+  File "/vllm-workspace/vllm-ascend/benchmarks/scripts/compare_draft_attention.py", line 825, in main
+    step, out, note = capture(name, prep, attn, args.warmup)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/vllm-workspace/vllm-ascend/benchmarks/scripts/compare_draft_attention.py", line 672, in capture
+    with torch.npu.graph(graph):
+         ^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch_npu/npu/graphs.py", line 533, in __exit__
+    self.npu_graph.capture_end()
+  File "/usr/local/python3.12.13/lib/python3.12/site-packages/torch_npu/npu/graphs.py", line 370, in capture_end
+    super().capture_end()
+RuntimeError: The Inner error is reported as above. The process exits for this inner error, and the current working operator name is ascendc_fa_metadata.
+Since the operator is called asynchronously, the stacktrace may be inaccurate. If you want to get the accurate stacktrace, please set the environment variable ASCEND_LAUNCH_BLOCKING=1.
+Note: ASCEND_LAUNCH_BLOCKING=1 will force ops to run in synchronous mode, resulting in performance degradation. Please unset ASCEND_LAUNCH_BLOCKING in time after debugging.
+[ERROR] 2026-09-09-08:37:26 (PID:2543195, Device:0, RankID:-1) ERR00100 PTA call acl api failed.
+EH9999: Inner Error!
+EH9999[PID: 2543195] 2026-09-09-08:37:26.539.158 (EH9999):  record event failed, runtime result = 207000[FUNC:ReportCallError][FILE:log_inner.cpp][LINE:148]
+        TraceBack (most recent call last):
+
+
+  aborting: a failed capture poisons the stream for the rest of the process
+summary (graph replay; the attn column holds the whole captured step)
+  backend        result    max|err|    prep ms   attn ms   note
+  torch_npu_fia  ok        6.142e-04             0.136     lengths baked into the graph; needs graph_task_update per step
+  fa_v4          no-capture                                  RuntimeError: The Inner error is reported as above. The process exits for this inner error, and the current working operator name is ascendc_fa_metadata.
+Since the operator is called asynchronously, the stacktrace may be inaccurate. If you want to get the accurate stacktrace, please set the environment variable ASCEND_LAUNCH_BLOCKING=1.
+Note: ASCEND_LAUNCH_BLOCKING=1 will force ops to run in synchronous mode, resulting in performance degradation. Please unset ASCEND_LAUNCH_BLOCKING in time after debugging.
+[ERROR] 2026-09-09-08:37:26 (PID:2543195, Device:0, RankID:-1) ERR00100 PTA call acl api failed.
+EH9999: Inner Error!
+EH9999[PID: 2543195] 2026-09-09-08:37:26.539.158 (EH9999):  record event failed, runtime result = 207000[FUNC:ReportCallError][FILE:log_inner.cpp][LINE:148]
+        TraceBack (most recent call last):
+
+[W909 08:37:26.185387500 NPUStream.cpp:596] Warning: NPU warning, error code is 107027[Error]: .
+EE9999: Inner Error!
+EE9999[PID: 2543195] 2026-09-09-08:37:26.544.043 (EE9999):  rtDeviceSynchronizeWithTimeout execution failed, reason=stream is captured[FUNC:FuncErrorReason][FILE:error_message_manage.cc][LINE:65]
+        TraceBack (most recent call last):
+       wait for compute device to finish failed, runtime result = 107027.[FUNC:ReportCallError][FILE:log_inner.cpp][LINE:148]
+ (function npuSynchronizeUsedDevices)
+[W909 08:37:26.186368140 NPUStream.cpp:578] Warning: NPU warning, error code is 107027[Error]: .
+EE9999: Inner Error!
+EE9999[PID: 2543195] 2026-09-09-08:37:26.546.475 (EE9999):  rtDeviceSynchronizeWithTimeout execution failed, reason=stream is captured[FUNC:FuncErrorReason][FILE:error_message_manage.cc][LINE:65]
+        TraceBack (most recent call last):
+       wait for compute device to finish failed, runtime result = 107027.[FUNC:ReportCallError][FILE:log_inner.cpp][LINE:148]
+ (function npuSynchronizeDevice)
+[W909 08:37:26.187103130 npu_sys_ctrl.cpp:316] Warning: NPU warning, error code is 107027[Error]: .
+EE9999: Inner Error!
+EE9999[PID: 2543195] 2026-09-09-08:37:26.547.256 (EE9999):  stream is in capture mode, stream_id=96.[FUNC:StreamDestroy][FILE:api_error.cc][LINE:984]
+        TraceBack (most recent call last):
+       rtStreamDestroyForce execution failed, reason=stream is captured[FUNC:FuncErrorReason][FILE:error_message_manage.cc][LINE:65]
+       destroy stream force failed, runtime result = 107027[FUNC:ReportCallError][FILE:log_inner.cpp][LINE:148]
+ (function operator())
