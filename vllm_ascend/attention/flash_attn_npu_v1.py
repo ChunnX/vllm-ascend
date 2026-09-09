@@ -82,6 +82,8 @@ from vllm_ascend.attention.utils import AscendCommonAttentionMetadata
 
 _FA_NPU_META_CACHE_ATTR = "_ascend_fa_npu_meta_cache"
 _loaded_modules: dict[str, Any] = {}
+# Query offsets keyed by (num_reqs, query_tokens_per_req, device); see _cu_seqlens_q.
+_CU_SEQLENS_CACHE: dict[tuple[int, int, str], torch.Tensor] = {}
 
 # Head sizes `npu_fused_infer_attention_sink` serves. A layer outside this set is
 # what this backend exists for; a layer inside it keeps the sink operator, which
@@ -295,9 +297,35 @@ def _build_seq_tensors(num_tokens: int, seq_lens: torch.Tensor) -> tuple[torch.T
             f"batch: num_tokens={num_tokens}, num_reqs={num_reqs}"
         )
     query_tokens_per_req = num_tokens // num_reqs
-    cu_seqlens_q = torch.arange(num_reqs + 1, dtype=torch.int32, device=seq_lens.device) * query_tokens_per_req
+    cu_seqlens_q = _cu_seqlens_q(num_reqs, query_tokens_per_req, seq_lens.device)
     seqused_k = seq_lens.to(torch.int32).clamp_min(1)
     return cu_seqlens_q, seqused_k
+
+
+def _cu_seqlens_q(num_reqs: int, query_tokens_per_req: int, device) -> torch.Tensor:
+    """The query offsets for a uniform draft batch, built once per shape.
+
+    Profiling the microbenchmark showed the arange and its multiply costing 13.6us
+    of device time per step -- 32% of everything this backend spends outside the
+    attention kernel -- to produce nine int32 values. Nearly all of that is launch
+    overhead on two tiny vector kernels, not arithmetic.
+
+    It does not have to be rebuilt: a parallel-drafting batch has a uniform query
+    length, so these offsets are a function of the shape alone and change only when
+    the request count or the draft length does. Caching also gives aclgraph a
+    stable address to capture, which the per-step version only had by luck of the
+    allocator returning the same block.
+
+    Cached per device, and the tensor is never handed out for mutation -- both
+    generations treat cu_seqlens_q as read-only, and `seqused_k` beside it is still
+    derived fresh each step because it genuinely changes.
+    """
+    key = (num_reqs, query_tokens_per_req, str(device))
+    cached = _CU_SEQLENS_CACHE.get(key)
+    if cached is None:
+        cached = torch.arange(num_reqs + 1, dtype=torch.int32, device=device) * query_tokens_per_req
+        _CU_SEQLENS_CACHE[key] = cached
+    return cached
 
 
 def flash_attn_npu_selected(attn_selector_config: object) -> bool:
