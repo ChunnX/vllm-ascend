@@ -197,7 +197,16 @@ def build_inputs(cfg: Config) -> Inputs:
     # where flash-attention-npu v3 and v4 were found to disagree.
     top = min(cfg.kv_max, cfg.kv_capacity)
     lo = max(1, top // 8)
-    kv_lens = [lo + (top - lo) * i // max(1, cfg.batch - 1) for i in range(cfg.batch)]
+    if cfg.batch == 1:
+        # A one-request batch has nothing to spread, and taking the bottom of the
+        # range would silently cap max KV at kv_max/8 -- which for --kv-max 4096
+        # lands under the 1024 that flash decode needs, turning it off in exactly
+        # the case where it is meant to be on. Batch 1 is also the only case that
+        # reaches flash decode at Qwen3.6's 8 KV heads, so the whole mode would
+        # have been unreachable.
+        kv_lens = [top]
+    else:
+        kv_lens = [lo + (top - lo) * i // (cfg.batch - 1) for i in range(cfg.batch)]
     kv_lens = [max(1, min(length, cfg.kv_capacity)) for length in kv_lens]
 
     return Inputs(
