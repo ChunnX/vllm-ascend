@@ -284,6 +284,19 @@ class Flow:
             print(line)
 
 
+def origin(module) -> str:
+    """Where a backend's operator library was actually imported from.
+
+    Worth a line of output because the failure it catches is silent and costly:
+    running from the vllm-ascend tree imports flash_attn_npu_4 from site-packages,
+    while the flash-attention-npu test suite imports the in-place build in its own
+    source tree. The two can be different builds, and the only symptom is the
+    operator behaving like an older version of itself -- a capture failing here
+    while the same case passes under pytest, for instance.
+    """
+    return getattr(module, "__file__", None) or f"<{module.__name__}: no __file__>"
+
+
 def axes(t, names: str) -> str:
     """Render a shape with its axis names.
 
@@ -313,6 +326,8 @@ def backend_torch_npu_fia(cfg: Config, inp: Inputs, flow: Flow):
     num_blocks = inp.key_cache.shape[0]
     key = inp.key_cache.view(num_blocks, cfg.block_size, -1)
     value = inp.value_cache.view(num_blocks, cfg.block_size, -1)
+
+    flow.op("load", "torch_npu", path=origin(torch_npu), version=torch_npu.__version__)
 
     def prep():
         # The cost this whole exercise exists to remove: both length lists have to
@@ -355,7 +370,8 @@ def backend_torch_npu_fia(cfg: Config, inp: Inputs, flow: Flow):
 
 
 def backend_fia_sink(cfg: Config, inp: Inputs, flow: Flow):
-    importlib.import_module("omni_custom_ops")
+    ops_module = importlib.import_module("omni_custom_ops")
+    flow.op("load", "omni_custom_ops", path=origin(ops_module))
     num_blocks = inp.key_cache.shape[0]
     # The sink operator reads KV as BnBsH, so the head dim is folded in.
     key = inp.key_cache.view(num_blocks, cfg.block_size, -1)
@@ -436,6 +452,7 @@ def backend_fia_sink(cfg: Config, inp: Inputs, flow: Flow):
 def _backend_flash_attn_npu(cfg: Config, inp: Inputs, flow: Flow, generation: str):
     module_name = {"v3": "flash_attn_npu_3", "v4": "flash_attn_npu_4"}[generation]
     module = importlib.import_module(module_name)
+    flow.op("load", module_name, path=origin(module))
     entry = "flash_attn_with_kvcache" if generation == "v3" else "flash_attn_varlen_func"
     for attr in ("get_scheduler_metadata", entry):
         if not hasattr(module, attr):
@@ -701,13 +718,16 @@ def run_profile(name: str, prep, attn, directory: str, iters: int, step=None) ->
     except (AttributeError, TypeError) as exc:
         print(f"  (profiling without experimental config: {exc})")
 
-    with torch_npu.profiler.profile(**kwargs) as prof:
+    with torch_npu.profiler.profile(**kwargs):
+        # No prof.step(): there is no schedule, so the whole with-block is one
+        # recording. Calling step() against no schedule is what produced
+        # "Stop profiler while current state is RECORD ... incomplete parsed data".
         for _ in range(iters):
             if step is not None:
                 step()
             else:
                 attn(prep())
-            prof.step()
+        torch.npu.synchronize()
     torch.npu.synchronize()
     print(f"  profile written to {path} (see its ASCEND_PROFILER_OUTPUT/op_statistic.csv)")
 
