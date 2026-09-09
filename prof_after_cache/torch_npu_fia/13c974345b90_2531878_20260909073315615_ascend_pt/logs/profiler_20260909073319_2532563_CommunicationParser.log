@@ -1,0 +1,4 @@
+[2026-09-09-07:33:19.010] [INFO] [AscendProfiler_CommunicationParser:97] Profiler logger initialized at: /vllm-workspace/vllm-ascend/prof_after_cache/torch_npu_fia/13c974345b90_2531878_20260909073315615_ascend_pt/logs/profiler_20260909073319_2532563_CommunicationParser.log
+[2026-09-09-07:33:19.011] [INFO] [AscendProfiler_CommunicationParser:66] CommunicationParser start.
+[2026-09-09-07:33:19.012] [WARNING] [AscendProfiler_CommunicationParser:69] Get step range failed, the step node list is empty.
+[2026-09-09-07:33:19.014] [INFO] [AscendProfiler_CommunicationParser:73] CommunicationParser finish.

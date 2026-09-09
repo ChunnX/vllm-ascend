@@ -1,0 +1,3 @@
+[2026-09-09-07:33:18.075] [INFO] [AscendProfiler_OperatorViewParser:97] Profiler logger initialized at: /vllm-workspace/vllm-ascend/prof_after_cache/torch_npu_fia/13c974345b90_2531878_20260909073315615_ascend_pt/logs/profiler_20260909073318_2532546_OperatorViewParser.log
+[2026-09-09-07:33:18.075] [INFO] [AscendProfiler_OperatorViewParser:30] OperatorViewParser start.
+[2026-09-09-07:33:18.078] [INFO] [AscendProfiler_OperatorViewParser:39] OperatorViewParser finish.

@@ -1,0 +1,4 @@
+[2026-09-09-07:33:18.033] [INFO] [AscendProfiler_TraceStepTimeParser:97] Profiler logger initialized at: /vllm-workspace/vllm-ascend/prof_after_cache/torch_npu_fia/13c974345b90_2531878_20260909073315615_ascend_pt/logs/profiler_20260909073318_2532544_TraceStepTimeParser.log
+[2026-09-09-07:33:18.033] [INFO] [AscendProfiler_TraceStepTimeParser:169] TraceStepTimeParser start.
+[2026-09-09-07:33:18.033] [WARNING] [AscendProfiler_TraceStepTimeParser:69] Get step range failed, the step node list is empty.
+[2026-09-09-07:33:18.037] [INFO] [AscendProfiler_TraceStepTimeParser:177] TraceStepTimeParser finish.
