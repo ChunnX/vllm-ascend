@@ -1,0 +1,4 @@
+[2026-09-09-08:00:06.212] [INFO] [AscendProfiler_CommunicationParser:97] Profiler logger initialized at: /vllm-workspace/vllm-ascend/prof_after_cache2/fa_v4/13c974345b90_2537095_20260909080002823_ascend_pt/logs/profiler_20260909080006_2538120_CommunicationParser.log
+[2026-09-09-08:00:06.212] [INFO] [AscendProfiler_CommunicationParser:66] CommunicationParser start.
+[2026-09-09-08:00:06.213] [WARNING] [AscendProfiler_CommunicationParser:69] Get step range failed, the step node list is empty.
+[2026-09-09-08:00:06.216] [INFO] [AscendProfiler_CommunicationParser:73] CommunicationParser finish.

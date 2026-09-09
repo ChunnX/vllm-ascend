@@ -1,0 +1,5 @@
+[2026-09-09-08:00:00.526] [INFO] [AscendProfiler_KernelViewParser:97] Profiler logger initialized at: /vllm-workspace/vllm-ascend/prof_after_cache2/torch_npu_fia/13c974345b90_2537095_20260909075957500_ascend_pt/logs/profiler_20260909080000_2537792_KernelViewParser.log
+[2026-09-09-08:00:00.526] [INFO] [AscendProfiler_KernelViewParser:38] KernelViewParser start.
+[2026-09-09-08:00:00.527] [WARNING] [AscendProfiler_KernelViewParser:69] Get step range failed, the step node list is empty.
+[2026-09-09-08:00:00.527] [WARNING] [AscendProfiler_KernelViewParser:82] Kernel view get step range failed, the step range is empty.
+[2026-09-09-08:00:00.529] [INFO] [AscendProfiler_KernelViewParser:46] KernelViewParser finish.

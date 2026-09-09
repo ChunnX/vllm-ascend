@@ -1,0 +1,10 @@
+Device_id,Level,API Name,Time(us),Count,Avg(us),Min(us),Max(us),Variance
+host,acl,aclnnInnerFusedInferAttentionScore,200.16,5,40.032,18.65,110.92,1271.943
+host,acl,aclnnInnerFusedInferAttentionScoreGetWorkspaceSize,123.16,5,24.632,15.03,60.84,327.998
+host,acl,aclrtGetResInCurrentThread,7.98,10,0.798,0.27,2.82,0.553
+host,acl,aclrtGetStreamAttribute,3.02,5,0.604,0.38,1.38,0.151
+host,acl,aclrtLaunchKernelWithHostArgs,72.25,5,14.45,5.88,41.22,181.751
+host,acl,aclrtMemcpy,180.86,5,36.172,27.68,64.51,201.43
+host,acl,aclrtSynchronizeDeviceWithTimeout,15.63,1,15.63,15.63,15.63,0
+host,acl,aclrtSynchronizeStream,116.87,5,23.374,12.82,30.84,39.846
+host,node,launch,101.36,5,20.272,7.8,59.76,394.823

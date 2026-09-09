@@ -1,0 +1,5 @@
+[2026-09-09-08:00:05.712] [INFO] [AscendProfiler_KernelViewParser:97] Profiler logger initialized at: /vllm-workspace/vllm-ascend/prof_after_cache2/fa_v4/13c974345b90_2537095_20260909080002823_ascend_pt/logs/profiler_20260909080005_2538118_KernelViewParser.log
+[2026-09-09-08:00:05.712] [INFO] [AscendProfiler_KernelViewParser:38] KernelViewParser start.
+[2026-09-09-08:00:05.712] [WARNING] [AscendProfiler_KernelViewParser:69] Get step range failed, the step node list is empty.
+[2026-09-09-08:00:05.712] [WARNING] [AscendProfiler_KernelViewParser:82] Kernel view get step range failed, the step range is empty.
+[2026-09-09-08:00:05.715] [INFO] [AscendProfiler_KernelViewParser:46] KernelViewParser finish.
