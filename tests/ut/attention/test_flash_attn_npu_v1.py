@@ -16,10 +16,10 @@
 #
 """Unit tests for the parallel-drafting flash-attention-npu attention backend.
 
-These cover generation selection (v3 vs v4) and the two call shapes it dispatches
-to, how selection divides head sizes with the FIA sink backend, the device-side
-length construction, the KV bound the paged block table is addressed with, and the
-once-per-forward metadata cache. The operator call itself needs an NPU and the
+These cover when the backend is enabled, how selection divides head sizes with the
+FIA sink backend, the device-side length construction, the KV bound the paged block
+table is addressed with, the once-per-forward metadata cache, and the logging a
+full-network run reads to confirm the operator was used. The operator call itself needs an NPU and the
 wheel, so it is mocked here.
 """
 
@@ -38,8 +38,8 @@ from vllm_ascend.attention.flash_attn_npu_v1 import (
     _cu_seqlens_q,
     _get_or_compute_inputs,
     _load,
+    enabled,
     flash_attn_npu_selected,
-    selected_generation,
 )
 
 
@@ -55,27 +55,27 @@ def _selector_config(**overrides):
     return SimpleNamespace(**fields)
 
 
-class TestGenerationSelection(TestBase):
+class TestEnableFlag(TestBase):
     def test_unset_disables_the_backend(self):
         with patch.object(fa_module, "_SELECTED", ""):
-            self.assertIsNone(selected_generation())
+            self.assertFalse(enabled())
 
-    def test_each_generation_maps_to_its_own_module(self):
-        expected = {"v3": "flash_attn_npu_3", "v4": "flash_attn_npu_4"}
-        for key, module_name in expected.items():
-            with self.subTest(generation=key):
-                with patch.object(fa_module, "_SELECTED", key):
-                    self.assertEqual(selected_generation().module_name, module_name)
+    def test_the_targeted_api_enables_it(self):
+        with patch.object(fa_module, "_SELECTED", "v4"):
+            self.assertTrue(enabled())
 
     def test_unknown_value_is_refused_not_ignored(self):
         """A typo is a request that cannot be served, not a request to serve nothing.
 
         Silently disabling would look identical to the flag working, and the only
-        symptom would be a draft that is quietly slower.
+        symptom would be a draft that is quietly slower. v3 is refused the same way
+        as nonsense: this backend no longer carries that adapter.
         """
-        with patch.object(fa_module, "_SELECTED", "v5"):
-            with self.assertRaisesRegex(RuntimeError, "not a flash-attention-npu generation"):
-                selected_generation()
+        for value in ("v3", "v5"):
+            with self.subTest(value=value):
+                with patch.object(fa_module, "_SELECTED", value):
+                    with self.assertRaisesRegex(RuntimeError, "not an API this backend serves"):
+                        enabled()
 
 
 class TestLayerSelection(TestBase):
@@ -92,10 +92,8 @@ class TestLayerSelection(TestBase):
 
     def test_head_dim_256_is_the_gap_this_backend_exists_for(self):
         """The sink operator serves 128/192/512; this wheel covers everything to 256."""
-        for key in ("v3", "v4"):
-            with self.subTest(generation=key):
-                with patch.object(fa_module, "_SELECTED", key):
-                    self.assertTrue(flash_attn_npu_selected(_selector_config(use_non_causal=True, head_size=256)))
+        with patch.object(fa_module, "_SELECTED", "v4"):
+            self.assertTrue(flash_attn_npu_selected(_selector_config(use_non_causal=True, head_size=256)))
 
     def test_yields_the_sink_operators_head_sizes_back_to_it(self):
         """Where both can serve, the operator with hardware runs behind it wins.
@@ -115,7 +113,7 @@ class TestLayerSelection(TestBase):
                 self.assertTrue(flash_attn_npu_selected(_selector_config(use_non_causal=True, head_size=128)))
 
     def test_refuses_head_sizes_the_forward_rejects(self):
-        """Both generations check head_size <= 256, so 512 is not this one's to take."""
+        """mha_fwd checks head_size <= 256, so 512 is not this backend's to take."""
         with patch.object(fa_module, "_SELECTED", "v4"), patch.object(fa_module, "_FIA_SINK_ENABLED", False):
             self.assertFalse(flash_attn_npu_selected(_selector_config(use_non_causal=True, head_size=512)))
             self.assertFalse(flash_attn_npu_selected(_selector_config(use_non_causal=True, head_size=0)))
@@ -179,9 +177,9 @@ class TestMetadataBuilder(TestBase):
         self.mock_device = "cpu:0"
         torch.Tensor.pin_memory = lambda x: x  # noqa
 
-    def _build(self, layer_names=None, generation="v4"):
+    def _build(self, layer_names=None):
         with (
-            patch.object(fa_module, "_SELECTED", generation),
+            patch.object(fa_module, "_SELECTED", "v4"),
             patch.object(fa_module, "_load") as load,
         ):
             builder = AscendFlashAttnNpuMetadataBuilder(
@@ -196,21 +194,24 @@ class TestMetadataBuilder(TestBase):
         """A missing wheel should stop startup, not the first request."""
         _, load = self._build()
 
-        load.assert_called_once_with(fa_module._V4)
+        load.assert_called_once_with()
 
-    def test_construction_loads_the_selected_generation(self):
-        _, load = self._build(generation="v3")
+    def test_logs_the_layers_and_the_build_they_reached(self):
+        """A full-network run is read for these two lines.
 
-        load.assert_called_once_with(fa_module._V3)
-
-    def test_logs_the_generation_a_layer_reached(self):
+        The first says which layers chose this backend. The second names the
+        resolved module file, because a wheel in site-packages and a source tree
+        that shadows it are different binaries and the only symptom of the wrong
+        one is the operator behaving like an older version of itself.
+        """
         with patch.object(fa_module.logger, "info") as mock_info:
-            self._build(["model.layers.3.self_attn.attn"], generation="v3")
+            self._build(["model.layers.3.self_attn.attn"])
 
-        mock_info.assert_called_once()
-        logged = str(mock_info.call_args.args)
-        self.assertIn("model.layers.3.self_attn.attn", logged)
-        self.assertIn("v3", logged)
+        self.assertEqual(mock_info.call_count, 2)
+        selected, loaded = (str(c.args) for c in mock_info.call_args_list)
+        self.assertIn("model.layers.3.self_attn.attn", selected)
+        self.assertIn("v4", selected)
+        self.assertIn("loaded from", loaded)
 
     def test_refuses_a_model_without_parallel_drafting(self):
         """use_non_causal is not exclusive to drafts -- DiffusionGemma sets it."""
@@ -327,17 +328,6 @@ class TestForwardCache(TestBase):
         self.assertIs(second, expected)
         compute.assert_called_once_with()
 
-    def test_the_generation_is_part_of_the_cache_key(self):
-        """Otherwise a switch mid-process would reuse the other wheel's blob."""
-        forward_context = SimpleNamespace()
-        compute = MagicMock(side_effect=lambda: (torch.zeros(1), torch.zeros(1), torch.zeros(1)))
-
-        with patch.object(fa_module, "get_forward_context", return_value=forward_context):
-            _get_or_compute_inputs(("v3", 1, 2, 3), compute)
-            _get_or_compute_inputs(("v4", 1, 2, 3), compute)
-
-        self.assertEqual(compute.call_count, 2)
-
 
 class TestWheelLoading(TestBase):
     def test_missing_wheel_is_reported_with_the_build_flag(self):
@@ -346,7 +336,7 @@ class TestWheelLoading(TestBase):
             patch.object(fa_module.importlib, "import_module", side_effect=ImportError("missing")),
         ):
             with self.assertRaisesRegex(RuntimeError, "FLASH_ATTN_BUILD_VERSION=v4"):
-                _load(fa_module._V4)
+                _load()
 
     def test_wrong_device_build_is_named_as_such(self):
         """The wheel picks its interface from the device at import time."""
@@ -355,7 +345,7 @@ class TestWheelLoading(TestBase):
             patch.object(fa_module.importlib, "import_module", return_value=SimpleNamespace()),
         ):
             with self.assertRaisesRegex(RuntimeError, "get_scheduler_metadata"):
-                _load(fa_module._V3)
+                _load()
 
 
 class TestImpl(TestBase):
@@ -378,7 +368,7 @@ class TestImpl(TestBase):
             block_tables=torch.zeros((num_reqs, block_table_width), dtype=torch.int32),
         )
 
-    def _run(self, impl, metadata, generation="v4"):
+    def _run(self, impl, metadata):
         num_tokens = metadata.num_actual_tokens
         query = torch.zeros((num_tokens, impl.num_heads, impl.head_size), dtype=torch.float16)
         output = torch.zeros_like(query)
@@ -386,10 +376,9 @@ class TestImpl(TestBase):
         module = MagicMock()
         module.get_scheduler_metadata.return_value = torch.empty(8, dtype=torch.uint8)
         module.flash_attn_varlen_func.return_value = torch.ones_like(query)
-        module.flash_attn_with_kvcache.return_value = torch.ones_like(query)
 
         with (
-            patch.object(fa_module, "_SELECTED", generation),
+            patch.object(fa_module, "_SELECTED", "v4"),
             patch.object(fa_module, "_load", return_value=module),
             patch.object(fa_module, "get_forward_context", return_value=SimpleNamespace()),
         ):
@@ -425,34 +414,14 @@ class TestImpl(TestBase):
         impl._forward_flash_attn_npu.assert_not_called()
         base_forward.assert_called_once()
 
-    def test_v4_dispatches_to_flash_attn_varlen_func(self):
+    def test_dispatches_to_flash_attn_varlen_func(self):
         impl = self._impl()
-        module, _, _, _ = self._run(impl, self._metadata(), generation="v4")
+        module, _, _, _ = self._run(impl, self._metadata())
 
         module.flash_attn_varlen_func.assert_called_once()
-        module.flash_attn_with_kvcache.assert_not_called()
         kwargs = module.flash_attn_varlen_func.call_args.kwargs
         self.assertEqual(kwargs["max_seqlen_k"], 5 * 64)
         self.assertIn("seqused_k", kwargs)
-
-    def test_v3_dispatches_to_flash_attn_with_kvcache_without_max_seqlen_k(self):
-        """v3 derives the KV bound from k_cache and page_table and validates it.
-
-        Passing max_seqlen_k there would be a TypeError, so the adapter drops it --
-        the same page capacity still reaches v3 through get_scheduler_metadata,
-        which is what its _validate_scheduler_metadata checks the call against.
-        """
-        impl = self._impl()
-        module, _, _, _ = self._run(impl, self._metadata(), generation="v3")
-
-        module.flash_attn_with_kvcache.assert_called_once()
-        module.flash_attn_varlen_func.assert_not_called()
-        kwargs = module.flash_attn_with_kvcache.call_args.kwargs
-        self.assertNotIn("max_seqlen_k", kwargs)
-        self.assertNotIn("seqused_k", kwargs)
-        self.assertIn("cache_seqlens", kwargs)
-        # The bound still has to reach the metadata call, or v3 would reject it.
-        self.assertEqual(module.get_scheduler_metadata.call_args.kwargs["max_seqlen_k"], 5 * 64)
 
     def test_kv_bound_is_the_page_capacity_not_the_actual_max(self):
         """get_scheduler_metadata derives the block-table row stride from this.
@@ -465,7 +434,7 @@ class TestImpl(TestBase):
         """
         impl = self._impl()
         metadata = self._metadata()
-        module, _, _, _ = self._run(impl, metadata, generation="v4")
+        module, _, _, _ = self._run(impl, metadata)
 
         expected_bound = metadata.block_tables.shape[1] * impl.key_cache.shape[1]
         self.assertEqual(module.get_scheduler_metadata.call_args.kwargs["max_seqlen_k"], expected_bound)
@@ -484,7 +453,7 @@ class TestImpl(TestBase):
         """
         impl = self._impl()
         with patch.object(fa_module.logger, "info_once") as mock_info:
-            self._run(impl, self._metadata(), generation="v4")
+            self._run(impl, self._metadata())
 
         mock_info.assert_called_once()
         logged = str(mock_info.call_args.args)
@@ -494,7 +463,7 @@ class TestImpl(TestBase):
     def test_forward_is_non_causal_and_writes_the_output_buffer(self):
         impl = self._impl()
         metadata = self._metadata()
-        module, query, output, result = self._run(impl, metadata, generation="v4")
+        module, query, output, result = self._run(impl, metadata)
 
         kwargs = module.flash_attn_varlen_func.call_args.kwargs
         self.assertFalse(kwargs["causal"])

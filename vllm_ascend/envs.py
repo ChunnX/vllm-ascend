@@ -112,14 +112,14 @@ env_variables: dict[str, Callable[[], Any]] = {
         int(os.getenv("VLLM_ASCEND_ENABLE_DSPARK_FIA_SINK", "0"))
     ),
     # Route the parallel-drafting draft's non-causal attention to the
-    # flash-attention-npu wheel, naming which generation of its API to call:
-    # "v3" or "v4". Empty (the default) disables it. Same motivation as the FIA
-    # sink flag above -- device-side seq_lens, tiling on AICPU -- for the head
-    # sizes the sink operator does not serve. The two backends cover different
-    # head-size domains, so both flags can be on: see
-    # vllm_ascend/attention/flash_attn_npu_v1.py for how a layer is routed, and
-    # for what is known about the v3/v4 trade-off. Requires the flash-attn-npu
-    # wheel built for Ascend910 with the matching FLASH_ATTN_BUILD_VERSION.
+    # flash-attention-npu wheel, naming the API it targets: "v4". Empty (the
+    # default) disables it, and any other value raises rather than silently doing
+    # nothing. Same motivation as the FIA sink flag above -- device-side seq_lens,
+    # tiling on AICPU -- for the head sizes the sink operator does not serve. The
+    # two backends cover different head-size domains, so both flags can be on: see
+    # vllm_ascend/attention/flash_attn_npu_v1.py for how a layer is routed.
+    # Requires the flash-attn-npu wheel built for Ascend910 with
+    # FLASH_ATTN_BUILD_VERSION=v4.
     "VLLM_ASCEND_DSPARK_FLASH_ATTN_NPU": lambda: os.getenv("VLLM_ASCEND_DSPARK_FLASH_ATTN_NPU", ""),
     # Minimum KV-cache group width (layers per group). 0 disables the override
     # and keeps upstream grouping exactly. A positive value raises the group

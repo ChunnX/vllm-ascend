@@ -1089,26 +1089,19 @@ class TestNPUPlatform(TestBase):
 
         flash-attention-npu is asked first in get_attn_backend_cls precisely
         because `fia_sink_selected` has no head-size test and would otherwise claim
-        this layer and fail on the first forward. Either generation of the wheel
-        answers, since the backend class is the same and the generation is its
-        internal detail.
+        this layer and fail on the first forward.
         """
         import vllm_ascend.attention.fia_sink_v1 as sink_module
         import vllm_ascend.attention.flash_attn_npu_v1 as fa_module
 
-        for generation in ("v3", "v4"):
-            with self.subTest(generation=generation):
-                with (
-                    patch.object(fa_module, "_SELECTED", generation),
-                    patch.object(fa_module, "_FIA_SINK_ENABLED", True),
-                    patch.object(sink_module, "_FIA_SINK_ENABLED", True),
-                ):
-                    result = self.platform.get_attn_backend_cls(None, self._non_causal_selector(256))
+        with (
+            patch.object(fa_module, "_SELECTED", "v4"),
+            patch.object(fa_module, "_FIA_SINK_ENABLED", True),
+            patch.object(sink_module, "_FIA_SINK_ENABLED", True),
+        ):
+            result = self.platform.get_attn_backend_cls(None, self._non_causal_selector(256))
 
-                self.assertEqual(
-                    result,
-                    "vllm_ascend.attention.flash_attn_npu_v1.AscendFlashAttnNpuBackend",
-                )
+        self.assertEqual(result, "vllm_ascend.attention.flash_attn_npu_v1.AscendFlashAttnNpuBackend")
 
     def test_get_attn_backend_cls_leaves_sink_head_sizes_to_the_sink_backend(self):
         """With both enabled, each layer still resolves to exactly one backend."""

@@ -32,23 +32,13 @@ without touching the host. And its forward does not bin head_dim into a kernel
 template -- it is a runtime field of that blob -- so everything up to its
 `head_size <= 256` check is one code path.
 
-Two generations of that wheel offer it, and which one is better here is an open
-question, so this backend can call either. They are not successive: the repo
-maintains v2, v3 and v4 side by side, and v4 is the inference-shaped fork of v3
-rather than its replacement -- it drops the in-kernel KV append (`k_new`/`v_new`)
-that a framework managing its own KV cache never uses, which also costs it
-`flash_attn_with_kvcache` as an entry point. What is known so far:
+This calls the v4 API. The repo maintains v2, v3 and v4 side by side and v4 is the
+inference-shaped fork of v3, not its successor: it drops the in-kernel KV append
+(`k_new`/`v_new`) a framework managing its own KV cache never uses. v3 was
+implemented here too while the choice was open, and the measurements on 910B4
+settled it -- see the note above `_MODULE_NAME`.
 
-  v3  reaches the paged AICPU-metadata path through `flash_attn_with_kvcache`.
-      Validates the metadata against the call (`_validate_scheduler_metadata`),
-      including the page-capacity bound that v4 leaves implicit. Registers fake
-      impls, so it survives dynamo tracing. Its 950 backend has the metadata op.
-  v4  reaches it through `flash_attn_varlen_func`, one function for varlen +
-      paged + metadata. Leaner forward inner loop and more L1, which may or may
-      not show up as throughput -- the wheel ships no benchmark comparing them.
-      No fake impls, and its 950 backend has no metadata op at all.
-
-Pick with VLLM_ASCEND_DSPARK_FLASH_ATTN_NPU=v3|v4; unset disables the backend.
+Enable with VLLM_ASCEND_DSPARK_FLASH_ATTN_NPU=v4; unset disables the backend.
 
 Everything downstream of "the builder leaves the host-side sequence lists unset"
 is the sink backend's, for the sink backend's reasons: the metadata, the forward,
@@ -90,115 +80,28 @@ _CU_SEQLENS_CACHE: dict[tuple[int, int, str], torch.Tensor] = {}
 # is the path that has been run on hardware.
 FIA_SINK_HEAD_SIZES = (128, 192, 512)
 
-# Both generations check `head_size_og <= 256` in their forward, and head_dim is a
-# tiling field rather than a template axis, so everything at or below that bound
-# is the same kernel.
+# `mha_fwd` checks `head_size_og <= 256`, and head_dim is a tiling field rather
+# than a template axis, so everything at or below that bound is the same kernel.
 FA_NPU_MAX_HEAD_SIZE = 256
 
 
-class _Generation:
-    """One flash-attention-npu API generation.
-
-    `get_scheduler_metadata` takes the same keywords in both, so only the forward
-    call differs; each subclass supplies that plus the module it lives in.
-    """
-
-    key: str
-    module_name: str
-    required_attrs: tuple[str, ...]
-
-    @staticmethod
-    def forward(module, **kwargs) -> torch.Tensor:
-        raise NotImplementedError
-
-
-class _V4(_Generation):
-    key = "v4"
-    module_name = "flash_attn_npu_4"
-    required_attrs = ("flash_attn_varlen_func", "get_scheduler_metadata")
-
-    @staticmethod
-    def forward(
-        module,
-        *,
-        query,
-        key_cache,
-        value_cache,
-        cu_seqlens_q,
-        seqused_k,
-        page_table,
-        max_seqlen_q,
-        max_seqlen_k,
-        softmax_scale,
-        scheduler_metadata,
-    ) -> torch.Tensor:
-        return module.flash_attn_varlen_func(
-            query,
-            key_cache,
-            value_cache,
-            cu_seqlens_q=cu_seqlens_q,
-            seqused_k=seqused_k,
-            page_table=page_table,
-            max_seqlen_q=max_seqlen_q,
-            max_seqlen_k=max_seqlen_k,
-            softmax_scale=softmax_scale,
-            causal=False,
-            window_size=(-1, -1),
-            scheduler_metadata=scheduler_metadata,
-            num_splits=0,
-            return_lse=False,
-        )
-
-
-class _V3(_Generation):
-    key = "v3"
-    module_name = "flash_attn_npu_3"
-    required_attrs = ("flash_attn_with_kvcache", "get_scheduler_metadata")
-
-    @staticmethod
-    def forward(
-        module,
-        *,
-        query,
-        key_cache,
-        value_cache,
-        cu_seqlens_q,
-        seqused_k,
-        page_table,
-        max_seqlen_q,
-        max_seqlen_k,
-        softmax_scale,
-        scheduler_metadata,
-    ) -> torch.Tensor:
-        # v3's flash_attn_varlen_func takes neither page_table nor
-        # scheduler_metadata -- the paged AICPU-metadata path is
-        # flash_attn_with_kvcache, whose `cache_seqlens` is v4's `seqused_k`.
-        #
-        # No max_seqlen_k: it derives the KV bound itself as
-        # k_cache.shape[1] * page_table.shape[1], and _validate_scheduler_metadata
-        # rejects metadata built against a different one. That is the same
-        # page-capacity invariant the metadata call below is given explicitly, so
-        # v3 checks what v4 takes on trust.
-        del max_seqlen_k
-        return module.flash_attn_with_kvcache(
-            query,
-            key_cache,
-            value_cache,
-            cache_seqlens=seqused_k,
-            page_table=page_table,
-            cu_seqlens_q=cu_seqlens_q,
-            max_seqlen_q=max_seqlen_q,
-            softmax_scale=softmax_scale,
-            causal=False,
-            window_size=(-1, -1),
-            rotary_interleaved=False,
-            scheduler_metadata=scheduler_metadata,
-            num_splits=0,
-            return_softmax_lse=False,
-        )
-
-
-_GENERATIONS: dict[str, type[_Generation]] = {gen.key: gen for gen in (_V3, _V4)}
+# The wheel API this backend targets. flash-attention-npu maintains v2, v3 and v4
+# side by side; v4 is the inference-shaped fork of v3, dropping the in-kernel KV
+# append a framework that manages its own KV cache never uses.
+#
+# v3 was implemented here too while the choice was open, and measured on 910B4:
+# the same accuracy, the same attention kernel within noise, a tiling op 38%
+# slower (39.4us against 28.5us), and wrong results whenever the tiling turns
+# flash decode on -- zeros or garbage, 360x the noise floor, at single-request
+# long-context, which is the latency case a draft exists for. It was removed once
+# that settled. `benchmarks/scripts/compare_draft_attention.py` still carries both,
+# which is where a comparison belongs; a serving backend should do one thing.
+# `docs/v3-metadata-flash-decode.md` in the flash-attention-npu tree has the
+# details, and git history has the adapter if 950 ever forces the question -- v4
+# has no metadata op there at all.
+_MODULE_NAME = "flash_attn_npu_4"
+_GENERATION = "v4"
+_REQUIRED_ATTRS = ("flash_attn_varlen_func", "get_scheduler_metadata")
 
 _SELECTED = (envs_ascend.VLLM_ASCEND_DSPARK_FLASH_ATTN_NPU or "").strip().lower()
 # Mirrors the sink module's own read of its flag, so both halves of the head-size
@@ -206,51 +109,51 @@ _SELECTED = (envs_ascend.VLLM_ASCEND_DSPARK_FLASH_ATTN_NPU or "").strip().lower(
 _FIA_SINK_ENABLED = bool(envs_ascend.VLLM_ASCEND_ENABLE_DSPARK_FIA_SINK)
 
 
-def selected_generation() -> type[_Generation] | None:
-    """The generation this process routes draft attention to, or None.
+def enabled() -> bool:
+    """Whether this process routes draft attention to the wheel.
 
-    A typo raises rather than silently disabling the backend: an unrecognised
-    value is a request that cannot be served, not a request to serve nothing.
+    A value that is neither empty nor the API this backend targets raises rather
+    than silently disabling it: an unrecognised setting is a request that cannot be
+    served, not a request to serve nothing, and a typo would otherwise look exactly
+    like the flag working.
     """
     if not _SELECTED:
-        return None
-    generation = _GENERATIONS.get(_SELECTED)
-    if generation is None:
+        return False
+    if _SELECTED != _GENERATION:
         raise RuntimeError(
-            f"VLLM_ASCEND_DSPARK_FLASH_ATTN_NPU={_SELECTED!r} is not a "
-            "flash-attention-npu generation this backend serves. Expected one of "
-            f"{', '.join(sorted(_GENERATIONS))}, or unset to disable it."
+            f"VLLM_ASCEND_DSPARK_FLASH_ATTN_NPU={_SELECTED!r} is not an API this "
+            f"backend serves. Expected {_GENERATION!r}, or unset to disable it."
         )
-    return generation
+    return True
 
 
-def _load(generation: type[_Generation]):
-    """Import the wheel's module once, failing with something actionable."""
-    cached = _loaded_modules.get(generation.key)
+def _load():
+    """Import the wheel once, failing with something actionable."""
+    cached = _loaded_modules.get(_MODULE_NAME)
     if cached is not None:
         return cached
 
     try:
-        module = importlib.import_module(generation.module_name)
+        module = importlib.import_module(_MODULE_NAME)
     except (ImportError, OSError) as exc:
         raise RuntimeError(
-            f"VLLM_ASCEND_DSPARK_FLASH_ATTN_NPU={generation.key} requires the "
+            f"VLLM_ASCEND_DSPARK_FLASH_ATTN_NPU={_GENERATION} requires the "
             "flash-attn-npu wheel built with "
-            f"FLASH_ATTN_BUILD_VERSION={generation.key} for Ascend910. Install it and "
+            f"FLASH_ATTN_BUILD_VERSION={_GENERATION} for Ascend910. Install it and "
             "source the matching CANN environment."
         ) from exc
 
-    missing = [name for name in generation.required_attrs if not hasattr(module, name)]
+    missing = [name for name in _REQUIRED_ATTRS if not hasattr(module, name)]
     if missing:
         # The package picks its interface from the device name at import time, so a
         # build for another device exports a different set -- say that rather than
         # letting it fail later as an attribute error.
         raise RuntimeError(
-            f"{generation.module_name} imported but does not expose "
-            f"{', '.join(missing)}. The Ascend910 {generation.key} interface provides "
-            "them; a build for another device does not."
+            f"{_MODULE_NAME} imported but does not expose {', '.join(missing)}. The "
+            f"Ascend910 {_GENERATION} interface provides them; a build for another "
+            "device does not."
         )
-    _loaded_modules[generation.key] = module
+    _loaded_modules[_MODULE_NAME] = module
     return module
 
 
@@ -287,8 +190,8 @@ def _build_seq_tensors(num_tokens: int, seq_lens: torch.Tensor) -> tuple[torch.T
     KV lengths map to 1 -- a zero-length request is not a shape the tiling has been
     exercised on, and one padded token of attention is discarded downstream anyway.
 
-    Both generations want `cu_seqlens_q` with a leading zero and B+1 entries, and
-    TORCH_CHECK the dtype of each as int32.
+    `get_scheduler_metadata` wants `cu_seqlens_q` with a leading zero and B+1
+    entries, and TORCH_CHECKs the dtype of both as int32.
     """
     num_reqs = seq_lens.shape[0]
     if num_reqs <= 0 or num_tokens % num_reqs != 0:
@@ -316,9 +219,9 @@ def _cu_seqlens_q(num_reqs: int, query_tokens_per_req: int, device) -> torch.Ten
     address to capture, which the per-step version had only by luck of the
     allocator returning the same block.
 
-    Never handed out for mutation -- both generations treat cu_seqlens_q as
-    read-only, and `seqused_k` beside it is still derived fresh each step because
-    the KV lengths genuinely change.
+    Never handed out for mutation -- the wheel treats cu_seqlens_q as read-only.
+    `seqused_k` beside it is still derived fresh each step, because the KV lengths
+    genuinely change.
     """
     key = (num_reqs, query_tokens_per_req, str(device))
     cached = _CU_SEQLENS_CACHE.get(key)
@@ -346,7 +249,7 @@ def flash_attn_npu_selected(attn_selector_config: object) -> bool:
     the path with hardware runs behind it. So this backend claims exactly the gap
     -- which is where a head_dim 256 model falls.
     """
-    if selected_generation() is None:
+    if not enabled():
         return False
     if not getattr(attn_selector_config, "use_non_causal", False):
         return False
@@ -403,10 +306,9 @@ class AscendFlashAttnNpuMetadataBuilder(AscendAttentionMetadataBuilder):
                 "VLLM_ASCEND_DSPARK_FLASH_ATTN_NPU."
             )
 
-        generation = selected_generation()
         # Fail at construction if the wheel is missing, rather than on the first
         # forward of a served request.
-        module = _load(generation)
+        module = _load()
 
         # Name the build, not just the generation. A wheel installed under
         # site-packages and a source tree that shadows it are different binaries,
@@ -415,7 +317,7 @@ class AscendFlashAttnNpuMetadataBuilder(AscendAttentionMetadataBuilder):
         logger.info(
             "Ascend flash-attention-npu backend (%s) selected for %d %s draft "
             "attention layer(s) (head_size=%s): %s",
-            generation.key,
+            _GENERATION,
             len(layer_names),
             getattr(speculative_config, "method", "parallel-drafting"),
             getattr(kv_cache_spec, "head_size", "unknown"),
@@ -423,7 +325,7 @@ class AscendFlashAttnNpuMetadataBuilder(AscendAttentionMetadataBuilder):
         )
         logger.info(
             "Ascend flash-attention-npu %s loaded from %s",
-            generation.key,
+            _GENERATION,
             getattr(module, "__file__", "<unknown>"),
         )
 
@@ -509,8 +411,7 @@ class AscendFlashAttnNpuImpl(AscendAttentionBackendImpl):
         inline so aclgraph captures them together and replay re-reads the draft's
         stable device buffers.
         """
-        generation = selected_generation()
-        module = _load(generation)
+        module = _load()
 
         if self.key_cache is None and kv_cache is not None:
             self.key_cache, self.value_cache = kv_cache[0], kv_cache[1]
@@ -545,7 +446,6 @@ class AscendFlashAttnNpuImpl(AscendAttentionBackendImpl):
         query_tokens_per_req = num_tokens // num_reqs if num_reqs else 0
 
         cache_key = (
-            generation.key,
             attn_metadata.seq_lens.data_ptr(),
             num_tokens,
             num_reqs,
@@ -558,7 +458,6 @@ class AscendFlashAttnNpuImpl(AscendAttentionBackendImpl):
 
         def compute_inputs() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
             cu_seqlens_q, seqused_k = _build_seq_tensors(num_tokens, attn_metadata.seq_lens)
-            # Keyword-identical across the generations for everything passed here.
             scheduler_metadata = module.get_scheduler_metadata(
                 batch_size=num_reqs,
                 max_seqlen_q=query_tokens_per_req,
@@ -586,7 +485,7 @@ class AscendFlashAttnNpuImpl(AscendAttentionBackendImpl):
             "Ascend flash-attention-npu %s forward: q=%s kv_cache=%s page_table=%s "
             "seqused_k=%s heads=%d/%d head_size=%d block_size=%d max_seqlen_q=%d "
             "max_seqlen_k=%d causal=False",
-            generation.key,
+            _GENERATION,
             tuple(query.shape),
             tuple(key_cache.shape),
             tuple(block_table.shape),
@@ -599,18 +498,21 @@ class AscendFlashAttnNpuImpl(AscendAttentionBackendImpl):
             max_seqlen_k,
         )
 
-        attn_output = generation.forward(
-            module,
-            query=query,
-            key_cache=key_cache,
-            value_cache=value_cache,
+        attn_output = module.flash_attn_varlen_func(
+            query,
+            key_cache,
+            value_cache,
             cu_seqlens_q=cu_seqlens_q,
             seqused_k=seqused_k,
             page_table=block_table,
             max_seqlen_q=query_tokens_per_req,
             max_seqlen_k=max_seqlen_k,
             softmax_scale=self.scale,
+            causal=False,
+            window_size=(-1, -1),
             scheduler_metadata=scheduler_metadata,
+            num_splits=0,
+            return_lse=False,
         )
         attn_output = attn_output.view(num_tokens, self.num_heads, self.head_size)
         output[:num_tokens] = attn_output[:num_tokens]
@@ -625,7 +527,7 @@ class AscendFlashAttnNpuBackend(AscendAttentionBackend):
     unchanged and deliberately so, exactly as for the sink backend: the draft
     shares the target's cache pool, and `get_required_kv_cache_layout` is applied
     through a process-global setter, so a second layout here would not stay on this
-    backend's layers. Both generations want that same layout.
+    backend's layers. The wheel wants that same layout.
     """
 
     @staticmethod
