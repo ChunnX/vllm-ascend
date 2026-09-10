@@ -1,0 +1,369 @@
+[root@13c974345b90 vllm-ascend]# TORCH_DEVICE_BACKEND_AUTOLOAD=0 pytest -sv tests/ut/attention/test_flash_attn_npu_v1.py tests/ut/test_platform.py 
+INFO 09-10 06:26:59 [__init__.py:52] Available plugins for group vllm.platform_plugins:
+INFO 09-10 06:26:59 [__init__.py:54] - ascend -> vllm_ascend:register
+INFO 09-10 06:26:59 [__init__.py:57] All plugins in this group will be loaded. Set `VLLM_PLUGINS` to control which plugins to load.
+INFO 09-10 06:26:59 [__init__.py:237] Platform plugin ascend is activated
+INFO 09-10 06:27:05 [platform.py:61] Breakable cudagraph is force disabled on Ascend because DeepSeek V4 PIECEWISE cudagraph is not supported yet.
+================================================================================ test session starts ================================================================================
+platform linux -- Python 3.12.13, pytest-8.3.2, pluggy-1.6.0 -- /usr/local/python3.12.13/bin/python3
+cachedir: .pytest_cache
+rootdir: /vllm-workspace/vllm-ascend
+configfile: pyproject.toml
+plugins: xdist-3.6.1, anyio-4.14.2
+collected 93 items                                                                                                                                                                  
+
+tests/ut/attention/test_flash_attn_npu_v1.py::TestGenerationSelection::test_each_generation_maps_to_its_own_module PASSED
+tests/ut/attention/test_flash_attn_npu_v1.py::TestGenerationSelection::test_unknown_value_is_refused_not_ignored PASSED
+tests/ut/attention/test_flash_attn_npu_v1.py::TestGenerationSelection::test_unset_disables_the_backend PASSED
+tests/ut/attention/test_flash_attn_npu_v1.py::TestLayerSelection::test_disabled_by_default PASSED
+tests/ut/attention/test_flash_attn_npu_v1.py::TestLayerSelection::test_excludes_what_the_operator_call_cannot_express PASSED
+tests/ut/attention/test_flash_attn_npu_v1.py::TestLayerSelection::test_head_dim_256_is_the_gap_this_backend_exists_for PASSED
+tests/ut/attention/test_flash_attn_npu_v1.py::TestLayerSelection::test_reads_only_fields_of_the_selector_config PASSED
+tests/ut/attention/test_flash_attn_npu_v1.py::TestLayerSelection::test_refuses_head_sizes_the_forward_rejects INFO 09-10 06:27:19 [flash_attn_npu_v1.py:362] Ascend flash-attention-npu is enabled but head_size 512 is outside the (0, 256] the forward accepts; this layer keeps the ordinary backend
+INFO 09-10 06:27:19 [flash_attn_npu_v1.py:362] Ascend flash-attention-npu is enabled but head_size 0 is outside the (0, 256] the forward accepts; this layer keeps the ordinary backend
+PASSED
+tests/ut/attention/test_flash_attn_npu_v1.py::TestLayerSelection::test_selects_non_causal_draft_layers PASSED
+tests/ut/attention/test_flash_attn_npu_v1.py::TestLayerSelection::test_yields_the_sink_operators_head_sizes_back_to_it INFO 09-10 06:27:19 [flash_attn_npu_v1.py:370] Ascend flash-attention-npu is enabled but head_size 128 is served by the FIA sink operator, which is also enabled and keeps the layer; unset VLLM_ASCEND_ENABLE_DSPARK_FIA_SINK to route it to the wheel instead
+INFO 09-10 06:27:19 [flash_attn_npu_v1.py:370] Ascend flash-attention-npu is enabled but head_size 192 is served by the FIA sink operator, which is also enabled and keeps the layer; unset VLLM_ASCEND_ENABLE_DSPARK_FIA_SINK to route it to the wheel instead
+PASSED
+tests/ut/attention/test_flash_attn_npu_v1.py::TestBackendWiring::test_backend_names_its_own_builder_and_impl PASSED
+tests/ut/attention/test_flash_attn_npu_v1.py::TestBackendWiring::test_kv_cache_layout_is_inherited_unchanged PASSED
+tests/ut/attention/test_flash_attn_npu_v1.py::TestMetadataBuilder::test_causal_group_keeps_the_ordinary_path INFO 09-10 06:27:19 [flash_attn_npu_v1.py:415] Ascend flash-attention-npu backend (v4) selected for 1 dspark draft attention layer(s) (head_size=unknown): ['model.layers.0.self_attn.attn']
+INFO 09-10 06:27:19 [flash_attn_npu_v1.py:424] Ascend flash-attention-npu v4 loaded from <unknown>
+PASSED
+tests/ut/attention/test_flash_attn_npu_v1.py::TestMetadataBuilder::test_construction_loads_the_selected_generation INFO 09-10 06:27:19 [flash_attn_npu_v1.py:415] Ascend flash-attention-npu backend (v3) selected for 1 dspark draft attention layer(s) (head_size=unknown): ['model.layers.0.self_attn.attn']
+INFO 09-10 06:27:19 [flash_attn_npu_v1.py:424] Ascend flash-attention-npu v3 loaded from <unknown>
+PASSED
+tests/ut/attention/test_flash_attn_npu_v1.py::TestMetadataBuilder::test_keeps_sequence_lengths_on_device INFO 09-10 06:27:19 [flash_attn_npu_v1.py:415] Ascend flash-attention-npu backend (v4) selected for 1 dspark draft attention layer(s) (head_size=unknown): ['model.layers.0.self_attn.attn']
+INFO 09-10 06:27:19 [flash_attn_npu_v1.py:424] Ascend flash-attention-npu v4 loaded from <unknown>
+PASSED
+tests/ut/attention/test_flash_attn_npu_v1.py::TestMetadataBuilder::test_logs_the_generation_a_layer_reached FAILED
+tests/ut/attention/test_flash_attn_npu_v1.py::TestMetadataBuilder::test_refuses_a_model_without_parallel_drafting PASSED
+tests/ut/attention/test_flash_attn_npu_v1.py::TestMetadataBuilder::test_wheel_is_checked_at_construction INFO 09-10 06:27:19 [flash_attn_npu_v1.py:415] Ascend flash-attention-npu backend (v4) selected for 1 dspark draft attention layer(s) (head_size=unknown): ['model.layers.0.self_attn.attn']
+INFO 09-10 06:27:19 [flash_attn_npu_v1.py:424] Ascend flash-attention-npu v4 loaded from <unknown>
+PASSED
+tests/ut/attention/test_flash_attn_npu_v1.py::TestSeqTensors::test_builds_legal_full_graph_padding_lengths PASSED
+tests/ut/attention/test_flash_attn_npu_v1.py::TestSeqTensors::test_query_offsets_are_built_once_per_shape PASSED
+tests/ut/attention/test_flash_attn_npu_v1.py::TestSeqTensors::test_rejects_non_uniform_query_batch PASSED
+tests/ut/attention/test_flash_attn_npu_v1.py::TestForwardCache::test_metadata_is_computed_once_per_forward_signature PASSED
+tests/ut/attention/test_flash_attn_npu_v1.py::TestForwardCache::test_the_generation_is_part_of_the_cache_key PASSED
+tests/ut/attention/test_flash_attn_npu_v1.py::TestWheelLoading::test_missing_wheel_is_reported_with_the_build_flag PASSED
+tests/ut/attention/test_flash_attn_npu_v1.py::TestWheelLoading::test_wrong_device_build_is_named_as_such PASSED
+tests/ut/attention/test_flash_attn_npu_v1.py::TestImpl::test_block_table_shorter_than_the_batch_is_refused PASSED
+tests/ut/attention/test_flash_attn_npu_v1.py::TestImpl::test_causal_build_falls_back_to_the_ordinary_path INFO 09-10 06:27:19 [flash_attn_npu_v1.py:487] Ascend flash-attention-npu: causal KV cache group falls back to the ordinary FIA path (the wheel is called with causal=False only)
+PASSED
+tests/ut/attention/test_flash_attn_npu_v1.py::TestImpl::test_forward_is_non_causal_and_writes_the_output_buffer INFO 09-10 06:27:19 [flash_attn_npu_v1.py:585] Ascend flash-attention-npu v4 forward: q=(8, 8, 256) kv_cache=(4, 64, 2, 256) page_table=(2, 5) seqused_k=(2,) heads=8/2 head_size=256 block_size=64 max_seqlen_q=4 max_seqlen_k=320 causal=False
+PASSED
+tests/ut/attention/test_flash_attn_npu_v1.py::TestImpl::test_forward_logs_that_the_operator_actually_ran PASSED
+tests/ut/attention/test_flash_attn_npu_v1.py::TestImpl::test_kv_bound_is_the_page_capacity_not_the_actual_max PASSED
+tests/ut/attention/test_flash_attn_npu_v1.py::TestImpl::test_non_causal_build_takes_the_wheel_path PASSED
+tests/ut/attention/test_flash_attn_npu_v1.py::TestImpl::test_v3_dispatches_to_flash_attn_with_kvcache_without_max_seqlen_k INFO 09-10 06:27:19 [flash_attn_npu_v1.py:585] Ascend flash-attention-npu v3 forward: q=(8, 8, 256) kv_cache=(4, 64, 2, 256) page_table=(2, 5) seqused_k=(2,) heads=8/2 head_size=256 block_size=64 max_seqlen_q=4 max_seqlen_k=320 causal=False
+PASSED
+tests/ut/attention/test_flash_attn_npu_v1.py::TestImpl::test_v4_dispatches_to_flash_attn_varlen_func PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_apply_config_platform_defaults_respects_explicit_max PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_apply_config_platform_defaults_respects_explicit_sizes PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_apply_config_platform_defaults_sets_ascend_default_max PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_apply_config_platform_defaults_skips_when_scheduler_max_num_seqs_is_missing PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_check_and_update_config_310p_no_custom_ops INFO 09-10 06:27:20 [platform.py:61] Breakable cudagraph is force disabled on Ascend because DeepSeek V4 PIECEWISE cudagraph is not supported yet.
+WARNING 09-10 06:27:20 [platform.py:1126] GPU-specific parameter is not supported on Ascend. parameter=disable_cascade_attn, value=True, action: resetting to False.
+WARNING 09-10 06:27:20 [platform.py:1136] Parameter is tied to incompatible backend. parameter=cpu_kvcache_space_bytes, action: resetting to None for Ascend.
+WARNING 09-10 06:27:20 [platform.py:1143] Parameter is not supported on Ascend NPU. parameter=calculate_kv_scales, action: resetting to False.
+WARNING 09-10 06:27:20 [platform.py:1154] Parameter is set but Ascend uses different mechanism. parameter=mm_encoder_attn_backend, action: resetting to None.
+WARNING 09-10 06:27:20 [platform.py:1164] Parameter relies on NVIDIA-specific tools. parameter=enable_layerwise_nvtx_tracing, action: resetting to False.
+WARNING 09-10 06:27:20 [platform.py:1174] Parameter is optimized for incompatible platform. parameter=max_num_partial_prefills, action: resetting to default (1). 
+WARNING 09-10 06:27:20 [platform.py:1196] Parameter is optimized for incompatible backend. parameter=kv_buffer_size, value=<MagicMock name='mock.kv_transfer_config.kv_buffer_size' id='281455389214768'>, action: resetting to default (1e9). 
+WARNING 09-10 06:27:20 [platform.py:1206] Parameter is tied to incompatible backend. parameter=enable_permute_local_kv, action: resetting to False. 
+WARNING 09-10 06:27:20 [platform.py:1227] Ignored GPU-specific parameter. parameter=use_prefill_decode_attention, action: resetting to False. 
+WARNING 09-10 06:27:20 [platform.py:1227] Ignored GPU-specific parameter. parameter=use_cudnn_prefill, action: resetting to False. 
+WARNING 09-10 06:27:20 [platform.py:1227] Ignored GPU-specific parameter. parameter=use_trtllm_ragged_deepseek_prefill, action: resetting to False. 
+WARNING 09-10 06:27:20 [platform.py:1227] Ignored GPU-specific parameter. parameter=use_trtllm_attention, action: resetting to False. 
+WARNING 09-10 06:27:20 [platform.py:1227] Ignored GPU-specific parameter. parameter=disable_flashinfer_prefill, action: resetting to False. 
+WARNING 09-10 06:27:20 [platform.py:1227] Ignored GPU-specific parameter. parameter=disable_flashinfer_q_quantization, action: resetting to False. 
+WARNING 09-10 06:27:20 [platform.py:1235] Ignored parameter. Ascend uses its own attention backend. parameter=flash_attn_version, action: resetting to None. 
+INFO 09-10 06:27:20 [platform.py:1248] User specified attention backend '<MagicMock name='mock.attention_config.backend' id='281455388184496'>'. Note that Ascend NPU will use its registered plugin backend instead. Resetting to None.
+WARNING 09-10 06:27:20 [platform.py:1257] Parameter is ignored on Ascend. parameter=flash_attn_max_num_splits_for_cuda_graph, action: resetting to default (32). 
+WARNING 09-10 06:27:20 [platform.py:1268] Parameter requires NVIDIA-specific tools. parameter=ray_workers_use_nsight, action: resetting to False. 
+INFO 09-10 06:27:20 [platform.py:1285] '--numa-bind' is not supported on Ascend NPU (GPU-to-NUMA topology detection unavailable). Automatically converted to --additional-config '{"enable_cpu_binding": true}' for Ascend-native CPU-core binding.
+INFO 09-10 06:27:20 [platform.py:1294] '--numa-bind-nodes' is ignored on Ascend NPU. The Ascend-native CPU binding automatically performs topo-affinity core allocation.
+INFO 09-10 06:27:20 [platform.py:1302] '--numa-bind-cpus' is ignored on Ascend NPU. The Ascend-native CPU binding automatically performs topo-affinity core allocation.
+WARNING 09-10 06:27:20 [platform.py:1310] Parameter is currently ignored on Ascend. parameter=enable_dbo, action: resetting to False. 
+WARNING 09-10 06:27:20 [platform.py:1317] Parameter is currently ignored on Ascend. parameter=ubatch_size, value=1, action: resetting to 0. 
+WARNING 09-10 06:27:20 [platform.py:1327] Parameter is not supported on Ascend NPU (use_inductor is False). parameter=use_inductor_graph_partition, action: resetting to False.
+INFO 09-10 06:27:20 [platform.py:484] Compilation disabled, using eager mode by default
+INFO 09-10 06:27:20 [utils.py:1275] Block size is set to 128 if prefix cache or chunked prefill is enabled.
+PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_check_and_update_config_balance_scheduler_rejects_pd_disaggregated_kv_consumer INFO 09-10 06:27:20 [platform.py:61] Breakable cudagraph is force disabled on Ascend because DeepSeek V4 PIECEWISE cudagraph is not supported yet.
+INFO 09-10 06:27:20 [platform.py:484] Compilation disabled, using eager mode by default
+INFO 09-10 06:27:20 [utils.py:1275] Block size is set to 128 if prefix cache or chunked prefill is enabled.
+PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_check_and_update_config_balance_scheduler_rejects_pd_disaggregated_kv_producer INFO 09-10 06:27:20 [platform.py:61] Breakable cudagraph is force disabled on Ascend because DeepSeek V4 PIECEWISE cudagraph is not supported yet.
+INFO 09-10 06:27:20 [platform.py:484] Compilation disabled, using eager mode by default
+INFO 09-10 06:27:20 [utils.py:1275] Block size is set to 128 if prefix cache or chunked prefill is enabled.
+PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_check_and_update_config_basic_config_update INFO 09-10 06:27:20 [platform.py:61] Breakable cudagraph is force disabled on Ascend because DeepSeek V4 PIECEWISE cudagraph is not supported yet.
+WARNING 09-10 06:27:20 [platform.py:1126] GPU-specific parameter is not supported on Ascend. parameter=disable_cascade_attn, value=True, action: resetting to False.
+WARNING 09-10 06:27:20 [platform.py:1136] Parameter is tied to incompatible backend. parameter=cpu_kvcache_space_bytes, action: resetting to None for Ascend.
+WARNING 09-10 06:27:20 [platform.py:1143] Parameter is not supported on Ascend NPU. parameter=calculate_kv_scales, action: resetting to False.
+WARNING 09-10 06:27:20 [platform.py:1154] Parameter is set but Ascend uses different mechanism. parameter=mm_encoder_attn_backend, action: resetting to None.
+WARNING 09-10 06:27:20 [platform.py:1164] Parameter relies on NVIDIA-specific tools. parameter=enable_layerwise_nvtx_tracing, action: resetting to False.
+WARNING 09-10 06:27:20 [platform.py:1174] Parameter is optimized for incompatible platform. parameter=max_num_partial_prefills, action: resetting to default (1). 
+WARNING 09-10 06:27:20 [platform.py:1196] Parameter is optimized for incompatible backend. parameter=kv_buffer_size, value=<MagicMock name='mock.kv_transfer_config.kv_buffer_size' id='281455382293024'>, action: resetting to default (1e9). 
+WARNING 09-10 06:27:20 [platform.py:1206] Parameter is tied to incompatible backend. parameter=enable_permute_local_kv, action: resetting to False. 
+WARNING 09-10 06:27:20 [platform.py:1227] Ignored GPU-specific parameter. parameter=use_prefill_decode_attention, action: resetting to False. 
+WARNING 09-10 06:27:20 [platform.py:1227] Ignored GPU-specific parameter. parameter=use_cudnn_prefill, action: resetting to False. 
+WARNING 09-10 06:27:20 [platform.py:1227] Ignored GPU-specific parameter. parameter=use_trtllm_ragged_deepseek_prefill, action: resetting to False. 
+WARNING 09-10 06:27:20 [platform.py:1227] Ignored GPU-specific parameter. parameter=use_trtllm_attention, action: resetting to False. 
+WARNING 09-10 06:27:20 [platform.py:1227] Ignored GPU-specific parameter. parameter=disable_flashinfer_prefill, action: resetting to False. 
+WARNING 09-10 06:27:20 [platform.py:1227] Ignored GPU-specific parameter. parameter=disable_flashinfer_q_quantization, action: resetting to False. 
+WARNING 09-10 06:27:20 [platform.py:1235] Ignored parameter. Ascend uses its own attention backend. parameter=flash_attn_version, action: resetting to None. 
+INFO 09-10 06:27:20 [platform.py:1248] User specified attention backend '<MagicMock name='mock.attention_config.backend' id='281455382503616'>'. Note that Ascend NPU will use its registered plugin backend instead. Resetting to None.
+WARNING 09-10 06:27:20 [platform.py:1257] Parameter is ignored on Ascend. parameter=flash_attn_max_num_splits_for_cuda_graph, action: resetting to default (32). 
+WARNING 09-10 06:27:20 [platform.py:1268] Parameter requires NVIDIA-specific tools. parameter=ray_workers_use_nsight, action: resetting to False. 
+INFO 09-10 06:27:20 [platform.py:1285] '--numa-bind' is not supported on Ascend NPU (GPU-to-NUMA topology detection unavailable). Automatically converted to --additional-config '{"enable_cpu_binding": true}' for Ascend-native CPU-core binding.
+INFO 09-10 06:27:20 [platform.py:1294] '--numa-bind-nodes' is ignored on Ascend NPU. The Ascend-native CPU binding automatically performs topo-affinity core allocation.
+INFO 09-10 06:27:20 [platform.py:1302] '--numa-bind-cpus' is ignored on Ascend NPU. The Ascend-native CPU binding automatically performs topo-affinity core allocation.
+WARNING 09-10 06:27:20 [platform.py:1310] Parameter is currently ignored on Ascend. parameter=enable_dbo, action: resetting to False. 
+WARNING 09-10 06:27:20 [platform.py:1317] Parameter is currently ignored on Ascend. parameter=ubatch_size, value=1, action: resetting to 0. 
+WARNING 09-10 06:27:20 [platform.py:1327] Parameter is not supported on Ascend NPU (use_inductor is False). parameter=use_inductor_graph_partition, action: resetting to False.
+INFO 09-10 06:27:20 [platform.py:484] Compilation disabled, using eager mode by default
+INFO 09-10 06:27:20 [utils.py:1275] Block size is set to 128 if prefix cache or chunked prefill is enabled.
+PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_check_and_update_config_cache_config_block_size INFO 09-10 06:27:20 [platform.py:61] Breakable cudagraph is force disabled on Ascend because DeepSeek V4 PIECEWISE cudagraph is not supported yet.
+WARNING 09-10 06:27:20 [platform.py:1126] GPU-specific parameter is not supported on Ascend. parameter=disable_cascade_attn, value=True, action: resetting to False.
+WARNING 09-10 06:27:20 [platform.py:1136] Parameter is tied to incompatible backend. parameter=cpu_kvcache_space_bytes, action: resetting to None for Ascend.
+WARNING 09-10 06:27:20 [platform.py:1143] Parameter is not supported on Ascend NPU. parameter=calculate_kv_scales, action: resetting to False.
+WARNING 09-10 06:27:20 [platform.py:1154] Parameter is set but Ascend uses different mechanism. parameter=mm_encoder_attn_backend, action: resetting to None.
+WARNING 09-10 06:27:20 [platform.py:1164] Parameter relies on NVIDIA-specific tools. parameter=enable_layerwise_nvtx_tracing, action: resetting to False.
+WARNING 09-10 06:27:20 [platform.py:1174] Parameter is optimized for incompatible platform. parameter=max_num_partial_prefills, action: resetting to default (1). 
+WARNING 09-10 06:27:20 [platform.py:1196] Parameter is optimized for incompatible backend. parameter=kv_buffer_size, value=<MagicMock name='mock.kv_transfer_config.kv_buffer_size' id='281453221969696'>, action: resetting to default (1e9). 
+WARNING 09-10 06:27:20 [platform.py:1206] Parameter is tied to incompatible backend. parameter=enable_permute_local_kv, action: resetting to False. 
+WARNING 09-10 06:27:20 [platform.py:1227] Ignored GPU-specific parameter. parameter=use_prefill_decode_attention, action: resetting to False. 
+WARNING 09-10 06:27:20 [platform.py:1227] Ignored GPU-specific parameter. parameter=use_cudnn_prefill, action: resetting to False. 
+WARNING 09-10 06:27:20 [platform.py:1227] Ignored GPU-specific parameter. parameter=use_trtllm_ragged_deepseek_prefill, action: resetting to False. 
+WARNING 09-10 06:27:20 [platform.py:1227] Ignored GPU-specific parameter. parameter=use_trtllm_attention, action: resetting to False. 
+WARNING 09-10 06:27:20 [platform.py:1227] Ignored GPU-specific parameter. parameter=disable_flashinfer_prefill, action: resetting to False. 
+WARNING 09-10 06:27:20 [platform.py:1227] Ignored GPU-specific parameter. parameter=disable_flashinfer_q_quantization, action: resetting to False. 
+WARNING 09-10 06:27:20 [platform.py:1235] Ignored parameter. Ascend uses its own attention backend. parameter=flash_attn_version, action: resetting to None. 
+INFO 09-10 06:27:20 [platform.py:1248] User specified attention backend '<MagicMock name='mock.attention_config.backend' id='281453222180864'>'. Note that Ascend NPU will use its registered plugin backend instead. Resetting to None.
+WARNING 09-10 06:27:20 [platform.py:1257] Parameter is ignored on Ascend. parameter=flash_attn_max_num_splits_for_cuda_graph, action: resetting to default (32). 
+WARNING 09-10 06:27:20 [platform.py:1268] Parameter requires NVIDIA-specific tools. parameter=ray_workers_use_nsight, action: resetting to False. 
+INFO 09-10 06:27:20 [platform.py:1285] '--numa-bind' is not supported on Ascend NPU (GPU-to-NUMA topology detection unavailable). Automatically converted to --additional-config '{"enable_cpu_binding": true}' for Ascend-native CPU-core binding.
+INFO 09-10 06:27:20 [platform.py:1294] '--numa-bind-nodes' is ignored on Ascend NPU. The Ascend-native CPU binding automatically performs topo-affinity core allocation.
+INFO 09-10 06:27:20 [platform.py:1302] '--numa-bind-cpus' is ignored on Ascend NPU. The Ascend-native CPU binding automatically performs topo-affinity core allocation.
+WARNING 09-10 06:27:20 [platform.py:1310] Parameter is currently ignored on Ascend. parameter=enable_dbo, action: resetting to False. 
+WARNING 09-10 06:27:20 [platform.py:1317] Parameter is currently ignored on Ascend. parameter=ubatch_size, value=1, action: resetting to 0. 
+WARNING 09-10 06:27:20 [platform.py:1327] Parameter is not supported on Ascend NPU (use_inductor is False). parameter=use_inductor_graph_partition, action: resetting to False.
+INFO 09-10 06:27:20 [platform.py:484] Compilation disabled, using eager mode by default
+PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_check_and_update_config_enforce_eager_mode INFO 09-10 06:27:20 [platform.py:61] Breakable cudagraph is force disabled on Ascend because DeepSeek V4 PIECEWISE cudagraph is not supported yet.
+PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_check_and_update_config_no_model_config_warning INFO 09-10 06:27:20 [platform.py:61] Breakable cudagraph is force disabled on Ascend because DeepSeek V4 PIECEWISE cudagraph is not supported yet.
+PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_check_and_update_config_preserves_platform_default_max_input WARNING 09-10 06:27:20 [platform.py:1126] GPU-specific parameter is not supported on Ascend. parameter=disable_cascade_attn, value=True, action: resetting to False.
+WARNING 09-10 06:27:20 [platform.py:1136] Parameter is tied to incompatible backend. parameter=cpu_kvcache_space_bytes, action: resetting to None for Ascend.
+WARNING 09-10 06:27:20 [platform.py:1143] Parameter is not supported on Ascend NPU. parameter=calculate_kv_scales, action: resetting to False.
+WARNING 09-10 06:27:20 [platform.py:1154] Parameter is set but Ascend uses different mechanism. parameter=mm_encoder_attn_backend, action: resetting to None.
+WARNING 09-10 06:27:20 [platform.py:1164] Parameter relies on NVIDIA-specific tools. parameter=enable_layerwise_nvtx_tracing, action: resetting to False.
+WARNING 09-10 06:27:20 [platform.py:1174] Parameter is optimized for incompatible platform. parameter=max_num_partial_prefills, action: resetting to default (1). 
+WARNING 09-10 06:27:20 [platform.py:1196] Parameter is optimized for incompatible backend. parameter=kv_buffer_size, value=<MagicMock name='mock.kv_transfer_config.kv_buffer_size' id='281453221736000'>, action: resetting to default (1e9). 
+WARNING 09-10 06:27:20 [platform.py:1206] Parameter is tied to incompatible backend. parameter=enable_permute_local_kv, action: resetting to False. 
+WARNING 09-10 06:27:20 [platform.py:1227] Ignored GPU-specific parameter. parameter=use_prefill_decode_attention, action: resetting to False. 
+WARNING 09-10 06:27:20 [platform.py:1227] Ignored GPU-specific parameter. parameter=use_cudnn_prefill, action: resetting to False. 
+WARNING 09-10 06:27:20 [platform.py:1227] Ignored GPU-specific parameter. parameter=use_trtllm_ragged_deepseek_prefill, action: resetting to False. 
+WARNING 09-10 06:27:20 [platform.py:1227] Ignored GPU-specific parameter. parameter=use_trtllm_attention, action: resetting to False. 
+WARNING 09-10 06:27:20 [platform.py:1227] Ignored GPU-specific parameter. parameter=disable_flashinfer_prefill, action: resetting to False. 
+WARNING 09-10 06:27:20 [platform.py:1227] Ignored GPU-specific parameter. parameter=disable_flashinfer_q_quantization, action: resetting to False. 
+WARNING 09-10 06:27:20 [platform.py:1235] Ignored parameter. Ascend uses its own attention backend. parameter=flash_attn_version, action: resetting to None. 
+INFO 09-10 06:27:20 [platform.py:1248] User specified attention backend '<MagicMock name='mock.attention_config.backend' id='281453219882160'>'. Note that Ascend NPU will use its registered plugin backend instead. Resetting to None.
+WARNING 09-10 06:27:20 [platform.py:1257] Parameter is ignored on Ascend. parameter=flash_attn_max_num_splits_for_cuda_graph, action: resetting to default (32). 
+WARNING 09-10 06:27:20 [platform.py:1268] Parameter requires NVIDIA-specific tools. parameter=ray_workers_use_nsight, action: resetting to False. 
+INFO 09-10 06:27:20 [platform.py:1285] '--numa-bind' is not supported on Ascend NPU (GPU-to-NUMA topology detection unavailable). Automatically converted to --additional-config '{"enable_cpu_binding": true}' for Ascend-native CPU-core binding.
+INFO 09-10 06:27:20 [platform.py:1294] '--numa-bind-nodes' is ignored on Ascend NPU. The Ascend-native CPU binding automatically performs topo-affinity core allocation.
+INFO 09-10 06:27:20 [platform.py:1302] '--numa-bind-cpus' is ignored on Ascend NPU. The Ascend-native CPU binding automatically performs topo-affinity core allocation.
+WARNING 09-10 06:27:20 [platform.py:1310] Parameter is currently ignored on Ascend. parameter=enable_dbo, action: resetting to False. 
+WARNING 09-10 06:27:20 [platform.py:1317] Parameter is currently ignored on Ascend. parameter=ubatch_size, value=1, action: resetting to 0. 
+WARNING 09-10 06:27:20 [platform.py:1327] Parameter is not supported on Ascend NPU (use_inductor is False). parameter=use_inductor_graph_partition, action: resetting to False.
+WARNING 09-10 06:27:20 [platform.py:492] NPU does not support compilation mode. mode=2, action: setting CUDAGraphMode to NONE.
+PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_check_and_update_config_recompute_scheduler_accepts_kv_consumer INFO 09-10 06:27:20 [platform.py:61] Breakable cudagraph is force disabled on Ascend because DeepSeek V4 PIECEWISE cudagraph is not supported yet.
+INFO 09-10 06:27:20 [platform.py:484] Compilation disabled, using eager mode by default
+INFO 09-10 06:27:20 [utils.py:1275] Block size is set to 128 if prefix cache or chunked prefill is enabled.
+PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_check_and_update_config_recompute_scheduler_rejects_pd_mixed_kv_both INFO 09-10 06:27:20 [platform.py:61] Breakable cudagraph is force disabled on Ascend because DeepSeek V4 PIECEWISE cudagraph is not supported yet.
+INFO 09-10 06:27:20 [platform.py:484] Compilation disabled, using eager mode by default
+INFO 09-10 06:27:20 [utils.py:1275] Block size is set to 128 if prefix cache or chunked prefill is enabled.
+PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_check_and_update_config_recompute_scheduler_rejects_pd_mixed_no_kv_transfer INFO 09-10 06:27:20 [platform.py:61] Breakable cudagraph is force disabled on Ascend because DeepSeek V4 PIECEWISE cudagraph is not supported yet.
+INFO 09-10 06:27:20 [platform.py:484] Compilation disabled, using eager mode by default
+INFO 09-10 06:27:20 [utils.py:1275] Block size is set to 128 if prefix cache or chunked prefill is enabled.
+PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_check_and_update_config_recompute_scheduler_warns_and_disables_kv_producer INFO 09-10 06:27:20 [platform.py:61] Breakable cudagraph is force disabled on Ascend because DeepSeek V4 PIECEWISE cudagraph is not supported yet.
+INFO 09-10 06:27:20 [platform.py:484] Compilation disabled, using eager mode by default
+INFO 09-10 06:27:20 [utils.py:1275] Block size is set to 128 if prefix cache or chunked prefill is enabled.
+PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_check_and_update_config_short_request_first_accepts_standard_prefill_paths INFO 09-10 06:27:20 [platform.py:61] Breakable cudagraph is force disabled on Ascend because DeepSeek V4 PIECEWISE cudagraph is not supported yet.
+INFO 09-10 06:27:20 [platform.py:484] Compilation disabled, using eager mode by default
+INFO 09-10 06:27:20 [utils.py:1275] Block size is set to 128 if prefix cache or chunked prefill is enabled.
+INFO 09-10 06:27:20 [platform.py:484] Compilation disabled, using eager mode by default
+INFO 09-10 06:27:20 [utils.py:1275] Block size is set to 128 if prefix cache or chunked prefill is enabled.
+INFO 09-10 06:27:20 [platform.py:484] Compilation disabled, using eager mode by default
+INFO 09-10 06:27:20 [utils.py:1275] Block size is set to 128 if prefix cache or chunked prefill is enabled.
+PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_check_and_update_config_short_request_first_rejects_unsupported_combinations INFO 09-10 06:27:20 [platform.py:61] Breakable cudagraph is force disabled on Ascend because DeepSeek V4 PIECEWISE cudagraph is not supported yet.
+INFO 09-10 06:27:20 [platform.py:484] Compilation disabled, using eager mode by default
+INFO 09-10 06:27:20 [utils.py:1275] Block size is set to 128 if prefix cache or chunked prefill is enabled.
+INFO 09-10 06:27:20 [platform.py:484] Compilation disabled, using eager mode by default
+INFO 09-10 06:27:20 [utils.py:1275] Block size is set to 128 if prefix cache or chunked prefill is enabled.
+INFO 09-10 06:27:20 [platform.py:484] Compilation disabled, using eager mode by default
+INFO 09-10 06:27:20 [utils.py:1275] Block size is set to 128 if prefix cache or chunked prefill is enabled.
+INFO 09-10 06:27:20 [platform.py:484] Compilation disabled, using eager mode by default
+INFO 09-10 06:27:20 [utils.py:1275] Block size is set to 128 if prefix cache or chunked prefill is enabled.
+PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_check_and_update_config_short_request_first_selects_async_scheduler INFO 09-10 06:27:20 [platform.py:61] Breakable cudagraph is force disabled on Ascend because DeepSeek V4 PIECEWISE cudagraph is not supported yet.
+INFO 09-10 06:27:20 [platform.py:484] Compilation disabled, using eager mode by default
+INFO 09-10 06:27:20 [utils.py:1275] Block size is set to 128 if prefix cache or chunked prefill is enabled.
+INFO 09-10 06:27:20 [platform.py:484] Compilation disabled, using eager mode by default
+INFO 09-10 06:27:20 [utils.py:1275] Block size is set to 128 if prefix cache or chunked prefill is enabled.
+INFO 09-10 06:27:20 [platform.py:484] Compilation disabled, using eager mode by default
+INFO 09-10 06:27:20 [utils.py:1275] Block size is set to 128 if prefix cache or chunked prefill is enabled.
+PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_check_and_update_config_short_request_first_survives_p_recompute_disable INFO 09-10 06:27:20 [platform.py:61] Breakable cudagraph is force disabled on Ascend because DeepSeek V4 PIECEWISE cudagraph is not supported yet.
+INFO 09-10 06:27:20 [platform.py:484] Compilation disabled, using eager mode by default
+INFO 09-10 06:27:20 [utils.py:1275] Block size is set to 128 if prefix cache or chunked prefill is enabled.
+PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_check_and_update_config_skips_sp_capture_sizes_without_cudagraph WARNING 09-10 06:27:20 [platform.py:1126] GPU-specific parameter is not supported on Ascend. parameter=disable_cascade_attn, value=True, action: resetting to False.
+WARNING 09-10 06:27:20 [platform.py:1136] Parameter is tied to incompatible backend. parameter=cpu_kvcache_space_bytes, action: resetting to None for Ascend.
+WARNING 09-10 06:27:20 [platform.py:1143] Parameter is not supported on Ascend NPU. parameter=calculate_kv_scales, action: resetting to False.
+WARNING 09-10 06:27:20 [platform.py:1154] Parameter is set but Ascend uses different mechanism. parameter=mm_encoder_attn_backend, action: resetting to None.
+WARNING 09-10 06:27:20 [platform.py:1164] Parameter relies on NVIDIA-specific tools. parameter=enable_layerwise_nvtx_tracing, action: resetting to False.
+WARNING 09-10 06:27:20 [platform.py:1174] Parameter is optimized for incompatible platform. parameter=max_num_partial_prefills, action: resetting to default (1). 
+WARNING 09-10 06:27:20 [platform.py:1196] Parameter is optimized for incompatible backend. parameter=kv_buffer_size, value=<MagicMock name='mock.kv_transfer_config.kv_buffer_size' id='281453212935152'>, action: resetting to default (1e9). 
+WARNING 09-10 06:27:20 [platform.py:1206] Parameter is tied to incompatible backend. parameter=enable_permute_local_kv, action: resetting to False. 
+WARNING 09-10 06:27:20 [platform.py:1227] Ignored GPU-specific parameter. parameter=use_prefill_decode_attention, action: resetting to False. 
+WARNING 09-10 06:27:20 [platform.py:1227] Ignored GPU-specific parameter. parameter=use_cudnn_prefill, action: resetting to False. 
+WARNING 09-10 06:27:20 [platform.py:1227] Ignored GPU-specific parameter. parameter=use_trtllm_ragged_deepseek_prefill, action: resetting to False. 
+WARNING 09-10 06:27:20 [platform.py:1227] Ignored GPU-specific parameter. parameter=use_trtllm_attention, action: resetting to False. 
+WARNING 09-10 06:27:20 [platform.py:1227] Ignored GPU-specific parameter. parameter=disable_flashinfer_prefill, action: resetting to False. 
+WARNING 09-10 06:27:20 [platform.py:1227] Ignored GPU-specific parameter. parameter=disable_flashinfer_q_quantization, action: resetting to False. 
+WARNING 09-10 06:27:20 [platform.py:1235] Ignored parameter. Ascend uses its own attention backend. parameter=flash_attn_version, action: resetting to None. 
+INFO 09-10 06:27:20 [platform.py:1248] User specified attention backend '<MagicMock name='mock.attention_config.backend' id='281453213194896'>'. Note that Ascend NPU will use its registered plugin backend instead. Resetting to None.
+WARNING 09-10 06:27:20 [platform.py:1257] Parameter is ignored on Ascend. parameter=flash_attn_max_num_splits_for_cuda_graph, action: resetting to default (32). 
+WARNING 09-10 06:27:20 [platform.py:1268] Parameter requires NVIDIA-specific tools. parameter=ray_workers_use_nsight, action: resetting to False. 
+INFO 09-10 06:27:20 [platform.py:1285] '--numa-bind' is not supported on Ascend NPU (GPU-to-NUMA topology detection unavailable). Automatically converted to --additional-config '{"enable_cpu_binding": true}' for Ascend-native CPU-core binding.
+INFO 09-10 06:27:20 [platform.py:1294] '--numa-bind-nodes' is ignored on Ascend NPU. The Ascend-native CPU binding automatically performs topo-affinity core allocation.
+INFO 09-10 06:27:20 [platform.py:1302] '--numa-bind-cpus' is ignored on Ascend NPU. The Ascend-native CPU binding automatically performs topo-affinity core allocation.
+WARNING 09-10 06:27:20 [platform.py:1310] Parameter is currently ignored on Ascend. parameter=enable_dbo, action: resetting to False. 
+WARNING 09-10 06:27:20 [platform.py:1317] Parameter is currently ignored on Ascend. parameter=ubatch_size, value=1, action: resetting to 0. 
+WARNING 09-10 06:27:20 [platform.py:1327] Parameter is not supported on Ascend NPU (use_inductor is False). parameter=use_inductor_graph_partition, action: resetting to False.
+PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_check_and_update_config_unsupported_compilation_level INFO 09-10 06:27:20 [platform.py:61] Breakable cudagraph is force disabled on Ascend because DeepSeek V4 PIECEWISE cudagraph is not supported yet.
+PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_check_and_update_config_unsupported_cudagraph_mode SKIPPED (Revert me when vllm support setting cudagraph_mode on oot pl...)
+tests/ut/test_platform.py::TestNPUPlatform::test_check_and_update_config_v1_worker_class_selection INFO 09-10 06:27:20 [platform.py:61] Breakable cudagraph is force disabled on Ascend because DeepSeek V4 PIECEWISE cudagraph is not supported yet.
+WARNING 09-10 06:27:20 [platform.py:1126] GPU-specific parameter is not supported on Ascend. parameter=disable_cascade_attn, value=True, action: resetting to False.
+WARNING 09-10 06:27:20 [platform.py:1136] Parameter is tied to incompatible backend. parameter=cpu_kvcache_space_bytes, action: resetting to None for Ascend.
+WARNING 09-10 06:27:20 [platform.py:1143] Parameter is not supported on Ascend NPU. parameter=calculate_kv_scales, action: resetting to False.
+WARNING 09-10 06:27:20 [platform.py:1154] Parameter is set but Ascend uses different mechanism. parameter=mm_encoder_attn_backend, action: resetting to None.
+WARNING 09-10 06:27:20 [platform.py:1164] Parameter relies on NVIDIA-specific tools. parameter=enable_layerwise_nvtx_tracing, action: resetting to False.
+WARNING 09-10 06:27:20 [platform.py:1174] Parameter is optimized for incompatible platform. parameter=max_num_partial_prefills, action: resetting to default (1). 
+WARNING 09-10 06:27:20 [platform.py:1196] Parameter is optimized for incompatible backend. parameter=kv_buffer_size, value=<MagicMock name='mock.kv_transfer_config.kv_buffer_size' id='281453210466832'>, action: resetting to default (1e9). 
+WARNING 09-10 06:27:20 [platform.py:1206] Parameter is tied to incompatible backend. parameter=enable_permute_local_kv, action: resetting to False. 
+WARNING 09-10 06:27:20 [platform.py:1227] Ignored GPU-specific parameter. parameter=use_prefill_decode_attention, action: resetting to False. 
+WARNING 09-10 06:27:20 [platform.py:1227] Ignored GPU-specific parameter. parameter=use_cudnn_prefill, action: resetting to False. 
+WARNING 09-10 06:27:20 [platform.py:1227] Ignored GPU-specific parameter. parameter=use_trtllm_ragged_deepseek_prefill, action: resetting to False. 
+WARNING 09-10 06:27:20 [platform.py:1227] Ignored GPU-specific parameter. parameter=use_trtllm_attention, action: resetting to False. 
+WARNING 09-10 06:27:20 [platform.py:1227] Ignored GPU-specific parameter. parameter=disable_flashinfer_prefill, action: resetting to False. 
+WARNING 09-10 06:27:20 [platform.py:1227] Ignored GPU-specific parameter. parameter=disable_flashinfer_q_quantization, action: resetting to False. 
+WARNING 09-10 06:27:20 [platform.py:1235] Ignored parameter. Ascend uses its own attention backend. parameter=flash_attn_version, action: resetting to None. 
+INFO 09-10 06:27:20 [platform.py:1248] User specified attention backend '<MagicMock name='mock.attention_config.backend' id='281453210615680'>'. Note that Ascend NPU will use its registered plugin backend instead. Resetting to None.
+WARNING 09-10 06:27:20 [platform.py:1257] Parameter is ignored on Ascend. parameter=flash_attn_max_num_splits_for_cuda_graph, action: resetting to default (32). 
+WARNING 09-10 06:27:20 [platform.py:1268] Parameter requires NVIDIA-specific tools. parameter=ray_workers_use_nsight, action: resetting to False. 
+INFO 09-10 06:27:20 [platform.py:1285] '--numa-bind' is not supported on Ascend NPU (GPU-to-NUMA topology detection unavailable). Automatically converted to --additional-config '{"enable_cpu_binding": true}' for Ascend-native CPU-core binding.
+INFO 09-10 06:27:20 [platform.py:1294] '--numa-bind-nodes' is ignored on Ascend NPU. The Ascend-native CPU binding automatically performs topo-affinity core allocation.
+INFO 09-10 06:27:20 [platform.py:1302] '--numa-bind-cpus' is ignored on Ascend NPU. The Ascend-native CPU binding automatically performs topo-affinity core allocation.
+WARNING 09-10 06:27:20 [platform.py:1310] Parameter is currently ignored on Ascend. parameter=enable_dbo, action: resetting to False. 
+WARNING 09-10 06:27:20 [platform.py:1317] Parameter is currently ignored on Ascend. parameter=ubatch_size, value=1, action: resetting to 0. 
+WARNING 09-10 06:27:20 [platform.py:1327] Parameter is not supported on Ascend NPU (use_inductor is False). parameter=use_inductor_graph_partition, action: resetting to False.
+INFO 09-10 06:27:20 [platform.py:484] Compilation disabled, using eager mode by default
+INFO 09-10 06:27:20 [utils.py:1275] Block size is set to 128 if prefix cache or chunked prefill is enabled.
+INFO 09-10 06:27:20 [platform.py:480] Falling back to FULL_DECODE_ONLY under xlite decode-only mode
+INFO 09-10 06:27:20 [platform.py:484] Compilation disabled, using eager mode by default
+INFO 09-10 06:27:20 [platform.py:628] openEuler Xlite enabled. See: https://atomgit.com/openeuler/GVirt/tree/master/xlite
+PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_class_variables PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_get_attn_backend_cls_accepts_custom_selected_backend PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_get_attn_backend_cls_keeps_draft_backends_opt_in PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_get_attn_backend_cls_leaves_sink_head_sizes_to_the_sink_backend PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_get_attn_backend_cls_reports_backend_from_another_platform PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_get_attn_backend_cls_routes_parallel_drafting_draft_to_fia_sink PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_get_attn_backend_cls_routes_unsupported_head_size_to_flash_attn_npu PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_get_attn_backend_cls_stays_quiet_for_platform_choice PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_get_attn_backend_cls_use_v1_and_mla WARNING 09-10 06:27:20 [platform.py:895] Attention backend ascend was requested but is not available on Ascend NPU; selecting an Ascend backend from the model configuration instead. vllm-ascend registers its backends under AttentionBackendEnum.CUSTOM. For a draft model this comes from --speculative-config attention_backend.
+PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_get_attn_backend_cls_use_v1_only PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_get_current_memory_usage_when_query_fails PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_get_current_memory_usage_when_reset_stats_fails PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_get_current_memory_usage_with_default_device PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_get_current_memory_usage_with_specific_device PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_get_device_capability PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_get_device_communicator_cls_returns_correct_value PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_get_device_name PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_get_device_uuid PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_get_punica_wrapper PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_get_static_graph_wrapper_cls_returns_correct_value PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_inference_mode PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_is_pin_memory_available_returns_true PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_is_sleep_mode_available PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_pre_register_and_update_with_existing_ascend_quant PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_pre_register_and_update_with_parser PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_pre_register_and_update_with_parser_no_quant_action PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_pre_register_and_update_without_parser PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_set_additional_forward_context_reads_v2_profile_override PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_set_additional_forward_context_v2_includes_required_moe_fields PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_update_block_size_for_backend_preserves_hybrid_block_size PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_update_block_size_for_backend_preserves_user_block_size PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_validate_kv_load_failure_policy_rejects_hybrid_recompute PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_validate_parallel_config_accepts_dp_only PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_validate_parallel_config_accepts_neither PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_validate_parallel_config_defers_pcp_validation_to_model_runner_v2 PASSED
+tests/ut/test_platform.py::TestNPUPlatform::test_validate_parallel_config_rejects_pcp_for_model_runner_v1 PASSED
+
+===================================================================================== FAILURES ======================================================================================
+___________________________________________________________ TestMetadataBuilder.test_logs_the_generation_a_layer_reached ____________________________________________________________
+
+self = <tests.ut.attention.test_flash_attn_npu_v1.TestMetadataBuilder testMethod=test_logs_the_generation_a_layer_reached>
+
+    def test_logs_the_generation_a_layer_reached(self):
+        with patch.object(fa_module.logger, "info") as mock_info:
+            self._build(["model.layers.3.self_attn.attn"], generation="v3")
+    
+>       mock_info.assert_called_once()
+
+tests/ut/attention/test_flash_attn_npu_v1.py:210: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <MagicMock name='info' id='281455388435296'>
+
+    def assert_called_once(self):
+        """assert that the mock was called only once.
+        """
+        if not self.call_count == 1:
+            msg = ("Expected '%s' to have been called once. Called %s times.%s"
+                   % (self._mock_name or 'mock',
+                      self.call_count,
+                      self._calls_repr()))
+>           raise AssertionError(msg)
+E           AssertionError: Expected 'info' to have been called once. Called 2 times.
+E           Calls: [call('Ascend flash-attention-npu backend (%s) selected for %d %s draft attention layer(s) (head_size=%s): %s', 'v3', 1, 'dspark', 'unknown', ['model.layers.3.self_attn.attn']),
+E            call('Ascend flash-attention-npu %s loaded from %s', 'v3', '<unknown>')].
+
+/usr/local/python3.12.13/lib/python3.12/unittest/mock.py:928: AssertionError
+================================================================================= warnings summary ==================================================================================
+../../usr/local/python3.12.13/lib/python3.12/site-packages/torch/jit/_script.py:362: 14 warnings
+  /usr/local/python3.12.13/lib/python3.12/site-packages/torch/jit/_script.py:362: DeprecationWarning: `torch.jit.script_method` is deprecated. Please switch to `torch.compile` or `torch.export`.
+    warnings.warn(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+============================================================================== short test summary info ==============================================================================
+FAILED tests/ut/attention/test_flash_attn_npu_v1.py::TestMetadataBuilder::test_logs_the_generation_a_layer_reached - AssertionError: Expected 'info' to have been called once. Called 2 times.
+=============================================================== 1 failed, 91 passed, 1 skipped, 14 warnings in 1.59s ================================================================
