@@ -35,6 +35,7 @@ from vllm_ascend.attention.flash_attn_npu_v1 import (
     AscendFlashAttnNpuImpl,
     AscendFlashAttnNpuMetadataBuilder,
     _build_seq_tensors,
+    _cu_seqlens_q,
     _get_or_compute_inputs,
     _load,
     flash_attn_npu_selected,
@@ -283,6 +284,23 @@ class TestSeqTensors(TestBase):
         self.assertTrue(torch.equal(cu_seqlens_q, torch.tensor([0, 4, 8, 12, 16], dtype=torch.int32)))
         self.assertTrue(torch.equal(seqused_k, torch.tensor([19, 23, 1, 1], dtype=torch.int32)))
 
+    def test_query_offsets_are_built_once_per_shape(self):
+        """They are a function of the shape, and rebuilding them is not free.
+
+        Profiling put the arange and its multiply at 13.6us of device time per step
+        -- launch overhead on two tiny vector kernels -- for values that cannot
+        change while the batch shape holds. Reusing the tensor also gives aclgraph a
+        stable address to capture.
+        """
+        first = _cu_seqlens_q(4, 4, torch.device("cpu"))
+        again = _cu_seqlens_q(4, 4, torch.device("cpu"))
+        other = _cu_seqlens_q(4, 8, torch.device("cpu"))
+
+        self.assertIs(first, again)
+        self.assertIsNot(first, other)
+        self.assertTrue(torch.equal(first, torch.tensor([0, 4, 8, 12, 16], dtype=torch.int32)))
+        self.assertTrue(torch.equal(other, torch.tensor([0, 8, 16, 24, 32], dtype=torch.int32)))
+
     def test_rejects_non_uniform_query_batch(self):
         with self.assertRaisesRegex(RuntimeError, "uniform query batch"):
             _build_seq_tensors(num_tokens=7, seq_lens=torch.tensor([4, 5], dtype=torch.int32))
@@ -457,6 +475,21 @@ class TestImpl(TestBase):
             module.flash_attn_varlen_func.call_args.kwargs["scheduler_metadata"],
             module.get_scheduler_metadata.return_value,
         )
+
+    def test_forward_logs_that_the_operator_actually_ran(self):
+        """The selection log proves a layer chose this backend, not that it ran.
+
+        An end-to-end run needs to distinguish the two, so the forward says so once
+        with the shapes it ran on.
+        """
+        impl = self._impl()
+        with patch.object(fa_module.logger, "info_once") as mock_info:
+            self._run(impl, self._metadata(), generation="v4")
+
+        mock_info.assert_called_once()
+        logged = str(mock_info.call_args.args)
+        self.assertIn("forward", logged)
+        self.assertIn("v4", logged)
 
     def test_forward_is_non_causal_and_writes_the_output_buffer(self):
         impl = self._impl()
