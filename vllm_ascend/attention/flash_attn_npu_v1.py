@@ -386,21 +386,29 @@ class AscendFlashAttnV4Impl(AscendAttentionBackendImpl):
         num_tokens = attn_metadata.num_actual_tokens
         query = query[:num_tokens]
 
-        # num_reqs comes from query_start_loc, not from seq_lens. The builder leaves
-        # seq_lens as the whole device buffer for a parallel-drafting draft --
-        # attention_v1.py, the `parallel_drafting` branch of build() -- so its length
-        # is the buffer size, while query_start_loc is sliced to num_reqs + 1. Taking
-        # the request count from seq_lens and dividing num_actual_tokens by it
-        # produced a query partition unrelated to the real one: 8 tokens over a
-        # 4-wide buffer became four 2-token requests, each reading another request's
-        # KV.
-        cu_seqlens_q = attn_metadata.query_start_loc.to(torch.int32)
-        num_reqs = cu_seqlens_q.shape[0] - 1
-        if num_reqs <= 0:
+        # The request count comes from query_start_loc's length, and the offsets are
+        # rebuilt rather than read from it. Both halves matter, and they come from
+        # different places for different reasons.
+        #
+        # The length, because the builder leaves seq_lens as the whole device buffer
+        # for a parallel-drafting draft (attention_v1.py, the `parallel_drafting`
+        # branch of build()), so seq_lens.shape[0] is the buffer size rather than the
+        # request count.
+        #
+        # The offsets rebuilt, because query_start_loc's values are the producer's,
+        # and the producer pads: entries past the real requests repeat the last
+        # boundary. A parallel-drafting draft runs a uniform query per request, so
+        # the true partition follows from the token count and the request count,
+        # which is what the FIA sink backend has always done and what it is correct
+        # with. Reading the values instead was wrong twice over -- and quiet, since
+        # nothing downstream validates the partition against the query it slices.
+        num_reqs = attn_metadata.query_start_loc.shape[0] - 1
+        if num_reqs <= 0 or num_tokens % num_reqs != 0:
             raise RuntimeError(
-                f"Parallel-drafting flash-attention-npu got query_start_loc of shape "
-                f"{tuple(attn_metadata.query_start_loc.shape)}, which describes no requests"
+                "Parallel-drafting flash-attention-npu requires a non-empty uniform "
+                f"query batch: num_tokens={num_tokens}, num_reqs={num_reqs}"
             )
+        query_tokens_per_req = num_tokens // num_reqs
 
         block_table = attn_metadata.block_tables
         if block_table.shape[0] < num_reqs:
@@ -432,22 +440,13 @@ class AscendFlashAttnV4Impl(AscendAttentionBackendImpl):
         # KV under v4, which does not check it; v3 rejects the mismatch.
         max_seqlen_k = block_table.shape[1] * block_size
 
-        # The wheel needs this as a host int and there is no way to derive it from
-        # the device-side offsets without the sync this backend exists to avoid, so
-        # it has to come from the metadata.
-        max_seqlen_q = attn_metadata.max_query_len
-        if max_seqlen_q is None:
-            raise RuntimeError(
-                "Parallel-drafting flash-attention-npu needs attn_metadata.max_query_len; "
-                "it cannot be derived from the device-side query offsets without a sync"
-            )
+        # From the same arithmetic as the offsets, so the two cannot disagree.
+        max_seqlen_q = query_tokens_per_req
 
         cache_key = (
             attn_metadata.seq_lens.data_ptr(),
-            attn_metadata.query_start_loc.data_ptr(),
             num_tokens,
             num_reqs,
-            max_seqlen_q,
             self.num_heads,
             self.num_kv_heads,
             self.head_size,
@@ -456,11 +455,14 @@ class AscendFlashAttnV4Impl(AscendAttentionBackendImpl):
         )
 
         def compute_inputs() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-            # Padded requests arrive as repeated offsets, i.e. zero query tokens.
-            # The tiling handles that -- GetQNBlockTile special-cases qSeqlen 0 and
-            # the block count for them is 0 -- so they simply produce no work, and
-            # unlike the sink operator there is nothing to repair here. Their KV
-            # lengths are clamped only because a zero there is meaningless.
+            # A leading zero and B+1 entries, both int32; get_scheduler_metadata
+            # TORCH_CHECKs the dtype of each. The KV lengths are sliced to the batch
+            # and clamped, since a padded request carries zero and the tiling takes
+            # the maximum across all of them.
+            cu_seqlens_q = (
+                torch.arange(num_reqs + 1, dtype=torch.int32, device=attn_metadata.seq_lens.device)
+                * query_tokens_per_req
+            )
             seqused_k = attn_metadata.seq_lens[:num_reqs].to(torch.int32).clamp_min(1)
             scheduler_metadata = module.get_scheduler_metadata(
                 batch_size=num_reqs,

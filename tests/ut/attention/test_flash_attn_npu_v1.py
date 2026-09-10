@@ -343,7 +343,9 @@ class TestImpl(TestBase):
             causal=False,
             num_actual_tokens=num_reqs * q_per_req,
             seq_lens=torch.tensor(([300, 120] * 8)[: num_reqs + 6], dtype=torch.int32),
-            query_start_loc=torch.arange(num_reqs + 1, dtype=torch.int32) * q_per_req,
+            # Padded the way the producer leaves it: entries past the real requests
+            # repeat the last boundary. Only its length may be read.
+            query_start_loc=torch.tensor([0, 1, 1][: num_reqs + 1], dtype=torch.int32),
             max_query_len=q_per_req,
             block_tables=torch.zeros((num_reqs, block_table_width), dtype=torch.int32),
         )
@@ -415,10 +417,12 @@ class TestImpl(TestBase):
         meta_kwargs = module.get_scheduler_metadata.call_args.kwargs
         self.assertEqual(meta_kwargs["batch_size"], 2)
         self.assertEqual(meta_kwargs["max_seqlen_q"], 4)
-        # The offsets are the metadata's own, not a reconstruction from a uniform
-        # assumption, and the KV lengths are sliced to the batch rather than passed
-        # buffer-length.
-        self.assertTrue(torch.equal(meta_kwargs["cu_seqlens_q"], metadata.query_start_loc))
+        # The offsets are rebuilt from the token and request counts, not read out of
+        # query_start_loc: the producer pads its values. The KV lengths are sliced to
+        # the batch rather than passed at buffer length.
+        self.assertTrue(
+            torch.equal(meta_kwargs["cu_seqlens_q"], torch.tensor([0, 4, 8], dtype=torch.int32))
+        )
         self.assertEqual(meta_kwargs["cu_seqlens_q"].dtype, torch.int32)
         self.assertEqual(meta_kwargs["cache_seqlens"].shape[0], 2)
 
