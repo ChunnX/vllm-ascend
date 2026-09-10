@@ -858,7 +858,7 @@ class NPUPlatform(Platform):
             # on, so with both enabled every layer still resolves to exactly one
             # backend.
             if flash_attn_npu_selected(attn_selector_config):
-                return "vllm_ascend.attention.flash_attn_npu_v1.AscendFlashAttnNpuBackend"
+                return "vllm_ascend.attention.flash_attn_npu_v1.AscendFlashAttnV4Backend"
 
             if fia_sink_selected(attn_selector_config):
                 return "vllm_ascend.attention.fia_sink_v1.AscendFIASinkBackend"

@@ -31,9 +31,9 @@ import torch
 import vllm_ascend.attention.flash_attn_npu_v1 as fa_module
 from tests.ut.base import TestBase
 from vllm_ascend.attention.flash_attn_npu_v1 import (
-    AscendFlashAttnNpuBackend,
-    AscendFlashAttnNpuImpl,
-    AscendFlashAttnNpuMetadataBuilder,
+    AscendFlashAttnV4Backend,
+    AscendFlashAttnV4Impl,
+    AscendFlashAttnV4MetadataBuilder,
     _build_seq_tensors,
     _cu_seqlens_q,
     _get_or_compute_inputs,
@@ -137,8 +137,8 @@ class TestLayerSelection(TestBase):
 
 class TestBackendWiring(TestBase):
     def test_backend_names_its_own_builder_and_impl(self):
-        self.assertIs(AscendFlashAttnNpuBackend.get_impl_cls(), AscendFlashAttnNpuImpl)
-        self.assertIs(AscendFlashAttnNpuBackend.get_builder_cls(), AscendFlashAttnNpuMetadataBuilder)
+        self.assertIs(AscendFlashAttnV4Backend.get_impl_cls(), AscendFlashAttnV4Impl)
+        self.assertIs(AscendFlashAttnV4Backend.get_builder_cls(), AscendFlashAttnV4MetadataBuilder)
 
     def test_get_name_stays_something_vllm_can_resolve(self):
         """The name is a registry key, not an identity.
@@ -154,7 +154,7 @@ class TestBackendWiring(TestBase):
 
         from vllm_ascend.attention.attention_v1 import AscendAttentionBackend
 
-        name = AscendFlashAttnNpuBackend.get_name()
+        name = AscendFlashAttnV4Backend.get_name()
         self.assertEqual(name, AscendAttentionBackend.get_name())
         AttentionBackendEnum[name]  # raises ValueError if vLLM cannot resolve it
 
@@ -167,11 +167,11 @@ class TestBackendWiring(TestBase):
         from vllm_ascend.attention.attention_v1 import AscendAttentionBackend
 
         self.assertIs(
-            AscendFlashAttnNpuBackend.get_required_kv_cache_layout.__func__,
+            AscendFlashAttnV4Backend.get_required_kv_cache_layout.__func__,
             AscendAttentionBackend.get_required_kv_cache_layout.__func__,
         )
         self.assertEqual(
-            AscendFlashAttnNpuBackend.get_kv_cache_shape(2, 4, 8, 16),
+            AscendFlashAttnV4Backend.get_kv_cache_shape(2, 4, 8, 16),
             AscendAttentionBackend.get_kv_cache_shape(2, 4, 8, 16),
         )
 
@@ -199,7 +199,7 @@ class TestMetadataBuilder(TestBase):
             patch.object(fa_module, "_SELECTED", "v4"),
             patch.object(fa_module, "_load") as load,
         ):
-            builder = AscendFlashAttnNpuMetadataBuilder(
+            builder = AscendFlashAttnV4MetadataBuilder(
                 None,
                 layer_names or ["model.layers.0.self_attn.attn"],
                 self.mock_vllm_config,
@@ -236,7 +236,7 @@ class TestMetadataBuilder(TestBase):
 
         with patch.object(fa_module, "_SELECTED", "v4"), patch.object(fa_module, "_load"):
             with self.assertRaisesRegex(RuntimeError, "without parallel drafting"):
-                AscendFlashAttnNpuMetadataBuilder(None, ["layer0"], self.mock_vllm_config, self.mock_device)
+                AscendFlashAttnV4MetadataBuilder(None, ["layer0"], self.mock_vllm_config, self.mock_device)
 
     def test_causal_group_keeps_the_ordinary_path(self):
         """A DFlash draft can carry a different causal flag per KV cache group."""
@@ -367,7 +367,7 @@ class TestWheelLoading(TestBase):
 
 class TestImpl(TestBase):
     def _impl(self):
-        impl = AscendFlashAttnNpuImpl.__new__(AscendFlashAttnNpuImpl)
+        impl = AscendFlashAttnV4Impl.__new__(AscendFlashAttnV4Impl)
         impl.num_heads = 8
         impl.num_kv_heads = 2
         impl.head_size = 256
@@ -403,7 +403,7 @@ class TestImpl(TestBase):
         return module, query, output, result
 
     def test_non_causal_build_takes_the_wheel_path(self):
-        impl = AscendFlashAttnNpuImpl.__new__(AscendFlashAttnNpuImpl)
+        impl = AscendFlashAttnV4Impl.__new__(AscendFlashAttnV4Impl)
         sentinel = object()
         impl._forward_flash_attn_npu = MagicMock(return_value=sentinel)
         metadata = SimpleNamespace(causal=False)
@@ -415,13 +415,13 @@ class TestImpl(TestBase):
 
     def test_causal_build_falls_back_to_the_ordinary_path(self):
         """Mirrors the builder: a causal KV group of a draft is not served here."""
-        impl = AscendFlashAttnNpuImpl.__new__(AscendFlashAttnNpuImpl)
+        impl = AscendFlashAttnV4Impl.__new__(AscendFlashAttnV4Impl)
         impl._forward_flash_attn_npu = MagicMock()
         metadata = SimpleNamespace(causal=True)
         sentinel = object()
 
         with patch.object(
-            AscendFlashAttnNpuImpl.__mro__[1],
+            AscendFlashAttnV4Impl.__mro__[1],
             "forward_fused_infer_attention",
             return_value=sentinel,
         ) as base_forward:

@@ -1101,7 +1101,7 @@ class TestNPUPlatform(TestBase):
         ):
             result = self.platform.get_attn_backend_cls(None, self._non_causal_selector(256))
 
-        self.assertEqual(result, "vllm_ascend.attention.flash_attn_npu_v1.AscendFlashAttnNpuBackend")
+        self.assertEqual(result, "vllm_ascend.attention.flash_attn_npu_v1.AscendFlashAttnV4Backend")
 
     def test_get_attn_backend_cls_leaves_sink_head_sizes_to_the_sink_backend(self):
         """With both enabled, each layer still resolves to exactly one backend."""

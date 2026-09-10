@@ -398,7 +398,7 @@ class AscendFIASinkBackend(AscendAttentionBackend):
     """
 
     # get_name is deliberately not overridden, for the same reason as
-    # AscendFlashAttnNpuBackend: vLLM resolves it as an AttentionBackendEnum
+    # AscendFlashAttnV4Backend: vLLM resolves it as an AttentionBackendEnum
     # member, so a name of this backend's own raises "Unknown attention backend"
     # in Attention.__init__.
 

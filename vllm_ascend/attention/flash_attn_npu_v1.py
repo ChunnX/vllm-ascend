@@ -46,9 +46,11 @@ the full-graph replay path that skips layers without a `seq_lens_list`, the
 per-forward metadata cache that keeps captured addresses stable, and the per-build
 causal fallback for a DFlash draft whose KV cache groups disagree.
 
-Named for the wheel rather than a generation: `fa3_v1.py` in this package is a
-different backend on a different wheel (`flash_attn_npu_v3`), so `fa3`/`fa4` here
-would read as a reference to it.
+The classes say V4 because that is the wheel API they call, and the module says
+`_v1` because that is this package's suffix for a v1-engine backend, as in
+`attention_v1.py` and `mla_v1.py`. Not to be read against `fa3_v1.py`, which is a
+different backend on a different wheel entirely (`flash_attn_npu_v3`, not
+`flash_attn_npu_3`); the two are unrelated and neither succeeds the other.
 """
 
 import importlib
@@ -280,7 +282,7 @@ def flash_attn_npu_selected(attn_selector_config: object) -> bool:
     return True
 
 
-class AscendFlashAttnNpuMetadataBuilder(AscendAttentionMetadataBuilder):
+class AscendFlashAttnV4MetadataBuilder(AscendAttentionMetadataBuilder):
     """Builds draft metadata that keeps the sequence lengths on device."""
 
     def __init__(
@@ -348,7 +350,7 @@ class AscendFlashAttnNpuMetadataBuilder(AscendAttentionMetadataBuilder):
         Causality is per build, not per layer: a DFlash draft can carry a different
         flag for each KV cache group, so one backend's layers see both. This call
         passes `causal=False`, so a causal group has to keep the ordinary path --
-        and `AscendFlashAttnNpuImpl` reads the same `causal` field to make the
+        and `AscendFlashAttnV4Impl` reads the same `causal` field to make the
         matching choice.
         """
         if common_attn_metadata.causal:
@@ -364,7 +366,7 @@ class AscendFlashAttnNpuMetadataBuilder(AscendAttentionMetadataBuilder):
         return query_start_loc, None, None, seq_lens, block_table
 
 
-class AscendFlashAttnNpuImpl(AscendAttentionBackendImpl):
+class AscendFlashAttnV4Impl(AscendAttentionBackendImpl):
     """Runs draft attention through flash-attention-npu, in eager and in graph."""
 
     def forward_fused_infer_attention(
@@ -519,7 +521,7 @@ class AscendFlashAttnNpuImpl(AscendAttentionBackendImpl):
         return output
 
 
-class AscendFlashAttnNpuBackend(AscendAttentionBackend):
+class AscendFlashAttnV4Backend(AscendAttentionBackend):
     """`AscendAttentionBackend` with the draft's flash-attention-npu builder and impl.
 
     Everything that decides KV cache layout -- `get_kv_cache_shape`,
@@ -537,9 +539,9 @@ class AscendFlashAttnNpuBackend(AscendAttentionBackend):
     # built. It is a registry key, not an identity; the identity is in the logs.
 
     @staticmethod
-    def get_impl_cls() -> type["AscendFlashAttnNpuImpl"]:
-        return AscendFlashAttnNpuImpl
+    def get_impl_cls() -> type["AscendFlashAttnV4Impl"]:
+        return AscendFlashAttnV4Impl
 
     @staticmethod
-    def get_builder_cls() -> type["AscendFlashAttnNpuMetadataBuilder"]:
-        return AscendFlashAttnNpuMetadataBuilder
+    def get_builder_cls() -> type["AscendFlashAttnV4MetadataBuilder"]:
+        return AscendFlashAttnV4MetadataBuilder
