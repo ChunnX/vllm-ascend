@@ -1,0 +1,3 @@
+[2026-09-10-02:55:41.094] [INFO] [AscendProfiler_CommunicationParser:97] Profiler logger initialized at: /vllm-workspace/vllm-ascend/prof-graph_layers5/fa_v3/13c974345b90_77748_20260910025536780_ascend_pt/logs/profiler_20260910025541_78446_CommunicationParser.log
+[2026-09-10-02:55:41.094] [INFO] [AscendProfiler_CommunicationParser:66] CommunicationParser start.
+[2026-09-10-02:55:41.096] [INFO] [AscendProfiler_CommunicationParser:73] CommunicationParser finish.

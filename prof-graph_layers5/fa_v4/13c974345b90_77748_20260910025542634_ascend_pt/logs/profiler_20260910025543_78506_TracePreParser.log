@@ -1,0 +1,4 @@
+[2026-09-10-02:55:43.405] [INFO] [AscendProfiler_TracePreParser:97] Profiler logger initialized at: /vllm-workspace/vllm-ascend/prof-graph_layers5/fa_v4/13c974345b90_77748_20260910025542634_ascend_pt/logs/profiler_20260910025543_78506_TracePreParser.log
+[2026-09-10-02:55:43.405] [INFO] [AscendProfiler_TracePreParser:36] TracePreParser start.
+[2026-09-10-02:55:43.405] [ERROR] [AscendProfiler_TracePreParser:108] Get fwk trace data failed, framework data is empty.
+[2026-09-10-02:55:43.405] [INFO] [AscendProfiler_TracePreParser:50] TracePreParser finish.

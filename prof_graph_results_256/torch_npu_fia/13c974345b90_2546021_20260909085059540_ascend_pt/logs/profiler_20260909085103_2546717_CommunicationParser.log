@@ -1,0 +1,5 @@
+[2026-09-09-08:51:03.022] [INFO] [AscendProfiler_CommunicationParser:97] Profiler logger initialized at: /vllm-workspace/vllm-ascend/prof_graph_results_256/torch_npu_fia/13c974345b90_2546021_20260909085059540_ascend_pt/logs/profiler_20260909085103_2546717_CommunicationParser.log
+[2026-09-09-08:51:03.022] [INFO] [AscendProfiler_CommunicationParser:66] CommunicationParser start.
+[2026-09-09-08:51:03.022] [ERROR] [AscendProfiler_CommunicationParser:282] Init step list failed, the kernel dict is empty.
+[2026-09-09-08:51:03.022] [ERROR] [AscendProfiler_CommunicationParser:64] Get step range failed, the kernel dict is empty.
+[2026-09-09-08:51:03.025] [INFO] [AscendProfiler_CommunicationParser:73] CommunicationParser finish.

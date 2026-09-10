@@ -1,0 +1,2 @@
+Device_id,OP Type,Core Type,Count,Total Time(us),Min Time(us),Avg Time(us),Max Time(us),Ratio(%)
+0,FusedInferAttentionScore,MIX_AIC,5,335.104,66.6,67.02,67.364,100

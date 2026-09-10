@@ -1,0 +1,4 @@
+[2026-09-10-02:55:50.663] [INFO] [AscendProfiler_KernelViewParser:97] Profiler logger initialized at: /vllm-workspace/vllm-ascend/prof-graph_layers5/torch_npu_fia/13c974345b90_77748_20260910025547745_ascend_pt/logs/profiler_20260910025550_79051_KernelViewParser.log
+[2026-09-10-02:55:50.663] [INFO] [AscendProfiler_KernelViewParser:38] KernelViewParser start.
+[2026-09-10-02:55:50.664] [ERROR] [AscendProfiler_KernelViewParser:78] Kernel view get step range failed, the kernel dict is empty.
+[2026-09-10-02:55:50.667] [INFO] [AscendProfiler_KernelViewParser:46] KernelViewParser finish.

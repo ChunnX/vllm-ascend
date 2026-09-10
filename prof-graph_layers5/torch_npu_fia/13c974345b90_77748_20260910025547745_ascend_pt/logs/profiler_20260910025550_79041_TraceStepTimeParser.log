@@ -1,0 +1,4 @@
+[2026-09-10-02:55:50.173] [INFO] [AscendProfiler_TraceStepTimeParser:97] Profiler logger initialized at: /vllm-workspace/vllm-ascend/prof-graph_layers5/torch_npu_fia/13c974345b90_77748_20260910025547745_ascend_pt/logs/profiler_20260910025550_79041_TraceStepTimeParser.log
+[2026-09-10-02:55:50.173] [INFO] [AscendProfiler_TraceStepTimeParser:169] TraceStepTimeParser start.
+[2026-09-10-02:55:50.173] [ERROR] [AscendProfiler_TraceStepTimeParser:64] Get step range failed, the kernel dict is empty.
+[2026-09-10-02:55:50.177] [INFO] [AscendProfiler_TraceStepTimeParser:177] TraceStepTimeParser finish.

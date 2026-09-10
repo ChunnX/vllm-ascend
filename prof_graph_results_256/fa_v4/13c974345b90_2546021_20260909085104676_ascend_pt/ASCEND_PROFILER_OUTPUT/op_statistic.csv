@@ -1,0 +1,5 @@
+Device_id,OP Type,Core Type,Count,Total Time(us),Min Time(us),Avg Time(us),Max Time(us),Ratio(%)
+0,_ZN9SplitFuse7FAInferIu6__bf16u6__bf16fLb1ELN12KernelCommon8FaiKenel8MaskTypeE0ELNS2_11inputLayoutE1ELN7Catlass8Epilogue8LseModeTE1ELb0EEEvmPhS8_S8_S8_S8_S8_S8_S8_S8_S8_S8_,MIX_AIC,5,371.728,73.58,74.345,75.38,75.572
+0,_Z17ComputeFAMetadataPv,AI_CPU,5,103.9,16.18,20.78,24.52,21.123
+0,ClipByValueV2,AI_VECTOR_CORE,5,10.18,1.98,2.036,2.08,2.07
+0,Fill,AI_VECTOR_CORE,5,6.08,1.14,1.216,1.28,1.236

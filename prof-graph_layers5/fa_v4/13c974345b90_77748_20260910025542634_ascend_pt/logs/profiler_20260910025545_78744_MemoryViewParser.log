@@ -1,0 +1,3 @@
+[2026-09-10-02:55:45.458] [INFO] [AscendProfiler_MemoryViewParser:97] Profiler logger initialized at: /vllm-workspace/vllm-ascend/prof-graph_layers5/fa_v4/13c974345b90_77748_20260910025542634_ascend_pt/logs/profiler_20260910025545_78744_MemoryViewParser.log
+[2026-09-10-02:55:45.459] [INFO] [AscendProfiler_MemoryViewParser:78] MemoryViewParser start.
+[2026-09-10-02:55:45.462] [INFO] [AscendProfiler_MemoryViewParser:89] MemoryViewParser finish.
