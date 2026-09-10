@@ -88,7 +88,16 @@ class TestFIASinkSelection(TestBase):
 
 class TestFIASinkBackendWiring(TestBase):
     def test_backend_names_its_own_builder_and_impl(self):
-        self.assertEqual(AscendFIASinkBackend.get_name(), "ASCEND_FIA_SINK")
+        from vllm.v1.attention.backends.registry import AttentionBackendEnum
+
+        from vllm_ascend.attention.attention_v1 import AscendAttentionBackend
+
+        # A registry key, not an identity: Attention.__init__ resolves it as an
+        # AttentionBackendEnum member, so a name of this backend's own raises
+        # "Unknown attention backend" before any layer is built.
+        name = AscendFIASinkBackend.get_name()
+        self.assertEqual(name, AscendAttentionBackend.get_name())
+        AttentionBackendEnum[name]
         self.assertIs(AscendFIASinkBackend.get_builder_cls(), AscendFIASinkMetadataBuilder)
         self.assertIs(AscendFIASinkBackend.get_impl_cls(), AscendFIASinkImpl)
 

@@ -530,9 +530,11 @@ class AscendFlashAttnNpuBackend(AscendAttentionBackend):
     backend's layers. The wheel wants that same layout.
     """
 
-    @staticmethod
-    def get_name() -> str:
-        return "ASCEND_FLASH_ATTN_NPU"
+    # get_name is deliberately not overridden. vLLM resolves it as an
+    # AttentionBackendEnum member -- `Attention.__init__` does
+    # `AttentionBackendEnum[self.attn_backend.get_name()]` -- so a name of this
+    # backend's own raises "Unknown attention backend" before a single layer is
+    # built. It is a registry key, not an identity; the identity is in the logs.
 
     @staticmethod
     def get_impl_cls() -> type["AscendFlashAttnNpuImpl"]:

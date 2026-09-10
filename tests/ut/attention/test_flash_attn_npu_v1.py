@@ -137,9 +137,26 @@ class TestLayerSelection(TestBase):
 
 class TestBackendWiring(TestBase):
     def test_backend_names_its_own_builder_and_impl(self):
-        self.assertEqual(AscendFlashAttnNpuBackend.get_name(), "ASCEND_FLASH_ATTN_NPU")
         self.assertIs(AscendFlashAttnNpuBackend.get_impl_cls(), AscendFlashAttnNpuImpl)
         self.assertIs(AscendFlashAttnNpuBackend.get_builder_cls(), AscendFlashAttnNpuMetadataBuilder)
+
+    def test_get_name_stays_something_vllm_can_resolve(self):
+        """The name is a registry key, not an identity.
+
+        `Attention.__init__` does `AttentionBackendEnum[attn_backend.get_name()]`,
+        so a name of this backend's own raises "Unknown attention backend" before a
+        single layer is built -- which is exactly what a name like
+        "ASCEND_FLASH_ATTN_NPU" did. Asserting the literal string is what let that
+        through unit tests and into a full-network run, so assert the contract: it
+        resolves, and it is whatever the base backend answers.
+        """
+        from vllm.v1.attention.backends.registry import AttentionBackendEnum
+
+        from vllm_ascend.attention.attention_v1 import AscendAttentionBackend
+
+        name = AscendFlashAttnNpuBackend.get_name()
+        self.assertEqual(name, AscendAttentionBackend.get_name())
+        AttentionBackendEnum[name]  # raises ValueError if vLLM cannot resolve it
 
     def test_kv_cache_layout_is_inherited_unchanged(self):
         """The draft shares the target's cache pool, so the layout must match.

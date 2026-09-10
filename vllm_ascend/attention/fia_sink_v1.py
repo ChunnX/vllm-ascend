@@ -397,9 +397,10 @@ class AscendFIASinkBackend(AscendAttentionBackend):
     a second layout here would not stay on this backend's layers.
     """
 
-    @staticmethod
-    def get_name() -> str:
-        return "ASCEND_FIA_SINK"
+    # get_name is deliberately not overridden, for the same reason as
+    # AscendFlashAttnNpuBackend: vLLM resolves it as an AttentionBackendEnum
+    # member, so a name of this backend's own raises "Unknown attention backend"
+    # in Attention.__init__.
 
     @staticmethod
     def get_impl_cls() -> type["AscendFIASinkImpl"]:
