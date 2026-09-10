@@ -1,0 +1,335 @@
+# fa_v4 log
+(Worker_TP0 pid=168857) INFO 09-10 08:34:01 [worker.py:598] Available KV cache memory: 11.40 GiB
+(EngineCore pid=168534) WARNING 09-10 08:34:01 [patch_kv_cache_utils.py:86] Add 11 padding layers, may waste at most 220.00% KV cache memory
+(EngineCore pid=168534) INFO 09-10 08:34:01 [patch_kv_cache_utils.py:97] KV Group min_size=16 layer_counts=[5, 16, 48] group_size=16 num_groups=5
+(EngineCore pid=168534) INFO 09-10 08:34:01 [kv_cache_utils.py:2177] GPU KV cache size: 216,914 tokens
+(EngineCore pid=168534) INFO 09-10 08:34:01 [kv_cache_utils.py:2178] Maximum concurrency for 32,768 tokens per request: 6.62x
+(Worker_TP0 pid=168857) INFO 09-10 08:34:01 [flash_attn_npu_v1.py:275] Ascend flash-attention-npu backend (v4) selected for 5 dspark draft attention layer(s) (head_size=128): ['model.layers.64.self_attn.attn', 'model.layers.65.self_attn.attn', 'model.layers.66.self_attn.attn', 'model.layers.67.self_attn.attn', 'model.layers.68.self_attn.attn']
+(Worker_TP0 pid=168857) INFO 09-10 08:34:01 [flash_attn_npu_v1.py:284] Ascend flash-attention-npu v4 loaded from /usr/local/python3.12.13/lib/python3.12/site-packages/flash_attn_npu_4/__init__.py
+(Worker_TP2 pid=168859) INFO 09-10 08:34:01 [flash_attn_npu_v1.py:275] Ascend flash-attention-npu backend (v4) selected for 5 dspark draft attention layer(s) (head_size=128): ['model.layers.64.self_attn.attn', 'model.layers.65.self_attn.attn', 'model.layers.66.self_attn.attn', 'model.layers.67.self_attn.attn', 'model.layers.68.self_attn.attn']
+(Worker_TP2 pid=168859) INFO 09-10 08:34:01 [flash_attn_npu_v1.py:284] Ascend flash-attention-npu v4 loaded from /usr/local/python3.12.13/lib/python3.12/site-packages/flash_attn_npu_4/__init__.py
+(Worker_TP3 pid=168860) INFO 09-10 08:34:01 [flash_attn_npu_v1.py:275] Ascend flash-attention-npu backend (v4) selected for 5 dspark draft attention layer(s) (head_size=128): ['model.layers.64.self_attn.attn', 'model.layers.65.self_attn.attn', 'model.layers.66.self_attn.attn', 'model.layers.67.self_attn.attn', 'model.layers.68.self_attn.attn']
+(Worker_TP3 pid=168860) INFO 09-10 08:34:01 [flash_attn_npu_v1.py:284] Ascend flash-attention-npu v4 loaded from /usr/local/python3.12.13/lib/python3.12/site-packages/flash_attn_npu_4/__init__.py
+(Worker_TP1 pid=168858) INFO 09-10 08:34:01 [flash_attn_npu_v1.py:275] Ascend flash-attention-npu backend (v4) selected for 5 dspark draft attention layer(s) (head_size=128): ['model.layers.64.self_attn.attn', 'model.layers.65.self_attn.attn', 'model.layers.66.self_attn.attn', 'model.layers.67.self_attn.attn', 'model.layers.68.self_attn.attn']
+(Worker_TP1 pid=168858) INFO 09-10 08:34:01 [flash_attn_npu_v1.py:284] Ascend flash-attention-npu v4 loaded from /usr/local/python3.12.13/lib/python3.12/site-packages/flash_attn_npu_4/__init__.py
+(Worker_TP0 pid=168857) INFO 09-10 08:34:01 [kernel.py:295] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native'])
+(Worker_TP0 pid=168857) INFO 09-10 08:34:01 [utils.py:174] No quantization signature detected from model files for "/opt/foundation_model/Qwen3.6-27B". The model will be loaded as float. To force a quantization method, pass "--quantization <method>" explicitly.
+(Worker_TP0 pid=168857) WARNING 09-10 08:34:01 [platform.py:1126] GPU-specific parameter is not supported on Ascend. parameter=disable_cascade_attn, value=True, action: resetting to False.
+(Worker_TP0 pid=168857) INFO 09-10 08:34:01 [ascend_config.py:935] Dynamic EPLB is False
+(Worker_TP0 pid=168857) INFO 09-10 08:34:01 [ascend_config.py:936] The number of redundant experts is 0
+(Worker_TP0 pid=168857) INFO 09-10 08:34:01 [platform.py:791] Set PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
+(Worker_TP2 pid=168859) INFO 09-10 08:34:01 [kernel.py:295] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native'])
+(Worker_TP3 pid=168860) INFO 09-10 08:34:01 [kernel.py:295] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native'])
+(Worker_TP2 pid=168859) INFO 09-10 08:34:01 [utils.py:174] No quantization signature detected from model files for "/opt/foundation_model/Qwen3.6-27B". The model will be loaded as float. To force a quantization method, pass "--quantization <method>" explicitly.
+(Worker_TP2 pid=168859) WARNING 09-10 08:34:01 [platform.py:1126] GPU-specific parameter is not supported on Ascend. parameter=disable_cascade_attn, value=True, action: resetting to False.
+(Worker_TP2 pid=168859) INFO 09-10 08:34:01 [ascend_config.py:935] Dynamic EPLB is False
+(Worker_TP2 pid=168859) INFO 09-10 08:34:01 [ascend_config.py:936] The number of redundant experts is 0
+(Worker_TP3 pid=168860) INFO 09-10 08:34:01 [utils.py:174] No quantization signature detected from model files for "/opt/foundation_model/Qwen3.6-27B". The model will be loaded as float. To force a quantization method, pass "--quantization <method>" explicitly.
+(Worker_TP3 pid=168860) WARNING 09-10 08:34:01 [platform.py:1126] GPU-specific parameter is not supported on Ascend. parameter=disable_cascade_attn, value=True, action: resetting to False.
+(Worker_TP3 pid=168860) INFO 09-10 08:34:01 [ascend_config.py:935] Dynamic EPLB is False
+(Worker_TP2 pid=168859) INFO 09-10 08:34:01 [platform.py:791] Set PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
+(Worker_TP3 pid=168860) INFO 09-10 08:34:01 [ascend_config.py:936] The number of redundant experts is 0
+(Worker_TP3 pid=168860) INFO 09-10 08:34:01 [platform.py:791] Set PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
+(Worker_TP1 pid=168858) INFO 09-10 08:34:01 [kernel.py:295] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native'])
+(Worker_TP1 pid=168858) INFO 09-10 08:34:01 [utils.py:174] No quantization signature detected from model files for "/opt/foundation_model/Qwen3.6-27B". The model will be loaded as float. To force a quantization method, pass "--quantization <method>" explicitly.
+(Worker_TP1 pid=168858) WARNING 09-10 08:34:01 [platform.py:1126] GPU-specific parameter is not supported on Ascend. parameter=disable_cascade_attn, value=True, action: resetting to False.
+(Worker_TP1 pid=168858) INFO 09-10 08:34:01 [ascend_config.py:935] Dynamic EPLB is False
+(Worker_TP1 pid=168858) INFO 09-10 08:34:01 [ascend_config.py:936] The number of redundant experts is 0
+(Worker_TP1 pid=168858) INFO 09-10 08:34:01 [platform.py:791] Set PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
+(Worker_TP0 pid=168857) INFO 09-10 08:34:01 [flash_attn_npu_v1.py:275] Ascend flash-attention-npu backend (v4) selected for 5 dspark draft attention layer(s) (head_size=128): ['model.layers.66.self_attn.attn', 'model.layers.64.self_attn.attn', 'model.layers.67.self_attn.attn', 'model.layers.68.self_attn.attn', 'model.layers.65.self_attn.attn']
+(Worker_TP0 pid=168857) INFO 09-10 08:34:01 [flash_attn_npu_v1.py:284] Ascend flash-attention-npu v4 loaded from /usr/local/python3.12.13/lib/python3.12/site-packages/flash_attn_npu_4/__init__.py
+(Worker_TP3 pid=168860) INFO 09-10 08:34:01 [flash_attn_npu_v1.py:275] Ascend flash-attention-npu backend (v4) selected for 5 dspark draft attention layer(s) (head_size=128): ['model.layers.66.self_attn.attn', 'model.layers.64.self_attn.attn', 'model.layers.67.self_attn.attn', 'model.layers.65.self_attn.attn', 'model.layers.68.self_attn.attn']
+(Worker_TP3 pid=168860) INFO 09-10 08:34:01 [flash_attn_npu_v1.py:284] Ascend flash-attention-npu v4 loaded from /usr/local/python3.12.13/lib/python3.12/site-packages/flash_attn_npu_4/__init__.py
+(Worker_TP2 pid=168859) INFO 09-10 08:34:01 [flash_attn_npu_v1.py:275] Ascend flash-attention-npu backend (v4) selected for 5 dspark draft attention layer(s) (head_size=128): ['model.layers.68.self_attn.attn', 'model.layers.66.self_attn.attn', 'model.layers.64.self_attn.attn', 'model.layers.67.self_attn.attn', 'model.layers.65.self_attn.attn']
+(Worker_TP2 pid=168859) INFO 09-10 08:34:01 [flash_attn_npu_v1.py:284] Ascend flash-attention-npu v4 loaded from /usr/local/python3.12.13/lib/python3.12/site-packages/flash_attn_npu_4/__init__.py
+(Worker_TP1 pid=168858) INFO 09-10 08:34:01 [flash_attn_npu_v1.py:275] Ascend flash-attention-npu backend (v4) selected for 5 dspark draft attention layer(s) (head_size=128): ['model.layers.67.self_attn.attn', 'model.layers.66.self_attn.attn', 'model.layers.64.self_attn.attn', 'model.layers.65.self_attn.attn', 'model.layers.68.self_attn.attn']
+(Worker_TP1 pid=168858) INFO 09-10 08:34:01 [flash_attn_npu_v1.py:284] Ascend flash-attention-npu v4 loaded from /usr/local/python3.12.13/lib/python3.12/site-packages/flash_attn_npu_4/__init__.py
+(Worker_TP0 pid=168857) INFO 09-10 08:34:02 [kernel_warmup.py:41] Starting Triton kernel warmup.
+(Worker_TP2 pid=168859) INFO 09-10 08:34:02 [kernel_warmup.py:41] Starting Triton kernel warmup.
+(Worker_TP1 pid=168858) INFO 09-10 08:34:02 [kernel_warmup.py:41] Starting Triton kernel warmup.
+(Worker_TP3 pid=168860) INFO 09-10 08:34:02 [kernel_warmup.py:41] Starting Triton kernel warmup.
+(Worker_TP0 pid=168857) INFO 09-10 08:34:02 [kernel_warmup.py:33] rejection_sampler Triton warmup complete in 0.052s.
+(Worker_TP2 pid=168859) INFO 09-10 08:34:02 [kernel_warmup.py:33] rejection_sampler Triton warmup complete in 0.052s.
+(Worker_TP1 pid=168858) INFO 09-10 08:34:02 [kernel_warmup.py:33] rejection_sampler Triton warmup complete in 0.053s.
+(Worker_TP3 pid=168860) INFO 09-10 08:34:02 [kernel_warmup.py:33] rejection_sampler Triton warmup complete in 0.055s.
+(Worker_TP0 pid=168857) INFO 09-10 08:34:02 [kernel_warmup.py:33] penalties Triton warmup complete in 0.019s.
+(Worker_TP0 pid=168857) INFO 09-10 08:34:02 [kernel_warmup.py:33] rms Triton warmup complete in 0.000s.
+(Worker_TP0 pid=168857) INFO 09-10 08:34:02 [kernel_warmup.py:49] Triton kernel warmup finished in 0.072s.
+(Worker_TP2 pid=168859) INFO 09-10 08:34:02 [kernel_warmup.py:33] penalties Triton warmup complete in 0.020s.
+(Worker_TP2 pid=168859) INFO 09-10 08:34:02 [kernel_warmup.py:33] rms Triton warmup complete in 0.000s.
+(Worker_TP1 pid=168858) INFO 09-10 08:34:02 [kernel_warmup.py:33] penalties Triton warmup complete in 0.019s.
+(Worker_TP1 pid=168858) INFO 09-10 08:34:02 [kernel_warmup.py:33] rms Triton warmup complete in 0.000s.
+(Worker_TP2 pid=168859) INFO 09-10 08:34:02 [kernel_warmup.py:49] Triton kernel warmup finished in 0.072s.
+(Worker_TP1 pid=168858) INFO 09-10 08:34:02 [kernel_warmup.py:49] Triton kernel warmup finished in 0.073s.
+(Worker_TP3 pid=168860) INFO 09-10 08:34:02 [kernel_warmup.py:33] penalties Triton warmup complete in 0.020s.
+(Worker_TP3 pid=168860) INFO 09-10 08:34:02 [kernel_warmup.py:33] rms Triton warmup complete in 0.000s.
+(Worker_TP3 pid=168860) INFO 09-10 08:34:02 [kernel_warmup.py:49] Triton kernel warmup finished in 0.076s.
+Capturing CUDA graphs (FULL):   0%|          | 0/4 [00:00<?, ?it/s][rank0]:[W910 08:34:02.536278410 NPUGraph.cpp:223] Warning: Waiting for pending NCCL work to finish before starting graph capture. (function operator())
+[rank1]:[W910 08:34:02.536697230 NPUGraph.cpp:223] Warning: Waiting for pending NCCL work to finish before starting graph capture. (function operator())
+[rank2]:[W910 08:34:02.536816940 NPUGraph.cpp:223] Warning: Waiting for pending NCCL work to finish before starting graph capture. (function operator())
+[rank3]:[W910 08:34:02.540577720 NPUGraph.cpp:223] Warning: Waiting for pending NCCL work to finish before starting graph capture. (function operator())
+Capturing CUDA graphs (FULL): 100%|██████████| 4/4 [00:04<00:00,  1.03s/it]
+(Worker_TP0 pid=168857) INFO 09-10 08:34:06 [speculator.py:127] Capturing model for DSpark speculator...
+Capturing dspark CUDA graphs (FULL):   0%|          | 0/4 [00:00<?, ?it/s](Worker_TP3 pid=168860) INFO 09-10 08:34:06 [speculator.py:127] Capturing model for DSpark speculator...
+(Worker_TP0 pid=168857) INFO 09-10 08:34:06 [flash_attn_npu_v1.py:490] Ascend flash-attention-npu v4 forward: q=(28, 8, 128) kv_cache=(5640, 128, 2, 128) page_table=(4, 264) cu_seqlens_q=(5,) seqused_k=(4,) num_reqs=4 heads=8/2 head_size=128 block_size=128 max_seqlen_q=7 max_seqlen_k=33792 causal=False block_table_stride=(264, 1) kv_cache_contig=True q_contig=True
+(Worker_TP2 pid=168859) INFO 09-10 08:34:06 [speculator.py:127] Capturing model for DSpark speculator...
+(Worker_TP1 pid=168858) INFO 09-10 08:34:06 [speculator.py:127] Capturing model for DSpark speculator...
+Capturing dspark CUDA graphs (FULL):  25%|██▌       | 1/4 [00:00<00:02,  1.23it/s](Worker_TP0 pid=168857) INFO 09-10 08:34:07 [flash_attn_npu_v1.py:490] Ascend flash-attention-npu v4 forward: q=(21, 8, 128) kv_cache=(5640, 128, 2, 128) page_table=(3, 264) cu_seqlens_q=(4,) seqused_k=(3,) num_reqs=3 heads=8/2 head_size=128 block_size=128 max_seqlen_q=7 max_seqlen_k=33792 causal=False block_table_stride=(264, 1) kv_cache_contig=True q_contig=True
+Capturing dspark CUDA graphs (FULL):  50%|█████     | 2/4 [00:01<00:01,  1.10it/s](Worker_TP0 pid=168857) INFO 09-10 08:34:08 [flash_attn_npu_v1.py:490] Ascend flash-attention-npu v4 forward: q=(14, 8, 128) kv_cache=(5640, 128, 2, 128) page_table=(2, 264) cu_seqlens_q=(3,) seqused_k=(2,) num_reqs=2 heads=8/2 head_size=128 block_size=128 max_seqlen_q=7 max_seqlen_k=33792 causal=False block_table_stride=(264, 1) kv_cache_contig=True q_contig=True
+Capturing dspark CUDA graphs (FULL):  75%|███████▌  | 3/4 [00:02<00:00,  1.05it/s](Worker_TP0 pid=168857) INFO 09-10 08:34:09 [flash_attn_npu_v1.py:490] Ascend flash-attention-npu v4 forward: q=(7, 8, 128) kv_cache=(5640, 128, 2, 128) page_table=(1, 264) cu_seqlens_q=(2,) seqused_k=(1,) num_reqs=1 heads=8/2 head_size=128 block_size=128 max_seqlen_q=7 max_seqlen_k=33792 causal=False block_table_stride=(264, 1) kv_cache_contig=True q_contig=True
+(Worker_TP2 pid=168859) INFO 09-10 08:34:10 [model_runner.py:747] Graph capturing finished in 8 secs, took 0.31 GiB
+Capturing dspark CUDA graphs (FULL): 100%|██████████| 4/4 [00:03<00:00,  1.05it/s]
+(Worker_TP2 pid=168859) INFO 09-10 08:34:10 [worker.py:819] Free memory on device (29.15/29.49 GiB) on startup. Desired GPU memory utilization is (0.9, 26.54 GiB). Actual usage: 14.14 GiB for weights, 0.57 GiB for peak activation, 0.44 GiB for non-torch memory, 0.31 GiB for NPU graph memory. Replace gpu_memory_utilization with `--kv-cache-memory=11744372838` (10.94 GiB) to fit into requested memory, or `--kv-cache-memory=14545039872` (13.55 GiB) to fully utilize NPU free memory. Current KV cache memory: 11.4 GiB. After warmup: torch reserved memory 25.9 GiB, torch allocated memory 25.6 GiB.
+(Worker_TP0 pid=168857) INFO 09-10 08:34:10 [model_runner.py:747] Graph capturing finished in 8 secs, took 0.31 GiB
+(Worker_TP0 pid=168857) INFO 09-10 08:34:10 [worker.py:819] Free memory on device (29.14/29.49 GiB) on startup. Desired GPU memory utilization is (0.9, 26.54 GiB). Actual usage: 14.14 GiB for weights, 0.57 GiB for peak activation, 0.44 GiB for non-torch memory, 0.31 GiB for NPU graph memory. Replace gpu_memory_utilization with `--kv-cache-memory=11743168614` (10.94 GiB) to fit into requested memory, or `--kv-cache-memory=14539457024` (13.54 GiB) to fully utilize NPU free memory. Current KV cache memory: 11.4 GiB. After warmup: torch reserved memory 25.9 GiB, torch allocated memory 25.6 GiB.
+(Worker_TP3 pid=168860) INFO 09-10 08:34:10 [model_runner.py:747] Graph capturing finished in 8 secs, took 0.32 GiB
+(Worker_TP3 pid=168860) INFO 09-10 08:34:10 [worker.py:819] Free memory on device (29.15/29.49 GiB) on startup. Desired GPU memory utilization is (0.9, 26.54 GiB). Actual usage: 14.14 GiB for weights, 0.57 GiB for peak activation, 0.44 GiB for non-torch memory, 0.32 GiB for NPU graph memory. Replace gpu_memory_utilization with `--kv-cache-memory=11736774758` (10.93 GiB) to fit into requested memory, or `--kv-cache-memory=14537359872` (13.54 GiB) to fully utilize NPU free memory. Current KV cache memory: 11.4 GiB. After warmup: torch reserved memory 25.9 GiB, torch allocated memory 25.6 GiB.
+(Worker_TP1 pid=168858) INFO 09-10 08:34:10 [model_runner.py:747] Graph capturing finished in 8 secs, took 0.32 GiB
+(Worker_TP1 pid=168858) INFO 09-10 08:34:10 [worker.py:819] Free memory on device (29.15/29.49 GiB) on startup. Desired GPU memory utilization is (0.9, 26.54 GiB). Actual usage: 14.14 GiB for weights, 0.57 GiB for peak activation, 0.44 GiB for non-torch memory, 0.32 GiB for NPU graph memory. Replace gpu_memory_utilization with `--kv-cache-memory=11735025766` (10.93 GiB) to fit into requested memory, or `--kv-cache-memory=14536360448` (13.54 GiB) to fully utilize NPU free memory. Current KV cache memory: 11.4 GiB. After warmup: torch reserved memory 25.9 GiB, torch allocated memory 25.6 GiB.
+(Worker_TP2 pid=168859) INFO 09-10 08:34:12 [cpu_binding.py:543] [cpu_bind_mode] mode=topo_affinity rank=2 visible_npus=[0, 1, 2, 3]
+(Worker_TP2 pid=168859) INFO 09-10 08:34:12 [cpu_binding.py:627] The CPU allocation plan is as follows:
+(Worker_TP2 pid=168859) INFO 09-10 08:34:12 [cpu_binding.py:641] NPU2: main=[130 131 132 133 134 135 136 137 138 139 140 141 142 143 144 145 146 147 148 149 150 151 152 153 154 155 156 157]  acl=[158]  release=[[159]]
+(Worker_TP2 pid=168859) INFO 09-10 08:34:12 [cpu_binding.py:667] [migrate] NPU:2 -> NUMA [4]
+(Worker_TP0 pid=168857) INFO 09-10 08:34:12 [cpu_binding.py:543] [cpu_bind_mode] mode=topo_affinity rank=0 visible_npus=[0, 1, 2, 3]
+(Worker_TP0 pid=168857) INFO 09-10 08:34:12 [cpu_binding.py:627] The CPU allocation plan is as follows:
+(Worker_TP0 pid=168857) INFO 09-10 08:34:12 [cpu_binding.py:641] NPU0: main=[194 195 196 197 198 199 200 201 202 203 204 205 206 207 208 209 210 211 212 213 214 215 216 217 218 219 220 221]  acl=[222]  release=[[223]]
+(Worker_TP1 pid=168858) INFO 09-10 08:34:13 [cpu_binding.py:543] [cpu_bind_mode] mode=topo_affinity rank=1 visible_npus=[0, 1, 2, 3]
+(Worker_TP1 pid=168858) INFO 09-10 08:34:13 [cpu_binding.py:627] The CPU allocation plan is as follows:
+(Worker_TP1 pid=168858) INFO 09-10 08:34:13 [cpu_binding.py:641] NPU1: main=[226 227 228 229 230 231 232 233 234 235 236 237 238 239 240 241 242 243 244 245 246 247 248 249 250 251 252 253]  acl=[254]  release=[[255]]
+(Worker_TP3 pid=168860) INFO 09-10 08:34:13 [cpu_binding.py:543] [cpu_bind_mode] mode=topo_affinity rank=3 visible_npus=[0, 1, 2, 3]
+(Worker_TP3 pid=168860) INFO 09-10 08:34:13 [cpu_binding.py:627] The CPU allocation plan is as follows:
+(Worker_TP3 pid=168860) INFO 09-10 08:34:13 [cpu_binding.py:641] NPU3: main=[162 163 164 165 166 167 168 169 170 171 172 173 174 175 176 177 178 179 180 181 182 183 184 185 186 187 188 189]  acl=[190]  release=[[191]]
+(Worker_TP0 pid=168857) INFO 09-10 08:34:13 [cpu_binding.py:667] [migrate] NPU:0 -> NUMA [6]
+(Worker_TP1 pid=168858) INFO 09-10 08:34:13 [cpu_binding.py:667] [migrate] NPU:1 -> NUMA [7]
+(Worker_TP3 pid=168860) INFO 09-10 08:34:13 [cpu_binding.py:667] [migrate] NPU:3 -> NUMA [5]
+(Worker_TP0 pid=168857) INFO 09-10 08:34:17 [cpu_binding.py:775] NPU0(PCI 0000:c1:00.0): sq_send_trigger_irq IRQ_ID=3182 -> CPU192, cq_update_irq IRQ_ID=3183 -> CPU193
+(Worker_TP2 pid=168859) INFO 09-10 08:34:17 [cpu_binding.py:775] NPU2(PCI 0000:81:00.0): sq_send_trigger_irq IRQ_ID=2670 -> CPU128, cq_update_irq IRQ_ID=2671 -> CPU129
+(Worker_TP3 pid=168860) INFO 09-10 08:34:18 [cpu_binding.py:775] NPU3(PCI 0000:82:00.0): sq_send_trigger_irq IRQ_ID=2926 -> CPU160, cq_update_irq IRQ_ID=2927 -> CPU161
+(Worker_TP1 pid=168858) INFO 09-10 08:34:19 [cpu_binding.py:775] NPU1(PCI 0000:c2:00.0): sq_send_trigger_irq IRQ_ID=3439 -> CPU224, cq_update_irq IRQ_ID=3440 -> CPU225
+(EngineCore pid=168534) INFO 09-10 08:34:19 [core.py:340] init engine (profile, create kv cache, warmup model) took 94.29 s (compilation: 67.81 s)
+(EngineCore pid=168534) [transformers] The `use_fast` parameter is deprecated and will be removed in a future version. Use `backend="torchvision"` instead of `use_fast=True`, or `backend="pil"` instead of `use_fast=False`.
+(EngineCore pid=168534) INFO 09-10 08:34:28 [ascend_config.py:935] Dynamic EPLB is False
+(EngineCore pid=168534) INFO 09-10 08:34:28 [ascend_config.py:936] The number of redundant experts is 0
+(EngineCore pid=168534) INFO 09-10 08:34:28 [vllm.py:1109] Asynchronous scheduling is enabled.
+(EngineCore pid=168534) WARNING 09-10 08:34:28 [vllm.py:1133] Disabling cascade attention (not yet compatible with async speculative decoding).
+(EngineCore pid=168534) INFO 09-10 08:34:28 [kernel.py:295] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native'])
+(EngineCore pid=168534) WARNING 09-10 08:34:28 [vllm.py:1718] max_num_scheduled_tokens is set to 4072 based on the speculative decoding settings. This may lead to suboptimal performance. Consider increasing max_num_batched_tokens to accommodate the additional draft token slots, or decrease num_speculative_tokens or max_num_seqs.
+(EngineCore pid=168534) INFO 09-10 08:34:28 [utils.py:174] No quantization signature detected from model files for "/opt/foundation_model/Qwen3.6-27B". The model will be loaded as float. To force a quantization method, pass "--quantization <method>" explicitly.
+(EngineCore pid=168534) WARNING 09-10 08:34:28 [platform.py:1126] GPU-specific parameter is not supported on Ascend. parameter=disable_cascade_attn, value=True, action: resetting to False.
+(EngineCore pid=168534) INFO 09-10 08:34:28 [platform.py:791] Set PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
+(EngineCore pid=168534) WARNING 09-10 08:34:28 [vllm.py:2228] Model Runner V2 does not yet support the thinking_token_budget request parameter. Set VLLM_USE_V2_MODEL_RUNNER=0 if this is required.
+(EngineCore pid=168534) INFO 09-10 08:34:28 [compilation.py:329] Enabled custom fusions: norm_quant, act_quant
+(APIServer pid=167872) INFO 09-10 08:34:28 [api_server.py:673] Supported tasks: ['generate']
+(APIServer pid=167872) INFO 09-10 08:34:28 [parser_manager.py:37] "auto" tool choice has been enabled.
+(APIServer pid=167872) WARNING 09-10 08:34:28 [model.py:1546] Default vLLM sampling parameters have been overridden by the model's `generation_config.json`: `{'temperature': 1.0, 'top_k': 20, 'top_p': 0.95}`. If this is not intended, please relaunch vLLM instance with `--generation-config vllm`.
+(APIServer pid=167872) INFO 09-10 08:34:29 [hf.py:540] Detected the chat template content format to be 'openai'. You can set `--chat-template-content-format` to override this.
+(APIServer pid=167872) INFO 09-10 08:34:50 [base.py:236] Multi-modal warmup completed in 20.404s
+(APIServer pid=167872) INFO 09-10 08:34:51 [base.py:236] Readonly multi-modal warmup completed in 1.462s
+(APIServer pid=167872) INFO 09-10 08:34:51 [api_server.py:677] Starting vLLM server on http://0.0.0.0:49008
+(APIServer pid=167872) INFO 09-10 08:34:51 [launcher.py:37] Available routes are:
+(APIServer pid=167872) INFO 09-10 08:34:51 [launcher.py:46] Route: /openapi.json, Methods: HEAD, GET
+(APIServer pid=167872) INFO 09-10 08:34:51 [launcher.py:46] Route: /docs, Methods: HEAD, GET
+(APIServer pid=167872) INFO 09-10 08:34:51 [launcher.py:46] Route: /docs/oauth2-redirect, Methods: HEAD, GET
+(APIServer pid=167872) INFO 09-10 08:34:51 [launcher.py:46] Route: /redoc, Methods: HEAD, GET
+(APIServer pid=167872) INFO 09-10 08:34:51 [launcher.py:46] Route: /load, Methods: GET
+(APIServer pid=167872) INFO 09-10 08:34:51 [launcher.py:46] Route: /version, Methods: GET
+(APIServer pid=167872) INFO 09-10 08:34:51 [launcher.py:46] Route: /health, Methods: GET
+(APIServer pid=167872) INFO 09-10 08:34:51 [launcher.py:46] Route: /metrics, Methods: GET
+(APIServer pid=167872) INFO 09-10 08:34:51 [launcher.py:46] Route: /tokenize, Methods: POST
+(APIServer pid=167872) INFO 09-10 08:34:51 [launcher.py:46] Route: /detokenize, Methods: POST
+(APIServer pid=167872) INFO 09-10 08:34:51 [launcher.py:46] Route: /v1/models, Methods: GET
+(APIServer pid=167872) INFO 09-10 08:34:51 [launcher.py:46] Route: /ping, Methods: GET
+(APIServer pid=167872) INFO 09-10 08:34:51 [launcher.py:46] Route: /ping, Methods: POST
+(APIServer pid=167872) INFO 09-10 08:34:51 [launcher.py:46] Route: /invocations, Methods: POST
+(APIServer pid=167872) INFO 09-10 08:34:51 [launcher.py:46] Route: /v1/chat/completions, Methods: POST
+(APIServer pid=167872) INFO 09-10 08:34:51 [launcher.py:46] Route: /v1/chat/completions/batch, Methods: POST
+(APIServer pid=167872) INFO 09-10 08:34:51 [launcher.py:46] Route: /v1/responses, Methods: POST
+(APIServer pid=167872) INFO 09-10 08:34:51 [launcher.py:46] Route: /v1/responses/{response_id}, Methods: GET
+(APIServer pid=167872) INFO 09-10 08:34:51 [launcher.py:46] Route: /v1/responses/{response_id}/cancel, Methods: POST
+(APIServer pid=167872) INFO 09-10 08:34:51 [launcher.py:46] Route: /v1/completions, Methods: POST
+(APIServer pid=167872) INFO 09-10 08:34:51 [launcher.py:46] Route: /v1/messages, Methods: POST
+(APIServer pid=167872) INFO 09-10 08:34:51 [launcher.py:46] Route: /v1/messages/count_tokens, Methods: POST
+(APIServer pid=167872) INFO 09-10 08:34:51 [launcher.py:46] Route: /generative_scoring, Methods: POST
+(APIServer pid=167872) INFO 09-10 08:34:51 [launcher.py:46] Route: /scale_elastic_ep, Methods: POST
+(APIServer pid=167872) INFO 09-10 08:34:51 [launcher.py:46] Route: /is_scaling_elastic_ep, Methods: POST
+(APIServer pid=167872) INFO 09-10 08:34:51 [launcher.py:46] Route: /v1/chat/completions/render, Methods: POST
+(APIServer pid=167872) INFO 09-10 08:34:51 [launcher.py:46] Route: /v1/completions/render, Methods: POST
+(APIServer pid=167872) INFO 09-10 08:34:51 [launcher.py:46] Route: /v1/chat/completions/derender, Methods: POST
+(APIServer pid=167872) INFO 09-10 08:34:51 [launcher.py:46] Route: /v1/completions/derender, Methods: POST
+(APIServer pid=167872) INFO 09-10 08:34:51 [launcher.py:46] Route: /inference/v1/generate, Methods: POST
+(APIServer pid=167872) INFO:     Started server process [167872]
+(APIServer pid=167872) INFO:     Waiting for application startup.
+(APIServer pid=167872) INFO:     Application startup complete.
+(APIServer pid=167872) INFO:     70.255.29.231:59118 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+(Worker_TP0 pid=168857) INFO 09-10 08:36:29 [aclgraph_utils.py:94] run_fullgraph with num_tokens=8
+(APIServer pid=167872) INFO 09-10 08:36:32 [loggers.py:310] Engine 000: Avg prompt throughput: 1.9 tokens/s, Avg generation throughput: 19.1 tokens/s, Running: 1 reqs, Waiting: 0 reqs, GPU KV cache usage: 5.5%, Prefix cache hit rate: 0.0%
+(APIServer pid=167872) INFO 09-10 08:36:32 [metrics.py:120] SpecDecoding metrics: Mean acceptance length: 2.79, Accepted throughput: 0.99 tokens/s, Drafted throughput: 3.85 tokens/s, Accepted: 122 tokens, Drafted: 476 tokens, Per-position acceptance rate: 0.485, 0.397, 0.368, 0.250, 0.132, 0.103, 0.059, Avg Draft acceptance rate: 25.6%
+(APIServer pid=167872) INFO 09-10 08:36:42 [loggers.py:310] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 86.9 tokens/s, Running: 1 reqs, Waiting: 0 reqs, GPU KV cache usage: 5.5%, Prefix cache hit rate: 0.0%
+(APIServer pid=167872) INFO 09-10 08:36:42 [metrics.py:120] SpecDecoding metrics: Mean acceptance length: 3.78, Accepted throughput: 63.89 tokens/s, Drafted throughput: 160.99 tokens/s, Accepted: 639 tokens, Drafted: 1610 tokens, Per-position acceptance rate: 0.604, 0.539, 0.474, 0.383, 0.304, 0.270, 0.204, Avg Draft acceptance rate: 39.7%
+(APIServer pid=167872) INFO 09-10 08:36:52 [loggers.py:310] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 68.8 tokens/s, Running: 0 reqs, Waiting: 0 reqs, GPU KV cache usage: 0.0%, Prefix cache hit rate: 0.0%
+(APIServer pid=167872) INFO 09-10 08:36:52 [metrics.py:120] SpecDecoding metrics: Mean acceptance length: 4.87, Accepted throughput: 55.30 tokens/s, Drafted throughput: 100.10 tokens/s, Accepted: 553 tokens, Drafted: 1001 tokens, Per-position acceptance rate: 0.601, 0.587, 0.573, 0.552, 0.524, 0.517, 0.510, Avg Draft acceptance rate: 55.2%
+(APIServer pid=167872) INFO 09-10 08:37:02 [loggers.py:310] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs, GPU KV cache usage: 0.0%, Prefix cache hit rate: 0.0%
+
+
+# fia_sink log
+(Worker_TP0 pid=174204) INFO 09-10 08:41:37 [worker.py:598] Available KV cache memory: 11.40 GiB
+(EngineCore pid=173881) WARNING 09-10 08:41:38 [patch_kv_cache_utils.py:86] Add 11 padding layers, may waste at most 220.00% KV cache memory
+(EngineCore pid=173881) INFO 09-10 08:41:38 [patch_kv_cache_utils.py:97] KV Group min_size=16 layer_counts=[5, 16, 48] group_size=16 num_groups=5
+(EngineCore pid=173881) INFO 09-10 08:41:38 [kv_cache_utils.py:2177] GPU KV cache size: 216,914 tokens
+(EngineCore pid=173881) INFO 09-10 08:41:38 [kv_cache_utils.py:2178] Maximum concurrency for 32,768 tokens per request: 6.62x
+(Worker_TP1 pid=174205) INFO 09-10 08:41:39 [fia_sink_v1.py:214] Ascend FIA sink backend selected for 5 dspark draft attention layer(s): ['model.layers.64.self_attn.attn', 'model.layers.65.self_attn.attn', 'model.layers.66.self_attn.attn', 'model.layers.67.self_attn.attn', 'model.layers.68.self_attn.attn']
+(Worker_TP1 pid=174205) INFO 09-10 08:41:39 [kernel.py:295] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native'])
+(Worker_TP1 pid=174205) INFO 09-10 08:41:39 [utils.py:174] No quantization signature detected from model files for "/opt/foundation_model/Qwen3.6-27B". The model will be loaded as float. To force a quantization method, pass "--quantization <method>" explicitly.
+(Worker_TP1 pid=174205) WARNING 09-10 08:41:39 [platform.py:1126] GPU-specific parameter is not supported on Ascend. parameter=disable_cascade_attn, value=True, action: resetting to False.
+(Worker_TP1 pid=174205) INFO 09-10 08:41:39 [ascend_config.py:935] Dynamic EPLB is False
+(Worker_TP1 pid=174205) INFO 09-10 08:41:39 [ascend_config.py:936] The number of redundant experts is 0
+(Worker_TP1 pid=174205) INFO 09-10 08:41:39 [platform.py:791] Set PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
+(Worker_TP0 pid=174204) INFO 09-10 08:41:39 [fia_sink_v1.py:214] Ascend FIA sink backend selected for 5 dspark draft attention layer(s): ['model.layers.64.self_attn.attn', 'model.layers.65.self_attn.attn', 'model.layers.66.self_attn.attn', 'model.layers.67.self_attn.attn', 'model.layers.68.self_attn.attn']
+(Worker_TP3 pid=174207) INFO 09-10 08:41:39 [fia_sink_v1.py:214] Ascend FIA sink backend selected for 5 dspark draft attention layer(s): ['model.layers.64.self_attn.attn', 'model.layers.65.self_attn.attn', 'model.layers.66.self_attn.attn', 'model.layers.67.self_attn.attn', 'model.layers.68.self_attn.attn']
+(Worker_TP0 pid=174204) INFO 09-10 08:41:39 [kernel.py:295] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native'])
+(Worker_TP0 pid=174204) INFO 09-10 08:41:39 [utils.py:174] No quantization signature detected from model files for "/opt/foundation_model/Qwen3.6-27B". The model will be loaded as float. To force a quantization method, pass "--quantization <method>" explicitly.
+(Worker_TP0 pid=174204) WARNING 09-10 08:41:39 [platform.py:1126] GPU-specific parameter is not supported on Ascend. parameter=disable_cascade_attn, value=True, action: resetting to False.
+(Worker_TP0 pid=174204) INFO 09-10 08:41:39 [ascend_config.py:935] Dynamic EPLB is False
+(Worker_TP0 pid=174204) INFO 09-10 08:41:39 [ascend_config.py:936] The number of redundant experts is 0
+(Worker_TP0 pid=174204) INFO 09-10 08:41:39 [platform.py:791] Set PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
+(Worker_TP2 pid=174206) INFO 09-10 08:41:39 [fia_sink_v1.py:214] Ascend FIA sink backend selected for 5 dspark draft attention layer(s): ['model.layers.64.self_attn.attn', 'model.layers.65.self_attn.attn', 'model.layers.66.self_attn.attn', 'model.layers.67.self_attn.attn', 'model.layers.68.self_attn.attn']
+(Worker_TP3 pid=174207) INFO 09-10 08:41:39 [kernel.py:295] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native'])
+(Worker_TP3 pid=174207) INFO 09-10 08:41:39 [utils.py:174] No quantization signature detected from model files for "/opt/foundation_model/Qwen3.6-27B". The model will be loaded as float. To force a quantization method, pass "--quantization <method>" explicitly.
+(Worker_TP3 pid=174207) WARNING 09-10 08:41:39 [platform.py:1126] GPU-specific parameter is not supported on Ascend. parameter=disable_cascade_attn, value=True, action: resetting to False.
+(Worker_TP3 pid=174207) INFO 09-10 08:41:39 [ascend_config.py:935] Dynamic EPLB is False
+(Worker_TP3 pid=174207) INFO 09-10 08:41:39 [ascend_config.py:936] The number of redundant experts is 0
+(Worker_TP3 pid=174207) INFO 09-10 08:41:39 [platform.py:791] Set PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
+(Worker_TP1 pid=174205) INFO 09-10 08:41:39 [fia_sink_v1.py:214] Ascend FIA sink backend selected for 5 dspark draft attention layer(s): ['model.layers.67.self_attn.attn', 'model.layers.64.self_attn.attn', 'model.layers.66.self_attn.attn', 'model.layers.68.self_attn.attn', 'model.layers.65.self_attn.attn']
+(Worker_TP2 pid=174206) INFO 09-10 08:41:39 [kernel.py:295] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native'])
+(Worker_TP2 pid=174206) INFO 09-10 08:41:39 [utils.py:174] No quantization signature detected from model files for "/opt/foundation_model/Qwen3.6-27B". The model will be loaded as float. To force a quantization method, pass "--quantization <method>" explicitly.
+(Worker_TP2 pid=174206) WARNING 09-10 08:41:39 [platform.py:1126] GPU-specific parameter is not supported on Ascend. parameter=disable_cascade_attn, value=True, action: resetting to False.
+(Worker_TP2 pid=174206) INFO 09-10 08:41:39 [ascend_config.py:935] Dynamic EPLB is False
+(Worker_TP2 pid=174206) INFO 09-10 08:41:39 [ascend_config.py:936] The number of redundant experts is 0
+(Worker_TP2 pid=174206) INFO 09-10 08:41:39 [platform.py:791] Set PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
+(Worker_TP0 pid=174204) INFO 09-10 08:41:39 [fia_sink_v1.py:214] Ascend FIA sink backend selected for 5 dspark draft attention layer(s): ['model.layers.65.self_attn.attn', 'model.layers.68.self_attn.attn', 'model.layers.64.self_attn.attn', 'model.layers.67.self_attn.attn', 'model.layers.66.self_attn.attn']
+(Worker_TP3 pid=174207) INFO 09-10 08:41:39 [fia_sink_v1.py:214] Ascend FIA sink backend selected for 5 dspark draft attention layer(s): ['model.layers.67.self_attn.attn', 'model.layers.68.self_attn.attn', 'model.layers.65.self_attn.attn', 'model.layers.64.self_attn.attn', 'model.layers.66.self_attn.attn']
+(Worker_TP2 pid=174206) INFO 09-10 08:41:39 [fia_sink_v1.py:214] Ascend FIA sink backend selected for 5 dspark draft attention layer(s): ['model.layers.67.self_attn.attn', 'model.layers.64.self_attn.attn', 'model.layers.68.self_attn.attn', 'model.layers.65.self_attn.attn', 'model.layers.66.self_attn.attn']
+(Worker_TP0 pid=174204) INFO 09-10 08:41:39 [kernel_warmup.py:41] Starting Triton kernel warmup.
+(Worker_TP1 pid=174205) INFO 09-10 08:41:39 [kernel_warmup.py:41] Starting Triton kernel warmup.
+(Worker_TP2 pid=174206) INFO 09-10 08:41:39 [kernel_warmup.py:41] Starting Triton kernel warmup.
+(Worker_TP3 pid=174207) INFO 09-10 08:41:39 [kernel_warmup.py:41] Starting Triton kernel warmup.
+(Worker_TP1 pid=174205) INFO 09-10 08:41:39 [kernel_warmup.py:33] rejection_sampler Triton warmup complete in 0.054s.
+(Worker_TP0 pid=174204) INFO 09-10 08:41:39 [kernel_warmup.py:33] rejection_sampler Triton warmup complete in 0.055s.
+(Worker_TP3 pid=174207) INFO 09-10 08:41:39 [kernel_warmup.py:33] rejection_sampler Triton warmup complete in 0.058s.
+(Worker_TP2 pid=174206) INFO 09-10 08:41:39 [kernel_warmup.py:33] rejection_sampler Triton warmup complete in 0.059s.
+(Worker_TP1 pid=174205) INFO 09-10 08:41:39 [kernel_warmup.py:33] penalties Triton warmup complete in 0.019s.
+(Worker_TP1 pid=174205) INFO 09-10 08:41:39 [kernel_warmup.py:33] rms Triton warmup complete in 0.000s.
+(Worker_TP1 pid=174205) INFO 09-10 08:41:39 [kernel_warmup.py:49] Triton kernel warmup finished in 0.074s.
+(Worker_TP0 pid=174204) INFO 09-10 08:41:39 [kernel_warmup.py:33] penalties Triton warmup complete in 0.020s.
+(Worker_TP0 pid=174204) INFO 09-10 08:41:39 [kernel_warmup.py:33] rms Triton warmup complete in 0.000s.
+(Worker_TP0 pid=174204) INFO 09-10 08:41:39 [kernel_warmup.py:49] Triton kernel warmup finished in 0.075s.
+(Worker_TP3 pid=174207) INFO 09-10 08:41:39 [kernel_warmup.py:33] penalties Triton warmup complete in 0.019s.
+(Worker_TP3 pid=174207) INFO 09-10 08:41:39 [kernel_warmup.py:33] rms Triton warmup complete in 0.000s.
+(Worker_TP3 pid=174207) INFO 09-10 08:41:39 [kernel_warmup.py:49] Triton kernel warmup finished in 0.078s.
+(Worker_TP2 pid=174206) INFO 09-10 08:41:39 [kernel_warmup.py:33] penalties Triton warmup complete in 0.020s.
+(Worker_TP2 pid=174206) INFO 09-10 08:41:39 [kernel_warmup.py:33] rms Triton warmup complete in 0.000s.
+(Worker_TP2 pid=174206) INFO 09-10 08:41:39 [kernel_warmup.py:49] Triton kernel warmup finished in 0.080s.
+Capturing CUDA graphs (FULL):   0%|          | 0/4 [00:00<?, ?it/s][rank0]:[W910 08:41:41.713252900 NPUGraph.cpp:223] Warning: Waiting for pending NCCL work to finish before starting graph capture. (function operator())
+[rank1]:[W910 08:41:41.713300490 NPUGraph.cpp:223] Warning: Waiting for pending NCCL work to finish before starting graph capture. (function operator())
+[rank3]:[W910 08:41:41.713584660 NPUGraph.cpp:223] Warning: Waiting for pending NCCL work to finish before starting graph capture. (function operator())
+[rank2]:[W910 08:41:41.718575810 NPUGraph.cpp:223] Warning: Waiting for pending NCCL work to finish before starting graph capture. (function operator())
+Capturing CUDA graphs (FULL):  75%|███████▌  | 3/4 [00:03<00:01,  1.13s/it](Worker_TP1 pid=174205) INFO 09-10 08:41:44 [speculator.py:127] Capturing model for DSpark speculator...
+(Worker_TP3 pid=174207) INFO 09-10 08:41:44 [speculator.py:127] Capturing model for DSpark speculator...
+(Worker_TP2 pid=174206) INFO 09-10 08:41:44 [speculator.py:127] Capturing model for DSpark speculator...
+Capturing CUDA graphs (FULL): 100%|██████████| 4/4 [00:04<00:00,  1.15s/it]
+(Worker_TP0 pid=174204) INFO 09-10 08:41:44 [speculator.py:127] Capturing model for DSpark speculator...
+Capturing dspark CUDA graphs (FULL):  75%|███████▌  | 3/4 [00:02<00:00,  1.06it/s](Worker_TP1 pid=174205) INFO 09-10 08:41:48 [model_runner.py:747] Graph capturing finished in 9 secs, took 0.33 GiB
+(Worker_TP1 pid=174205) INFO 09-10 08:41:48 [worker.py:819] Free memory on device (29.15/29.49 GiB) on startup. Desired GPU memory utilization is (0.9, 26.54 GiB). Actual usage: 14.14 GiB for weights, 0.57 GiB for peak activation, 0.44 GiB for non-torch memory, 0.33 GiB for NPU graph memory. Replace gpu_memory_utilization with `--kv-cache-memory=11726678118` (10.92 GiB) to fit into requested memory, or `--kv-cache-memory=14527816192` (13.53 GiB) to fully utilize NPU free memory. Current KV cache memory: 11.4 GiB. After warmup: torch reserved memory 25.9 GiB, torch allocated memory 25.6 GiB.
+(Worker_TP3 pid=174207) INFO 09-10 08:41:48 [model_runner.py:747] Graph capturing finished in 9 secs, took 0.33 GiB
+(Worker_TP3 pid=174207) INFO 09-10 08:41:48 [worker.py:819] Free memory on device (29.15/29.49 GiB) on startup. Desired GPU memory utilization is (0.9, 26.54 GiB). Actual usage: 14.14 GiB for weights, 0.57 GiB for peak activation, 0.44 GiB for non-torch memory, 0.33 GiB for NPU graph memory. Replace gpu_memory_utilization with `--kv-cache-memory=11727681638` (10.92 GiB) to fit into requested memory, or `--kv-cache-memory=14528209408` (13.53 GiB) to fully utilize NPU free memory. Current KV cache memory: 11.4 GiB. After warmup: torch reserved memory 25.9 GiB, torch allocated memory 25.6 GiB.
+(Worker_TP2 pid=174206) INFO 09-10 08:41:48 [model_runner.py:747] Graph capturing finished in 9 secs, took 0.33 GiB
+Capturing dspark CUDA graphs (FULL): 100%|██████████| 4/4 [00:03<00:00,  1.06it/s]
+(Worker_TP2 pid=174206) INFO 09-10 08:41:48 [worker.py:819] Free memory on device (29.15/29.49 GiB) on startup. Desired GPU memory utilization is (0.9, 26.54 GiB). Actual usage: 14.14 GiB for weights, 0.57 GiB for peak activation, 0.44 GiB for non-torch memory, 0.33 GiB for NPU graph memory. Replace gpu_memory_utilization with `--kv-cache-memory=11722934374` (10.92 GiB) to fit into requested memory, or `--kv-cache-memory=14523892224` (13.53 GiB) to fully utilize NPU free memory. Current KV cache memory: 11.4 GiB. After warmup: torch reserved memory 25.9 GiB, torch allocated memory 25.6 GiB.
+(Worker_TP0 pid=174204) INFO 09-10 08:41:48 [model_runner.py:747] Graph capturing finished in 9 secs, took 0.33 GiB
+(Worker_TP0 pid=174204) INFO 09-10 08:41:48 [worker.py:819] Free memory on device (29.14/29.49 GiB) on startup. Desired GPU memory utilization is (0.9, 26.54 GiB). Actual usage: 14.14 GiB for weights, 0.57 GiB for peak activation, 0.44 GiB for non-torch memory, 0.33 GiB for NPU graph memory. Replace gpu_memory_utilization with `--kv-cache-memory=11727702118` (10.92 GiB) to fit into requested memory, or `--kv-cache-memory=14523605504` (13.53 GiB) to fully utilize NPU free memory. Current KV cache memory: 11.4 GiB. After warmup: torch reserved memory 25.9 GiB, torch allocated memory 25.6 GiB.
+(Worker_TP1 pid=174205) INFO 09-10 08:41:50 [cpu_binding.py:543] [cpu_bind_mode] mode=topo_affinity rank=1 visible_npus=[0, 1, 2, 3]
+(Worker_TP1 pid=174205) INFO 09-10 08:41:50 [cpu_binding.py:627] The CPU allocation plan is as follows:
+(Worker_TP1 pid=174205) INFO 09-10 08:41:50 [cpu_binding.py:641] NPU1: main=[226 227 228 229 230 231 232 233 234 235 236 237 238 239 240 241 242 243 244 245 246 247 248 249 250 251 252 253]  acl=[254]  release=[[255]]
+(Worker_TP3 pid=174207) INFO 09-10 08:41:50 [cpu_binding.py:543] [cpu_bind_mode] mode=topo_affinity rank=3 visible_npus=[0, 1, 2, 3]
+(Worker_TP3 pid=174207) INFO 09-10 08:41:50 [cpu_binding.py:627] The CPU allocation plan is as follows:
+(Worker_TP3 pid=174207) INFO 09-10 08:41:50 [cpu_binding.py:641] NPU3: main=[162 163 164 165 166 167 168 169 170 171 172 173 174 175 176 177 178 179 180 181 182 183 184 185 186 187 188 189]  acl=[190]  release=[[191]]
+(Worker_TP1 pid=174205) INFO 09-10 08:41:51 [cpu_binding.py:667] [migrate] NPU:1 -> NUMA [7]
+(Worker_TP3 pid=174207) INFO 09-10 08:41:51 [cpu_binding.py:667] [migrate] NPU:3 -> NUMA [5]
+(Worker_TP0 pid=174204) INFO 09-10 08:41:51 [cpu_binding.py:543] [cpu_bind_mode] mode=topo_affinity rank=0 visible_npus=[0, 1, 2, 3]
+(Worker_TP0 pid=174204) INFO 09-10 08:41:51 [cpu_binding.py:627] The CPU allocation plan is as follows:
+(Worker_TP0 pid=174204) INFO 09-10 08:41:51 [cpu_binding.py:641] NPU0: main=[194 195 196 197 198 199 200 201 202 203 204 205 206 207 208 209 210 211 212 213 214 215 216 217 218 219 220 221]  acl=[222]  release=[[223]]
+(Worker_TP2 pid=174206) INFO 09-10 08:41:51 [cpu_binding.py:543] [cpu_bind_mode] mode=topo_affinity rank=2 visible_npus=[0, 1, 2, 3]
+(Worker_TP2 pid=174206) INFO 09-10 08:41:51 [cpu_binding.py:627] The CPU allocation plan is as follows:
+(Worker_TP2 pid=174206) INFO 09-10 08:41:51 [cpu_binding.py:641] NPU2: main=[130 131 132 133 134 135 136 137 138 139 140 141 142 143 144 145 146 147 148 149 150 151 152 153 154 155 156 157]  acl=[158]  release=[[159]]
+(Worker_TP0 pid=174204) INFO 09-10 08:41:51 [cpu_binding.py:667] [migrate] NPU:0 -> NUMA [6]
+(Worker_TP2 pid=174206) INFO 09-10 08:41:51 [cpu_binding.py:667] [migrate] NPU:2 -> NUMA [4]
+(Worker_TP1 pid=174205) INFO 09-10 08:41:54 [cpu_binding.py:775] NPU1(PCI 0000:c2:00.0): sq_send_trigger_irq IRQ_ID=3439 -> CPU224, cq_update_irq IRQ_ID=3440 -> CPU225
+(Worker_TP2 pid=174206) INFO 09-10 08:41:56 [cpu_binding.py:775] NPU2(PCI 0000:81:00.0): sq_send_trigger_irq IRQ_ID=2670 -> CPU128, cq_update_irq IRQ_ID=2671 -> CPU129
+(Worker_TP0 pid=174204) INFO 09-10 08:42:00 [cpu_binding.py:775] NPU0(PCI 0000:c1:00.0): sq_send_trigger_irq IRQ_ID=3182 -> CPU192, cq_update_irq IRQ_ID=3183 -> CPU193
+(Worker_TP3 pid=174207) INFO 09-10 08:42:02 [cpu_binding.py:775] NPU3(PCI 0000:82:00.0): sq_send_trigger_irq IRQ_ID=2926 -> CPU160, cq_update_irq IRQ_ID=2927 -> CPU161
+(EngineCore pid=173881) INFO 09-10 08:42:02 [core.py:340] init engine (profile, create kv cache, warmup model) took 108.34 s (compilation: 75.20 s)
+(EngineCore pid=173881) [transformers] The `use_fast` parameter is deprecated and will be removed in a future version. Use `backend="torchvision"` instead of `use_fast=True`, or `backend="pil"` instead of `use_fast=False`.
+(EngineCore pid=173881) INFO 09-10 08:42:10 [ascend_config.py:935] Dynamic EPLB is False
+(EngineCore pid=173881) INFO 09-10 08:42:10 [ascend_config.py:936] The number of redundant experts is 0
+(EngineCore pid=173881) INFO 09-10 08:42:11 [vllm.py:1109] Asynchronous scheduling is enabled.
+(EngineCore pid=173881) WARNING 09-10 08:42:11 [vllm.py:1133] Disabling cascade attention (not yet compatible with async speculative decoding).
+(EngineCore pid=173881) INFO 09-10 08:42:11 [kernel.py:295] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native'])
+(EngineCore pid=173881) WARNING 09-10 08:42:11 [vllm.py:1718] max_num_scheduled_tokens is set to 4072 based on the speculative decoding settings. This may lead to suboptimal performance. Consider increasing max_num_batched_tokens to accommodate the additional draft token slots, or decrease num_speculative_tokens or max_num_seqs.
+(EngineCore pid=173881) INFO 09-10 08:42:11 [utils.py:174] No quantization signature detected from model files for "/opt/foundation_model/Qwen3.6-27B". The model will be loaded as float. To force a quantization method, pass "--quantization <method>" explicitly.
+(EngineCore pid=173881) WARNING 09-10 08:42:11 [platform.py:1126] GPU-specific parameter is not supported on Ascend. parameter=disable_cascade_attn, value=True, action: resetting to False.
+(EngineCore pid=173881) INFO 09-10 08:42:11 [platform.py:791] Set PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
+(EngineCore pid=173881) WARNING 09-10 08:42:11 [vllm.py:2228] Model Runner V2 does not yet support the thinking_token_budget request parameter. Set VLLM_USE_V2_MODEL_RUNNER=0 if this is required.
+(EngineCore pid=173881) INFO 09-10 08:42:11 [compilation.py:329] Enabled custom fusions: norm_quant, act_quant
+(APIServer pid=173226) INFO 09-10 08:42:11 [api_server.py:673] Supported tasks: ['generate']
+(APIServer pid=173226) INFO 09-10 08:42:11 [parser_manager.py:37] "auto" tool choice has been enabled.
+(APIServer pid=173226) WARNING 09-10 08:42:11 [model.py:1546] Default vLLM sampling parameters have been overridden by the model's `generation_config.json`: `{'temperature': 1.0, 'top_k': 20, 'top_p': 0.95}`. If this is not intended, please relaunch vLLM instance with `--generation-config vllm`.
+(APIServer pid=173226) INFO 09-10 08:42:12 [hf.py:540] Detected the chat template content format to be 'openai'. You can set `--chat-template-content-format` to override this.
+(APIServer pid=173226) INFO 09-10 08:42:33 [base.py:236] Multi-modal warmup completed in 20.669s
+(APIServer pid=173226) INFO 09-10 08:42:34 [base.py:236] Readonly multi-modal warmup completed in 1.287s
+(APIServer pid=173226) INFO 09-10 08:42:34 [api_server.py:677] Starting vLLM server on http://0.0.0.0:49008
+(APIServer pid=173226) INFO 09-10 08:42:34 [launcher.py:37] Available routes are:
+(APIServer pid=173226) INFO 09-10 08:42:34 [launcher.py:46] Route: /openapi.json, Methods: HEAD, GET
+(APIServer pid=173226) INFO 09-10 08:42:34 [launcher.py:46] Route: /docs, Methods: HEAD, GET
+(APIServer pid=173226) INFO 09-10 08:42:34 [launcher.py:46] Route: /docs/oauth2-redirect, Methods: HEAD, GET
+(APIServer pid=173226) INFO 09-10 08:42:34 [launcher.py:46] Route: /redoc, Methods: HEAD, GET
+(APIServer pid=173226) INFO 09-10 08:42:34 [launcher.py:46] Route: /load, Methods: GET
+(APIServer pid=173226) INFO 09-10 08:42:34 [launcher.py:46] Route: /version, Methods: GET
+(APIServer pid=173226) INFO 09-10 08:42:34 [launcher.py:46] Route: /health, Methods: GET
+(APIServer pid=173226) INFO 09-10 08:42:34 [launcher.py:46] Route: /metrics, Methods: GET
+(APIServer pid=173226) INFO 09-10 08:42:34 [launcher.py:46] Route: /tokenize, Methods: POST
+(APIServer pid=173226) INFO 09-10 08:42:34 [launcher.py:46] Route: /detokenize, Methods: POST
+(APIServer pid=173226) INFO 09-10 08:42:34 [launcher.py:46] Route: /v1/models, Methods: GET
+(APIServer pid=173226) INFO 09-10 08:42:34 [launcher.py:46] Route: /ping, Methods: GET
+(APIServer pid=173226) INFO 09-10 08:42:34 [launcher.py:46] Route: /ping, Methods: POST
+(APIServer pid=173226) INFO 09-10 08:42:34 [launcher.py:46] Route: /invocations, Methods: POST
+(APIServer pid=173226) INFO 09-10 08:42:34 [launcher.py:46] Route: /v1/chat/completions, Methods: POST
+(APIServer pid=173226) INFO 09-10 08:42:34 [launcher.py:46] Route: /v1/chat/completions/batch, Methods: POST
+(APIServer pid=173226) INFO 09-10 08:42:34 [launcher.py:46] Route: /v1/responses, Methods: POST
+(APIServer pid=173226) INFO 09-10 08:42:34 [launcher.py:46] Route: /v1/responses/{response_id}, Methods: GET
+(APIServer pid=173226) INFO 09-10 08:42:34 [launcher.py:46] Route: /v1/responses/{response_id}/cancel, Methods: POST
+(APIServer pid=173226) INFO 09-10 08:42:34 [launcher.py:46] Route: /v1/completions, Methods: POST
+(APIServer pid=173226) INFO 09-10 08:42:34 [launcher.py:46] Route: /v1/messages, Methods: POST
+(APIServer pid=173226) INFO 09-10 08:42:34 [launcher.py:46] Route: /v1/messages/count_tokens, Methods: POST
+(APIServer pid=173226) INFO 09-10 08:42:34 [launcher.py:46] Route: /generative_scoring, Methods: POST
+(APIServer pid=173226) INFO 09-10 08:42:34 [launcher.py:46] Route: /scale_elastic_ep, Methods: POST
+(APIServer pid=173226) INFO 09-10 08:42:34 [launcher.py:46] Route: /is_scaling_elastic_ep, Methods: POST
+(APIServer pid=173226) INFO 09-10 08:42:34 [launcher.py:46] Route: /v1/chat/completions/render, Methods: POST
+(APIServer pid=173226) INFO 09-10 08:42:34 [launcher.py:46] Route: /v1/completions/render, Methods: POST
+(APIServer pid=173226) INFO 09-10 08:42:34 [launcher.py:46] Route: /v1/chat/completions/derender, Methods: POST
+(APIServer pid=173226) INFO 09-10 08:42:34 [launcher.py:46] Route: /v1/completions/derender, Methods: POST
+(APIServer pid=173226) INFO 09-10 08:42:34 [launcher.py:46] Route: /inference/v1/generate, Methods: POST
+(APIServer pid=173226) INFO:     Started server process [173226]
+(APIServer pid=173226) INFO:     Waiting for application startup.
+(APIServer pid=173226) INFO:     Application startup complete.
+(APIServer pid=173226) INFO:     70.255.29.231:63769 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+(Worker_TP0 pid=174204) INFO 09-10 08:43:49 [aclgraph_utils.py:94] run_fullgraph with num_tokens=8
+(APIServer pid=173226) INFO 09-10 08:43:55 [loggers.py:310] Engine 000: Avg prompt throughput: 1.9 tokens/s, Avg generation throughput: 82.5 tokens/s, Running: 1 reqs, Waiting: 0 reqs, GPU KV cache usage: 5.5%, Prefix cache hit rate: 0.0%
+(APIServer pid=173226) INFO 09-10 08:43:55 [metrics.py:120] SpecDecoding metrics: Mean acceptance length: 6.10, Accepted throughput: 6.64 tokens/s, Drafted throughput: 9.11 tokens/s, Accepted: 689 tokens, Drafted: 945 tokens, Per-position acceptance rate: 0.919, 0.867, 0.800, 0.719, 0.674, 0.600, 0.526, Avg Draft acceptance rate: 72.9%
+(APIServer pid=173226) INFO 09-10 08:44:05 [loggers.py:310] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 154.4 tokens/s, Running: 1 reqs, Waiting: 0 reqs, GPU KV cache usage: 6.0%, Prefix cache hit rate: 0.0%
+(APIServer pid=173226) INFO 09-10 08:44:05 [metrics.py:120] SpecDecoding metrics: Mean acceptance length: 6.74, Accepted throughput: 131.49 tokens/s, Drafted throughput: 160.29 tokens/s, Accepted: 1315 tokens, Drafted: 1603 tokens, Per-position acceptance rate: 0.956, 0.904, 0.865, 0.838, 0.782, 0.729, 0.668, Avg Draft acceptance rate: 82.0%
+(APIServer pid=173226) INFO 09-10 08:44:15 [loggers.py:310] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 137.9 tokens/s, Running: 1 reqs, Waiting: 0 reqs, GPU KV cache usage: 6.4%, Prefix cache hit rate: 0.0%
+(APIServer pid=173226) INFO 09-10 08:44:15 [metrics.py:120] SpecDecoding metrics: Mean acceptance length: 6.07, Accepted throughput: 115.20 tokens/s, Drafted throughput: 158.90 tokens/s, Accepted: 1152 tokens, Drafted: 1589 tokens, Per-position acceptance rate: 0.938, 0.885, 0.828, 0.727, 0.639, 0.555, 0.502, Avg Draft acceptance rate: 72.5%
+(APIServer pid=173226) INFO 09-10 08:44:25 [loggers.py:310] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 35.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs, GPU KV cache usage: 0.0%, Prefix cache hit rate: 0.0%
+(APIServer pid=173226) INFO 09-10 08:44:25 [metrics.py:120] SpecDecoding metrics: Mean acceptance length: 5.10, Accepted throughput: 28.30 tokens/s, Drafted throughput: 48.30 tokens/s, Accepted: 283 tokens, Drafted: 483 tokens, Per-position acceptance rate: 0.870, 0.725, 0.667, 0.580, 0.507, 0.391, 0.362, Avg Draft acceptance rate: 58.6%
+(APIServer pid=173226) INFO 09-10 08:44:35 [loggers.py:310] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs, GPU KV cache usage: 0.0%, Prefix cache hit rate: 0.0%
+
