@@ -121,6 +121,11 @@ env_variables: dict[str, Callable[[], Any]] = {
     # Requires the flash-attn-npu wheel built for Ascend910 with
     # FLASH_ATTN_BUILD_VERSION=v4.
     "VLLM_ASCEND_DSPARK_FLASH_ATTN_NPU": lambda: os.getenv("VLLM_ASCEND_DSPARK_FLASH_ATTN_NPU", ""),
+    # Diagnostics for the flash-attention-npu backend: for this many forwards, log
+    # the device-side lengths and run the same attention through
+    # npu_fused_infer_attention_score to compare. Everything it does syncs, so it
+    # is an investigation tool, not something to leave on. 0 (default) disables it.
+    "VLLM_ASCEND_FA_DEBUG_STEPS": lambda: int(os.getenv("VLLM_ASCEND_FA_DEBUG_STEPS", "0")),
     # Minimum KV-cache group width (layers per group). 0 disables the override
     # and keeps upstream grouping exactly. A positive value raises the group
     # width to at least this many layers, so a small heterogeneous draft bucket

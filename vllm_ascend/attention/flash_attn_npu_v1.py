@@ -54,10 +54,12 @@ different backend on a different wheel entirely (`flash_attn_npu_v3`, not
 """
 
 import importlib
+import os
 from collections.abc import Callable
 from typing import Any
 
 import torch
+import torch_npu
 from vllm.config import VllmConfig
 from vllm.forward_context import get_forward_context
 from vllm.logger import logger
@@ -102,6 +104,13 @@ FA_NPU_MAX_HEAD_SIZE = 256
 _MODULE_NAME = "flash_attn_npu_4"
 _GENERATION = "v4"
 _REQUIRED_ATTRS = ("flash_attn_varlen_func", "get_scheduler_metadata")
+
+# Per-step diagnostics for an accuracy investigation: tensor layout, the actual
+# device-side lengths, and the same attention run through
+# npu_fused_infer_attention_score for comparison. All of it syncs, so it is off by
+# default and bounded when on.
+_DEBUG_STEPS = int(os.getenv("VLLM_ASCEND_FA_DEBUG_STEPS", "0"))
+_debug_seen = 0
 
 _SELECTED = (envs_ascend.VLLM_ASCEND_DSPARK_FLASH_ATTN_NPU or "").strip().lower()
 # Mirrors the sink module's own read of its flag, so both halves of the head-size
@@ -400,6 +409,21 @@ class AscendFlashAttnV4Impl(AscendAttentionBackendImpl):
                 f"requests: rows={block_table.shape[0]}, num_reqs={num_reqs}"
             )
         block_table = block_table[:num_reqs]
+        if not block_table.is_contiguous():
+            # The kernel reaches row b at `b * maxNumBlocksPerBatch`, and
+            # maxNumBlocksPerBatch is derived from block_table.shape[1] below. A
+            # column-sliced view keeps that shape while its rows are further apart,
+            # so every request after the first would read another one's pages. The
+            # ordinary FIA path survives this because aclnn ops go through a tensor
+            # descriptor; this one does not.
+            logger.warning_once(
+                "Ascend flash-attention-npu: block table is not contiguous "
+                "(shape=%s stride=%s); copying. The kernel indexes it by hand and "
+                "cannot honour a stride that disagrees with the row length.",
+                tuple(block_table.shape),
+                tuple(block_table.stride()),
+            )
+            block_table = block_table.contiguous()
 
         # `get_scheduler_metadata` derives the block-table row stride the kernel
         # indexes with as ceil(max_seqlen_k / page_size), so max_seqlen_k has to be
@@ -464,7 +488,8 @@ class AscendFlashAttnV4Impl(AscendAttentionBackendImpl):
         logger.info_once(
             "Ascend flash-attention-npu %s forward: q=%s kv_cache=%s page_table=%s "
             "cu_seqlens_q=%s seqused_k=%s num_reqs=%d heads=%d/%d head_size=%d "
-            "block_size=%d max_seqlen_q=%d max_seqlen_k=%d causal=False",
+            "block_size=%d max_seqlen_q=%d max_seqlen_k=%d causal=False "
+            "block_table_stride=%s kv_cache_contig=%s q_contig=%s",
             _GENERATION,
             tuple(query.shape),
             tuple(key_cache.shape),
@@ -478,6 +503,9 @@ class AscendFlashAttnV4Impl(AscendAttentionBackendImpl):
             block_size,
             max_seqlen_q,
             max_seqlen_k,
+            tuple(block_table.stride()),
+            key_cache.is_contiguous(),
+            query.is_contiguous(),
         )
 
         attn_output = module.flash_attn_varlen_func(
@@ -497,8 +525,66 @@ class AscendFlashAttnV4Impl(AscendAttentionBackendImpl):
             return_lse=False,
         )
         attn_output = attn_output.view(num_tokens, self.num_heads, self.head_size)
+
+        if _DEBUG_STEPS:
+            self._debug_against_fia(
+                query, key_cache, value_cache, block_table, cu_seqlens_q, seqused_k, block_size, attn_output
+            )
+
         output[:num_tokens] = attn_output[:num_tokens]
         return output
+
+
+    def _debug_against_fia(
+        self, query, key_cache, value_cache, block_table, cu_seqlens_q, seqused_k, block_size, attn_output
+    ):
+        """Run the same attention through the ordinary operator and compare.
+
+        The microbenchmark has the two matching to the last digit on inputs it
+        builds itself, so a disagreement here is about what production hands them,
+        not about the kernels. That is the question an accuracy investigation
+        actually needs answered, and no amount of shape logging answers it.
+
+        Everything in here syncs -- tolist, item -- which is why it is bounded by
+        VLLM_ASCEND_FA_DEBUG_STEPS and off by default.
+        """
+        global _debug_seen
+        if _debug_seen >= _DEBUG_STEPS:
+            return
+        _debug_seen += 1
+
+        try:
+            cu_host = cu_seqlens_q.tolist()
+            kv_host = seqused_k.tolist()
+            num_blocks = key_cache.shape[0]
+            reference, _ = torch_npu.npu_fused_infer_attention_score(
+                query=query,
+                key=key_cache.view(num_blocks, block_size, -1),
+                value=value_cache.view(num_blocks, block_size, -1),
+                block_table=block_table,
+                input_layout="TND",
+                block_size=block_size,
+                actual_seq_lengths=cu_host[1:],
+                actual_seq_lengths_kv=kv_host,
+                num_key_value_heads=self.num_kv_heads,
+                num_heads=self.num_heads,
+                scale=self.scale,
+                sparse_mode=0,
+            )
+            reference = reference.view_as(attn_output)
+            diff = (attn_output.float() - reference.float()).abs()
+            logger.info(
+                "Ascend flash-attention-npu debug step %d: cu_seqlens_q=%s seqused_k=%s "
+                "max|v4 - fia|=%.3e mean|v4 - fia|=%.3e ref_absmax=%.3e",
+                _debug_seen,
+                cu_host,
+                kv_host,
+                diff.max().item(),
+                diff.mean().item(),
+                reference.float().abs().max().item(),
+            )
+        except Exception as exc:  # a diagnostic must not take the run down with it
+            logger.warning("Ascend flash-attention-npu debug comparison failed: %r", exc)
 
 
 class AscendFlashAttnV4Backend(AscendAttentionBackend):
