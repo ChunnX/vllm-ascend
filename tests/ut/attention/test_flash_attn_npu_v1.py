@@ -34,8 +34,6 @@ from vllm_ascend.attention.flash_attn_npu_v1 import (
     AscendFlashAttnV4Backend,
     AscendFlashAttnV4Impl,
     AscendFlashAttnV4MetadataBuilder,
-    _build_seq_tensors,
-    _cu_seqlens_q,
     _get_or_compute_inputs,
     _load,
     enabled,
@@ -287,46 +285,6 @@ class TestMetadataBuilder(TestBase):
         self.assertIs(out_block_table, block_table)
 
 
-class TestSeqTensors(TestBase):
-    def test_builds_legal_full_graph_padding_lengths(self):
-        """FULL replay pads the bucket with zero KV lengths; the wheel gets 1."""
-        seq_lens = torch.tensor([19, 23, 0, 0], dtype=torch.int32)
-
-        cu_seqlens_q, seqused_k = _build_seq_tensors(num_tokens=16, seq_lens=seq_lens)
-
-        # get_scheduler_metadata TORCH_CHECKs both dtypes as int32.
-        self.assertEqual(cu_seqlens_q.dtype, torch.int32)
-        self.assertEqual(seqused_k.dtype, torch.int32)
-        # B+1 entries with a leading zero, derived from the static shape rather
-        # than from the padded query_start_loc the producer emits.
-        self.assertTrue(torch.equal(cu_seqlens_q, torch.tensor([0, 4, 8, 12, 16], dtype=torch.int32)))
-        self.assertTrue(torch.equal(seqused_k, torch.tensor([19, 23, 1, 1], dtype=torch.int32)))
-
-    def test_query_offsets_are_built_once_per_shape(self):
-        """They are a function of the shape, and rebuilding them is not free.
-
-        Profiling put the arange and its multiply at 13.6us of device time per step
-        -- launch overhead on two tiny vector kernels -- for values that cannot
-        change while the batch shape holds. Reusing the tensor also gives aclgraph a
-        stable address to capture.
-        """
-        first = _cu_seqlens_q(4, 4, torch.device("cpu"))
-        again = _cu_seqlens_q(4, 4, torch.device("cpu"))
-        other = _cu_seqlens_q(4, 8, torch.device("cpu"))
-
-        self.assertIs(first, again)
-        self.assertIsNot(first, other)
-        self.assertTrue(torch.equal(first, torch.tensor([0, 4, 8, 12, 16], dtype=torch.int32)))
-        self.assertTrue(torch.equal(other, torch.tensor([0, 8, 16, 24, 32], dtype=torch.int32)))
-
-    def test_rejects_non_uniform_query_batch(self):
-        with self.assertRaisesRegex(RuntimeError, "uniform query batch"):
-            _build_seq_tensors(num_tokens=7, seq_lens=torch.tensor([4, 5], dtype=torch.int32))
-
-        with self.assertRaisesRegex(RuntimeError, "uniform query batch"):
-            _build_seq_tensors(num_tokens=8, seq_lens=torch.zeros(0, dtype=torch.int32))
-
-
 class TestForwardCache(TestBase):
     def test_metadata_is_computed_once_per_forward_signature(self):
         forward_context = SimpleNamespace()
@@ -378,10 +336,15 @@ class TestImpl(TestBase):
 
     @staticmethod
     def _metadata(num_reqs=2, q_per_req=4, block_table_width=5):
+        # seq_lens is deliberately longer than num_reqs: that is what the builder
+        # hands a parallel-drafting draft, and reading the request count off it
+        # instead of off query_start_loc is the bug this shape guards.
         return SimpleNamespace(
             causal=False,
             num_actual_tokens=num_reqs * q_per_req,
-            seq_lens=torch.tensor([300, 120][:num_reqs], dtype=torch.int32),
+            seq_lens=torch.tensor(([300, 120] * 8)[: num_reqs + 6], dtype=torch.int32),
+            query_start_loc=torch.arange(num_reqs + 1, dtype=torch.int32) * q_per_req,
+            max_query_len=q_per_req,
             block_tables=torch.zeros((num_reqs, block_table_width), dtype=torch.int32),
         )
 
@@ -430,6 +393,34 @@ class TestImpl(TestBase):
         self.assertIs(result, sentinel)
         impl._forward_flash_attn_npu.assert_not_called()
         base_forward.assert_called_once()
+
+    def test_request_count_comes_from_query_start_loc_not_seq_lens(self):
+        """seq_lens is the whole device buffer for a parallel-drafting draft.
+
+        attention_v1.py's build() stops slicing it in the `parallel_drafting`
+        branch, so its length is the buffer size, not the request count. Deriving
+        num_reqs from there and dividing num_actual_tokens by it partitioned the
+        query into pieces unrelated to the real requests -- each one reading another
+        request's KV, which surfaced as repeated output rather than an error.
+
+        The metadata fixture makes seq_lens deliberately longer than the batch, so
+        a regression puts the wrong number in every one of these.
+        """
+        impl = self._impl()
+        metadata = self._metadata(num_reqs=2, q_per_req=4)
+        self.assertGreater(metadata.seq_lens.shape[0], 2, "fixture must over-size seq_lens")
+
+        module, _, _, _ = self._run(impl, metadata)
+
+        meta_kwargs = module.get_scheduler_metadata.call_args.kwargs
+        self.assertEqual(meta_kwargs["batch_size"], 2)
+        self.assertEqual(meta_kwargs["max_seqlen_q"], 4)
+        # The offsets are the metadata's own, not a reconstruction from a uniform
+        # assumption, and the KV lengths are sliced to the batch rather than passed
+        # buffer-length.
+        self.assertTrue(torch.equal(meta_kwargs["cu_seqlens_q"], metadata.query_start_loc))
+        self.assertEqual(meta_kwargs["cu_seqlens_q"].dtype, torch.int32)
+        self.assertEqual(meta_kwargs["cache_seqlens"].shape[0], 2)
 
     def test_dispatches_to_flash_attn_varlen_func(self):
         impl = self._impl()

@@ -74,8 +74,6 @@ from vllm_ascend.attention.utils import AscendCommonAttentionMetadata
 
 _FA_NPU_META_CACHE_ATTR = "_ascend_fa_npu_meta_cache"
 _loaded_modules: dict[str, Any] = {}
-# Query offsets keyed by (num_reqs, query_tokens_per_req, device); see _cu_seqlens_q.
-_CU_SEQLENS_CACHE: dict[tuple[int, int, str], torch.Tensor] = {}
 
 # Head sizes `npu_fused_infer_attention_sink` serves. A layer outside this set is
 # what this backend exists for; a layer inside it keeps the sink operator, which
@@ -180,57 +178,6 @@ def _get_or_compute_inputs(
     if cache_key not in cache:
         cache[cache_key] = compute()
     return cache[cache_key]
-
-
-def _build_seq_tensors(num_tokens: int, seq_lens: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    """Build legal device-side TND lengths for uniform parallel-drafting queries.
-
-    Same repair the sink backend makes, in this wheel's dtypes. FULL graph replay
-    pads the request bucket: the producer leaves padded `query_start_loc` entries at
-    the real-token boundary and padded KV lengths at zero. DSpark/DFlash queries are
-    uniform, so cumulative Q lengths come from the static shapes instead, and dummy
-    KV lengths map to 1 -- a zero-length request is not a shape the tiling has been
-    exercised on, and one padded token of attention is discarded downstream anyway.
-
-    `get_scheduler_metadata` wants `cu_seqlens_q` with a leading zero and B+1
-    entries, and TORCH_CHECKs the dtype of both as int32.
-    """
-    num_reqs = seq_lens.shape[0]
-    if num_reqs <= 0 or num_tokens % num_reqs != 0:
-        raise RuntimeError(
-            "Parallel-drafting flash-attention-npu requires a non-empty uniform query "
-            f"batch: num_tokens={num_tokens}, num_reqs={num_reqs}"
-        )
-    query_tokens_per_req = num_tokens // num_reqs
-    cu_seqlens_q = _cu_seqlens_q(num_reqs, query_tokens_per_req, seq_lens.device)
-    seqused_k = seq_lens.to(torch.int32).clamp_min(1)
-    return cu_seqlens_q, seqused_k
-
-
-def _cu_seqlens_q(num_reqs: int, query_tokens_per_req: int, device) -> torch.Tensor:
-    """The query offsets for a uniform draft batch, built once per shape.
-
-    Profiling put the arange and its multiply at 13.6us of device time per step --
-    a third of everything this backend spends outside the attention kernel -- to
-    produce a handful of int32 values. Nearly all of it is launch overhead on two
-    tiny vector kernels, not arithmetic.
-
-    They do not have to be rebuilt: a parallel-drafting batch has a uniform query
-    length, so the offsets are a function of the shape and change only when the
-    request count or the draft length does. Caching also gives aclgraph a stable
-    address to capture, which the per-step version had only by luck of the
-    allocator returning the same block.
-
-    Never handed out for mutation -- the wheel treats cu_seqlens_q as read-only.
-    `seqused_k` beside it is still derived fresh each step, because the KV lengths
-    genuinely change.
-    """
-    key = (num_reqs, query_tokens_per_req, str(device))
-    cached = _CU_SEQLENS_CACHE.get(key)
-    if cached is None:
-        cached = torch.arange(num_reqs + 1, dtype=torch.int32, device=device) * query_tokens_per_req
-        _CU_SEQLENS_CACHE[key] = cached
-    return cached
 
 
 def flash_attn_npu_selected(attn_selector_config: object) -> bool:
@@ -430,7 +377,22 @@ class AscendFlashAttnV4Impl(AscendAttentionBackendImpl):
         num_tokens = attn_metadata.num_actual_tokens
         query = query[:num_tokens]
 
-        num_reqs = attn_metadata.seq_lens.shape[0]
+        # num_reqs comes from query_start_loc, not from seq_lens. The builder leaves
+        # seq_lens as the whole device buffer for a parallel-drafting draft --
+        # attention_v1.py, the `parallel_drafting` branch of build() -- so its length
+        # is the buffer size, while query_start_loc is sliced to num_reqs + 1. Taking
+        # the request count from seq_lens and dividing num_actual_tokens by it
+        # produced a query partition unrelated to the real one: 8 tokens over a
+        # 4-wide buffer became four 2-token requests, each reading another request's
+        # KV.
+        cu_seqlens_q = attn_metadata.query_start_loc.to(torch.int32)
+        num_reqs = cu_seqlens_q.shape[0] - 1
+        if num_reqs <= 0:
+            raise RuntimeError(
+                f"Parallel-drafting flash-attention-npu got query_start_loc of shape "
+                f"{tuple(attn_metadata.query_start_loc.shape)}, which describes no requests"
+            )
+
         block_table = attn_metadata.block_tables
         if block_table.shape[0] < num_reqs:
             raise RuntimeError(
@@ -445,12 +407,23 @@ class AscendFlashAttnV4Impl(AscendAttentionBackendImpl):
         # maximum KV length. Passing the actual max would silently mis-address paged
         # KV under v4, which does not check it; v3 rejects the mismatch.
         max_seqlen_k = block_table.shape[1] * block_size
-        query_tokens_per_req = num_tokens // num_reqs if num_reqs else 0
+
+        # The wheel needs this as a host int and there is no way to derive it from
+        # the device-side offsets without the sync this backend exists to avoid, so
+        # it has to come from the metadata.
+        max_seqlen_q = attn_metadata.max_query_len
+        if max_seqlen_q is None:
+            raise RuntimeError(
+                "Parallel-drafting flash-attention-npu needs attn_metadata.max_query_len; "
+                "it cannot be derived from the device-side query offsets without a sync"
+            )
 
         cache_key = (
             attn_metadata.seq_lens.data_ptr(),
+            attn_metadata.query_start_loc.data_ptr(),
             num_tokens,
             num_reqs,
+            max_seqlen_q,
             self.num_heads,
             self.num_kv_heads,
             self.head_size,
@@ -459,10 +432,15 @@ class AscendFlashAttnV4Impl(AscendAttentionBackendImpl):
         )
 
         def compute_inputs() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-            cu_seqlens_q, seqused_k = _build_seq_tensors(num_tokens, attn_metadata.seq_lens)
+            # Padded requests arrive as repeated offsets, i.e. zero query tokens.
+            # The tiling handles that -- GetQNBlockTile special-cases qSeqlen 0 and
+            # the block count for them is 0 -- so they simply produce no work, and
+            # unlike the sink operator there is nothing to repair here. Their KV
+            # lengths are clamped only because a zero there is meaningless.
+            seqused_k = attn_metadata.seq_lens[:num_reqs].to(torch.int32).clamp_min(1)
             scheduler_metadata = module.get_scheduler_metadata(
                 batch_size=num_reqs,
-                max_seqlen_q=query_tokens_per_req,
+                max_seqlen_q=max_seqlen_q,
                 max_seqlen_k=max_seqlen_k,
                 num_heads_q=self.num_heads,
                 num_heads_kv=self.num_kv_heads,
@@ -485,18 +463,20 @@ class AscendFlashAttnV4Impl(AscendAttentionBackendImpl):
         # every draft layer of every step would come through here.
         logger.info_once(
             "Ascend flash-attention-npu %s forward: q=%s kv_cache=%s page_table=%s "
-            "seqused_k=%s heads=%d/%d head_size=%d block_size=%d max_seqlen_q=%d "
-            "max_seqlen_k=%d causal=False",
+            "cu_seqlens_q=%s seqused_k=%s num_reqs=%d heads=%d/%d head_size=%d "
+            "block_size=%d max_seqlen_q=%d max_seqlen_k=%d causal=False",
             _GENERATION,
             tuple(query.shape),
             tuple(key_cache.shape),
             tuple(block_table.shape),
+            tuple(cu_seqlens_q.shape),
             tuple(seqused_k.shape),
+            num_reqs,
             self.num_heads,
             self.num_kv_heads,
             self.head_size,
             block_size,
-            query_tokens_per_req,
+            max_seqlen_q,
             max_seqlen_k,
         )
 
@@ -507,7 +487,7 @@ class AscendFlashAttnV4Impl(AscendAttentionBackendImpl):
             cu_seqlens_q=cu_seqlens_q,
             seqused_k=seqused_k,
             page_table=block_table,
-            max_seqlen_q=query_tokens_per_req,
+            max_seqlen_q=max_seqlen_q,
             max_seqlen_k=max_seqlen_k,
             softmax_scale=self.scale,
             causal=False,

@@ -317,7 +317,12 @@ class AscendFIASinkImpl(AscendAttentionBackendImpl):
         num_tokens = attn_metadata.num_actual_tokens
         query = query[:num_tokens]
 
-        num_reqs = attn_metadata.seq_lens.shape[0]
+        # From query_start_loc, not seq_lens: the builder leaves seq_lens as the whole
+        # device buffer for a parallel-drafting draft (attention_v1.py, the
+        # `parallel_drafting` branch of build()), so its length is the buffer size
+        # rather than the request count, and _build_fia_sink_seq_tensors divides the
+        # token count by it.
+        num_reqs = attn_metadata.query_start_loc.shape[0] - 1
         if block_table.shape[0] < num_reqs:
             raise RuntimeError(
                 "Parallel-drafting FIA sink block table has fewer rows than requests: "
@@ -338,7 +343,7 @@ class AscendFIASinkImpl(AscendAttentionBackendImpl):
         def compute_sink_inputs() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
             actual_seq_qlen, actual_seq_kvlen = _build_fia_sink_seq_tensors(
                 num_tokens,
-                attn_metadata.seq_lens,
+                attn_metadata.seq_lens[:num_reqs],
             )
             stream_limit = torch.npu.get_stream_limit(torch.npu.current_stream())
             meta_data = torch.ops.custom._npu_fused_infer_attention_sink_metadata(
