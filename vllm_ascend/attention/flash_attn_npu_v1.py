@@ -72,6 +72,7 @@ from vllm_ascend.attention.attention_v1 import (
     AscendAttentionMetadataBuilder,
     AscendMetadata,
 )
+from vllm_ascend.ascend_forward_context import _EXTRA_CTX
 from vllm_ascend.attention.utils import AscendCommonAttentionMetadata
 
 _FA_NPU_META_CACHE_ATTR = "_ascend_fa_npu_meta_cache"
@@ -286,6 +287,13 @@ class AscendFlashAttnV4MetadataBuilder(AscendAttentionMetadataBuilder):
             _GENERATION,
             getattr(module, "__file__", "<unknown>"),
         )
+        if _DEBUG_STEPS:
+            logger.info(
+                "Ascend flash-attention-npu debug armed for %d forward(s) "
+                "(VLLM_ASCEND_FA_DEBUG_STEPS). It syncs, so it is skipped during graph "
+                "capture -- run with cudagraph_mode NONE for it to see a real step.",
+                _DEBUG_STEPS,
+            )
 
     def _build_fia_seq_inputs(
         self,
@@ -552,6 +560,18 @@ class AscendFlashAttnV4Impl(AscendAttentionBackendImpl):
         """
         global _debug_seen
         if _debug_seen >= _DEBUG_STEPS:
+            return
+        if _EXTRA_CTX.capturing:
+            # Everything below syncs, and a capturing stream rejects that -- the
+            # comparison would throw and be swallowed rather than run. It also would
+            # not be worth having here: capture executes each shape once, and the
+            # accuracy question is about what replay does.
+            logger.info_once(
+                "Ascend flash-attention-npu debug: skipping the comparison during graph "
+                "capture. With cudagraph_mode FULL_DECODE_ONLY the decode forward only "
+                "runs in Python at capture, so the comparison needs cudagraph_mode NONE "
+                "to see a real step."
+            )
             return
         _debug_seen += 1
 
