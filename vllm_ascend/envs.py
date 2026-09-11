@@ -94,6 +94,18 @@ env_variables: dict[str, Callable[[], Any]] = {
     "VLLM_ASCEND_ENABLE_DSPARK_FIA_SINK": lambda: bool(
         int(os.getenv("VLLM_ASCEND_ENABLE_DSPARK_FIA_SINK", "0"))
     ),
+    # Record-only observation of DSpark adaptive verification (MRV2). 1 enables
+    # it, 0 (default) disables. It does NOT trim verification -- it logs the
+    # confidence head's predicted per-position acceptance vs the actual rate, so
+    # the head's value can be judged before the trimming path is built. Requires
+    # a DSpark checkpoint with a confidence head (enable_confidence_head).
+    "VLLM_ASCEND_DSPARK_AV_OBSERVE": lambda: bool(
+        int(os.getenv("VLLM_ASCEND_DSPARK_AV_OBSERVE", "0"))
+    ),
+    # How many verification steps between DSpark AV observation log lines.
+    "VLLM_ASCEND_DSPARK_AV_OBSERVE_INTERVAL": lambda: int(
+        os.getenv("VLLM_ASCEND_DSPARK_AV_OBSERVE_INTERVAL", "50")
+    ),
     # Minimum KV-cache group width (layers per group). 0 disables the override
     # and keeps upstream grouping exactly. A positive value raises the group
     # width to at least this many layers, so a small heterogeneous draft bucket
