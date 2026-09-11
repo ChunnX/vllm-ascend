@@ -68,7 +68,6 @@ if UniformTypeKVCacheSpecs.max_num_blocks_per_req is KVCacheSpec.max_num_blocks_
         _uniform_type_max_num_blocks_per_req
     )
 
-_orig_get_kv_cache_groups_uniform_page_size = vllm.v1.core.kv_cache_utils._get_kv_cache_groups_uniform_page_size
 
 KV_GROUP_SIZE_BALANCE_THRESHOLD = 1.5
 _KV_GROUP_MIN_SIZE: ContextVar[int | None] = ContextVar(
