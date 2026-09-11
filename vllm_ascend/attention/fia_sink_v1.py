@@ -397,14 +397,13 @@ class AscendFIASinkBackend(AscendAttentionBackend):
     a second layout here would not stay on this backend's layers.
     """
 
-    @staticmethod
-    def get_name() -> str:
-        # `Attention.__init__` does `AttentionBackendEnum[backend.get_name()]`,
-        # so this has to name a member of that enum, not this class. CUSTOM is
-        # the slot vllm-ascend registers under, which is why AscendAttentionBackend
-        # and AscendFABackend both answer with it too. The MLA backends are free to
-        # use their own names only because MLAAttention does not do that lookup.
-        return "CUSTOM"
+    # get_name is deliberately not overridden. `Attention.__init__` does
+    # `AttentionBackendEnum[backend.get_name()]`, so it is a registry key, not a
+    # human-readable identity: a name of this backend's own raises "Unknown
+    # attention backend" before a layer is built. Inheriting AscendAttentionBackend's
+    # answer keeps this backend's key identical to the target's, whatever that base
+    # decides it should be. Telling the backends apart in a log is the selection
+    # INFO line's job, in the metadata builder below, not this method's.
 
     @staticmethod
     def get_impl_cls() -> type["AscendFIASinkImpl"]:
