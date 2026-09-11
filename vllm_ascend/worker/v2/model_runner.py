@@ -663,6 +663,38 @@ class NPUModelRunner(GPUModelRunner):
         # Without MTP, update_requests writes the shared NumPy/torch CPU state.
         if self.speculator is not None:
             self._copy_num_computed_tokens_to_cpu()
+            self._maybe_observe_av(num_sampled)
+
+    def _maybe_observe_av(self, num_sampled) -> None:
+        """Record-only DSpark adaptive-verification observation.
+
+        Enabled by VLLM_ASCEND_DSPARK_AV_OBSERVE. Does not trim verification: it
+        folds this step's per-request acceptance (num_sampled) together with the
+        confidence the speculator produced for these same drafts on the previous
+        propose(), and the observer logs the calibration periodically.
+        """
+        spec = self.speculator
+        if spec is None or not getattr(spec, "_av_observe", False):
+            return
+        conf = getattr(spec, "draft_token_confidence_probs", None)
+        if conf is None or num_sampled is None:
+            return
+        observer = getattr(self, "_av_observer", None)
+        if observer is None:
+            import vllm_ascend.envs as envs_ascend
+            from vllm_ascend.worker.v2.spec_decode.dspark.av_observe import (
+                DSparkAVObserver,
+            )
+
+            observer = DSparkAVObserver(
+                num_speculative_steps=self.num_speculative_steps,
+                num_bonus_tokens=self.model_state.num_new_sampled_tokens_per_step,
+                device=self.device,
+                interval=envs_ascend.VLLM_ASCEND_DSPARK_AV_OBSERVE_INTERVAL,
+            )
+            self._av_observer = observer
+        num_reqs = int(num_sampled.shape[0])
+        observer.record(conf[:num_reqs], num_sampled)
 
     def _copy_num_computed_tokens_to_cpu(self):
         # npu attention backend still need to use seq_lens_cpu,

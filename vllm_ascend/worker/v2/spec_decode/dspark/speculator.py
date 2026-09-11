@@ -20,6 +20,7 @@ from typing import Any, cast
 import torch
 from vllm.config import VllmConfig, get_layers_from_vllm_config, set_current_vllm_config
 from vllm.config.compilation import CUDAGraphMode
+from vllm.logger import init_logger
 from vllm.model_executor.layers.attention_layer_base import AttentionLayerBase
 from vllm.v1.attention.backend import AttentionBackend
 from vllm.v1.worker.gpu.input_batch import InputBatch
@@ -27,6 +28,7 @@ from vllm.v1.worker.gpu.spec_decode.dspark.speculator import (
     DSparkSpeculator,
 )
 
+import vllm_ascend.envs as envs_ascend
 from vllm_ascend.models.qwen3_dspark import process_weight
 from vllm_ascend.spec_decode.vocab_mapping import settle_reduced_vocab_lm_head
 from vllm_ascend.utils import (
@@ -40,6 +42,8 @@ from vllm_ascend.worker.v2.attn_utils import (
 )
 from vllm_ascend.worker.v2.spec_decode.pcp_utils import prepare_replicated_pcp_config
 
+logger = init_logger(__name__)
+
 
 class AscendDSparkSpeculator(DSparkSpeculator):
     _speculator_name = "DSpark"
@@ -48,6 +52,16 @@ class AscendDSparkSpeculator(DSparkSpeculator):
         vllm_config, self.replicated_pcp = prepare_replicated_pcp_config(vllm_config)
         super().__init__(vllm_config, device)
         self.input_batch: InputBatch | None = None
+        # Record-only adaptive-verification observation (does not trim). When on,
+        # propose() flips enable_adaptive_verification True *only* around the
+        # draft sampling so the upstream confidence-head path fills
+        # draft_token_confidence_probs, while the model runner still sees it False
+        # at init and never builds the (unadapted) trimming manager.
+        self._av_observe = bool(envs_ascend.VLLM_ASCEND_DSPARK_AV_OBSERVE)
+        if self._av_observe:
+            # Seed a clean value so the first verify step reads zeros, not
+            # uninitialized memory, before any propose() has run.
+            self.draft_token_confidence_probs.zero_()
 
     def load_draft_model(
         self,
@@ -82,6 +96,16 @@ class AscendDSparkSpeculator(DSparkSpeculator):
             fc = model.model.fc
             with torch.no_grad():
                 fc.weight.data.copy_(process_weight(fc.weight.data.cpu(), rotation_weight))
+        # Observation needs the confidence head; the trimming path would raise at
+        # load, but record-only leaves enable_adaptive_verification False, so
+        # check here and degrade gracefully instead of asserting mid-forward.
+        if self._av_observe and getattr(model.model, "confidence_head", None) is None:
+            logger.warning(
+                "VLLM_ASCEND_DSPARK_AV_OBSERVE is set but this DSpark checkpoint "
+                "has no confidence head (enable_confidence_head); disabling AV "
+                "observation."
+            )
+            self._av_observe = False
         return model
 
     def init_cudagraph_manager(self, cudagraph_mode: CUDAGraphMode) -> None:
@@ -196,27 +220,38 @@ class AscendDSparkSpeculator(DSparkSpeculator):
         self.input_batch = input_batch
         assert self.input_batch is not None
         sync_state = num_tokens_across_dp if vllm_version_is("0.28.0") else dp_sync
-        with (
-            build_attn_metadata_wrapper(),
-            build_draft_attn_metadata_factory(
-                self.input_buffers.positions, self.max_num_tokens, torch.from_numpy(self.input_batch.is_prefilling_np)
-            ),
-        ):
-            return super().propose(
-                input_batch,
-                attn_metadata,
-                slot_mappings,
-                last_hidden_states,
-                aux_hidden_states,
-                num_sampled,
-                num_rejected,
-                last_sampled,
-                next_prefill_tokens,
-                temperature,
-                seeds,
-                sync_state,
-                dummy_run,
-                skip_attn_for_dummy_run,
-                mm_inputs,
-                is_profile=is_profile,
-            )
+        # Record-only observation: flip the flag on just for draft sampling so
+        # the upstream confidence-head path fills draft_token_confidence_probs,
+        # then restore it so nothing downstream (the trimming manager) ever sees
+        # it enabled.
+        observe = self._av_observe and not self.enable_adaptive_verification
+        if observe:
+            self.enable_adaptive_verification = True
+        try:
+            with (
+                build_attn_metadata_wrapper(),
+                build_draft_attn_metadata_factory(
+                    self.input_buffers.positions, self.max_num_tokens, torch.from_numpy(self.input_batch.is_prefilling_np)
+                ),
+            ):
+                return super().propose(
+                    input_batch,
+                    attn_metadata,
+                    slot_mappings,
+                    last_hidden_states,
+                    aux_hidden_states,
+                    num_sampled,
+                    num_rejected,
+                    last_sampled,
+                    next_prefill_tokens,
+                    temperature,
+                    seeds,
+                    sync_state,
+                    dummy_run,
+                    skip_attn_for_dummy_run,
+                    mm_inputs,
+                    is_profile=is_profile,
+                )
+        finally:
+            if observe:
+                self.enable_adaptive_verification = False
