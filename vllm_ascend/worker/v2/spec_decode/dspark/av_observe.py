@@ -59,17 +59,6 @@ class DSparkAVObserver:
         num_sampled: [num_reqs] tokens accepted per request, including the bonus.
         """
         num_reqs = int(num_sampled.shape[0])
-        # [AV-DIAG] temporary: expose the real interval/n so we can tell whether
-        # flush() is simply not being reached (interval too large / too few
-        # steps) vs a logging-level problem. Remove once observation works.
-        if self._steps < 3:
-            logger.warning(
-                "[AV-DIAG] record steps=%d interval=%d n=%d num_reqs=%d",
-                self._steps,
-                self.interval,
-                self.n,
-                num_reqs,
-            )
         if num_reqs == 0 or self.n == 0:
             return
         # Draft tokens accepted per request (drop the always-present bonus).
@@ -96,8 +85,10 @@ class DSparkAVObserver:
         )
         # Mean accepted length ~= bonus + sum of per-position acceptance rates.
         mean_accept_len = self.num_bonus + sum(acc)
-        # [AV-DIAG] warning (not info) while debugging, so it can't be filtered
-        # by log level. Restore to info once observation is confirmed.
+        # Emitted at warning level on purpose: this line only appears when the
+        # operator explicitly sets VLLM_ASCEND_DSPARK_AV_OBSERVE, and INFO is
+        # filtered by default in many deployments, so warning guarantees the
+        # observation is actually visible.
         logger.warning(
             "[DSPARK-AV-OBSERVE] reqs=%d over %d steps | mean_accept_len~%.2f | %s",
             self._count,
