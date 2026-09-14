@@ -753,6 +753,23 @@ class NPUModelRunner(GPUModelRunner):
         propose(), and the observer logs the calibration periodically.
         """
         spec = self.speculator
+        # [AV-DIAG] temporary: log the first time this hook runs so we can see
+        # whether postprocess_sampled reaches it and in what state. Remove once
+        # observation is working.
+        if not getattr(self, "_av_diag_done", False):
+            self._av_diag_done = True
+            from vllm.logger import init_logger
+
+            init_logger(__name__).warning(
+                "[AV-DIAG] _maybe_observe_av reached: spec=%s _av_observe=%s "
+                "conf=%s num_sampled=%s",
+                spec is not None,
+                getattr(spec, "_av_observe", "NO_ATTR") if spec is not None else None,
+                type(getattr(spec, "draft_token_confidence_probs", None)).__name__
+                if spec is not None
+                else None,
+                None if num_sampled is None else tuple(num_sampled.shape),
+            )
         if spec is None or not getattr(spec, "_av_observe", False):
             return
         conf = getattr(spec, "draft_token_confidence_probs", None)
