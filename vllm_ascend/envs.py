@@ -104,7 +104,7 @@ env_variables: dict[str, Callable[[], Any]] = {
     ),
     # How many verification steps between DSpark AV observation log lines.
     "VLLM_ASCEND_DSPARK_AV_OBSERVE_INTERVAL": lambda: int(
-        os.getenv("VLLM_ASCEND_DSPARK_AV_OBSERVE_INTERVAL", "50")
+        os.getenv("VLLM_ASCEND_DSPARK_AV_OBSERVE_INTERVAL", "200")
     ),
     # Minimum KV-cache group width (layers per group). 0 disables the override
     # and keeps upstream grouping exactly. A positive value raises the group

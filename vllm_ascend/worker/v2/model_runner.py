@@ -758,6 +758,16 @@ class NPUModelRunner(GPUModelRunner):
         conf = getattr(spec, "draft_token_confidence_probs", None)
         if conf is None or num_sampled is None:
             return
+        # Only tp rank 0 observes/logs: every rank sees the same num_sampled, so
+        # one is enough and avoids N duplicate lines under tensor parallelism.
+        if getattr(self, "_av_log_rank", None) is None:
+            from vllm.distributed.parallel_state import (
+                get_tensor_model_parallel_rank,
+            )
+
+            self._av_log_rank = get_tensor_model_parallel_rank() == 0
+        if not self._av_log_rank:
+            return
         observer = getattr(self, "_av_observer", None)
         if observer is None:
             import vllm_ascend.envs as envs_ascend
