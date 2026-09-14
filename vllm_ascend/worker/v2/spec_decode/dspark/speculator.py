@@ -58,14 +58,6 @@ class AscendDSparkSpeculator(DSparkSpeculator):
         # draft_token_confidence_probs, while the model runner still sees it False
         # at init and never builds the (unadapted) trimming manager.
         self._av_observe = bool(envs_ascend.VLLM_ASCEND_DSPARK_AV_OBSERVE)
-        # [AV-DIAG] temporary: confirm this speculator class is the one in use
-        # and that the observe flag was read. Remove once observation is working.
-        logger.info(
-            "[AV-DIAG] AscendDSparkSpeculator.__init__ _av_observe=%s "
-            "enable_adaptive_verification=%s",
-            self._av_observe,
-            self.enable_adaptive_verification,
-        )
         if self._av_observe:
             # Seed a clean value so the first verify step reads zeros, not
             # uninitialized memory, before any propose() has run.
