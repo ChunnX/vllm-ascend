@@ -790,7 +790,15 @@ class NPUModelRunner(GPUModelRunner):
             )
             self._av_observer = observer
         num_reqs = int(num_sampled.shape[0])
-        observer.record(conf[:num_reqs], num_sampled)
+        try:
+            observer.record(conf[:num_reqs], num_sampled)
+        except Exception as exc:  # observation must never break inference
+            from vllm.logger import init_logger
+
+            init_logger(__name__).warning(
+                "[DSPARK-AV-OBSERVE] record failed, disabling observation: %s", exc
+            )
+            spec._av_observe = False
 
     def _copy_num_computed_tokens_to_cpu(self):
         # npu attention backend still need to use seq_lens_cpu,

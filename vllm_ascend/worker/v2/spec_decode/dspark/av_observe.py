@@ -42,9 +42,13 @@ class DSparkAVObserver:
         self.n = num_speculative_steps
         self.num_bonus = num_bonus_tokens
         self.interval = max(1, interval)
-        # float64 accumulators keep long runs from losing precision.
-        self._sum_conf = torch.zeros(self.n, dtype=torch.float64, device=device)
-        self._sum_acc = torch.zeros(self.n, dtype=torch.float64, device=device)
+        # float32 accumulators: Ascend NPU has poor/no float64 (double) support --
+        # a float64 op here silently failed the whole record() before flush(),
+        # which is why no observation line appeared. Confidence is in [0, 1] and
+        # only summed over one interval, so float32 is plenty for an averaged
+        # calibration curve.
+        self._sum_conf = torch.zeros(self.n, dtype=torch.float32, device=device)
+        self._sum_acc = torch.zeros(self.n, dtype=torch.float32, device=device)
         self._count = 0
         self._steps = 0
 
@@ -62,8 +66,8 @@ class DSparkAVObserver:
         steps = torch.arange(self.n, device=num_sampled.device)
         # Position i is accepted iff at least i+1 draft tokens were accepted.
         accepted_mask = accepted_draft[:, None] > steps[None, :]
-        self._sum_conf += confidence[:num_reqs].to(torch.float64).sum(dim=0)
-        self._sum_acc += accepted_mask.to(torch.float64).sum(dim=0)
+        self._sum_conf += confidence[:num_reqs].to(torch.float32).sum(dim=0)
+        self._sum_acc += accepted_mask.to(torch.float32).sum(dim=0)
         self._count += num_reqs
         self._steps += 1
         if self._steps % self.interval == 0:
