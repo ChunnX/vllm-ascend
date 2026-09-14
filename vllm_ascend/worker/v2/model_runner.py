@@ -748,26 +748,29 @@ class NPUModelRunner(GPUModelRunner):
         result = super().capture_model()
         import vllm_ascend.envs as envs_ascend
 
-        if envs_ascend.VLLM_ASCEND_DSPARK_AV_PROFILE_SMOKE and self.speculator is not None:
-            self._av_profile_smoke()
+        smoke = envs_ascend.VLLM_ASCEND_DSPARK_AV_PROFILE_SMOKE
+        shadow = envs_ascend.VLLM_ASCEND_DSPARK_AV_SHADOW
+        if self.speculator is not None and (smoke or shadow):
+            # Profile the AV cost table once and share it: the smoke check just
+            # logs it; the shadow drives the per-step trim decision off it.
+            res = self._av_profile_cost_tables()
+            if smoke:
+                self._av_log_smoke(res)
+            if shadow and res is not None:
+                self._av_setup_shadow(res[0])
         return result
 
-    def _av_profile_smoke(self) -> None:
-        """[Smoke] Check the AV cost-table profiling path works on Ascend (T-B).
+    def _av_profile_cost_tables(self):
+        """Profile per-shape step cost under ACLGraph and build the AV cost table.
 
-        Reuses upstream #47808's profiling -- StepTimingCollector plus
-        AdaptiveVerificationManager.batches_to_profile / set_initial_cost_curves --
-        to measure per-shape step cost under ACLGraph, WITHOUT wiring adaptive
-        verification into serving: the manager is a throwaway (never stored on
-        self, prepare_inputs untouched). If any step fails on Ascend it logs the
-        reason (that is the answer); on success it logs the cost curves, the
-        per-shape timing spread (small spread => timing is stable enough to
-        rank budgets), and monotonicity / NaN checks.
+        Reuses upstream #47808 profiling (StepTimingCollector plus
+        AdaptiveVerificationManager.batches_to_profile / set_initial_cost_curves)
+        with a throwaway manager -- it does NOT wire trimming into serving
+        (prepare_inputs untouched, the manager is never stored). Returns
+        ``(cost_tables, timings)`` or ``None`` when there are no captured sizes or
+        any step fails on Ascend. ``set_initial_cost_curves`` broadcasts across TP
+        ranks, so every rank must reach it -- callers gate logging on rank after.
         """
-        from collections import defaultdict
-
-        import numpy as np
-        from vllm.distributed.parallel_state import get_tensor_model_parallel_rank
         from vllm.logger import init_logger
         from vllm.v1.worker.gpu.spec_decode.adaptive_verification import (
             AdaptiveVerificationManager,
@@ -777,8 +780,8 @@ class NPUModelRunner(GPUModelRunner):
         log = init_logger(__name__)
         capture_sizes = self.cudagraph_manager.captured_token_counts()
         if not capture_sizes:
-            log.warning("[AV-PROFILE-SMOKE] no captured cudagraph sizes; skipping")
-            return
+            log.warning("[AV-PROFILE] no captured cudagraph sizes; skipping")
+            return None
         try:
             # Throwaway manager: bypasses maybe_create_* (which would reject GDN),
             # only used to drive the profiling replays and build the curves.
@@ -791,21 +794,33 @@ class NPUModelRunner(GPUModelRunner):
             with self.step_timing.collect() as timings:
                 for batch in mgr.batches_to_profile(capture_sizes):
                     self._dummy_run(**batch)
-            # set_initial_cost_curves broadcasts across TP ranks, so every rank
-            # must reach it -- keep it before the rank-0 log gate below.
             mgr.set_initial_cost_curves(timings)
         except Exception as exc:
-            log.warning("[AV-PROFILE-SMOKE] profiling FAILED on Ascend: %r", exc)
-            return
+            log.warning("[AV-PROFILE] cost-table profiling FAILED on Ascend: %r", exc)
+            return None
+        return mgr.cost_tables, list(timings)
 
-        if get_tensor_model_parallel_rank() != 0:
+    def _av_log_smoke(self, res) -> None:
+        """[Smoke] Log the profiled AV cost table + timing spread (T-B, rank 0).
+
+        On success logs the cost curves, the per-shape timing spread (small
+        spread => timing is stable enough to rank budgets), and monotonicity /
+        NaN checks. ``res`` is None when profiling failed/skipped (already logged).
+        """
+        from collections import defaultdict
+
+        import numpy as np
+        from vllm.distributed.parallel_state import get_tensor_model_parallel_rank
+        from vllm.logger import init_logger
+
+        if res is None or get_tensor_model_parallel_rank() != 0:
             return
-        draft_table, verify_table = mgr.cost_tables
+        log = init_logger(__name__)
+        (draft_table, verify_table), timings = res
         vt = np.asarray(verify_table)
         dt = np.asarray(draft_table)
         monotonic = bool(np.all(np.diff(vt) >= -1e-6))
         has_nan = bool(np.isnan(vt).any() or np.isnan(dt).any())
-        # Per-shape timing spread: small range across replays => stable timing.
         by_tokens: dict[int, list[float]] = defaultdict(list)
         for s in timings:
             by_tokens[s.num_target_tokens].append(s.forward_ms)
@@ -827,22 +842,41 @@ class NPUModelRunner(GPUModelRunner):
             spread,
         )
 
-    def _maybe_observe_av(self, num_sampled) -> None:
-        """Record-only DSpark adaptive-verification observation.
+    def _av_setup_shadow(self, cost_tables) -> None:
+        """[Shadow] Build the record-only D-Cut trim-decision shadow (stage 1).
 
-        Enabled by VLLM_ASCEND_DSPARK_AV_OBSERVE. Does not trim verification: it
-        folds this step's per-request acceptance (num_sampled) together with the
-        confidence the speculator produced for these same drafts on the previous
-        propose(), and the observer logs the calibration periodically.
+        Runs on every TP rank (creation is cheap); only rank 0 later records/logs.
+        """
+        import vllm_ascend.envs as envs_ascend
+        from vllm.v1.worker.gpu.spec_decode.rejection_sampler import get_max_chunk_logits
+
+        from vllm_ascend.worker.v2.spec_decode.dspark.av_shadow import DSparkAVShadow
+
+        self._av_shadow_obj = DSparkAVShadow(
+            cost_tables=cost_tables,
+            num_speculative_steps=self.num_speculative_steps,
+            num_bonus_tokens=self.model_state.num_new_sampled_tokens_per_step,
+            max_total_logits=get_max_chunk_logits(self.vocab_size),
+            interval=envs_ascend.VLLM_ASCEND_DSPARK_AV_OBSERVE_INTERVAL,
+        )
+
+    def _maybe_observe_av(self, num_sampled) -> None:
+        """Record-only DSpark adaptive-verification signals (observe + shadow).
+
+        Enabled by VLLM_ASCEND_DSPARK_AV_OBSERVE (calibration: predicted vs actual
+        per-position acceptance) and/or VLLM_ASCEND_DSPARK_AV_SHADOW (the would-be
+        trim decision). Neither trims: both only read the confidence the
+        speculator produced for these same drafts on the previous propose(). The
+        observer also folds this step's per-request acceptance (num_sampled).
         """
         spec = self.speculator
-        if spec is None or not getattr(spec, "_av_observe", False):
+        if spec is None or not getattr(spec, "_av_wants_confidence", False):
             return
         conf = getattr(spec, "draft_token_confidence_probs", None)
         if conf is None or num_sampled is None:
             return
-        # Only tp rank 0 observes/logs: every rank sees the same num_sampled, so
-        # one is enough and avoids N duplicate lines under tensor parallelism.
+        # Only tp rank 0 observes/logs: every rank sees the same num_sampled and
+        # confidence, so one is enough and avoids N duplicate lines under TP.
         if getattr(self, "_av_log_rank", None) is None:
             from vllm.distributed.parallel_state import (
                 get_tensor_model_parallel_rank,
@@ -851,30 +885,42 @@ class NPUModelRunner(GPUModelRunner):
             self._av_log_rank = get_tensor_model_parallel_rank() == 0
         if not self._av_log_rank:
             return
-        observer = getattr(self, "_av_observer", None)
-        if observer is None:
-            import vllm_ascend.envs as envs_ascend
-            from vllm_ascend.worker.v2.spec_decode.dspark.av_observe import (
-                DSparkAVObserver,
-            )
-
-            observer = DSparkAVObserver(
-                num_speculative_steps=self.num_speculative_steps,
-                num_bonus_tokens=self.model_state.num_new_sampled_tokens_per_step,
-                device=self.device,
-                interval=envs_ascend.VLLM_ASCEND_DSPARK_AV_OBSERVE_INTERVAL,
-            )
-            self._av_observer = observer
         num_reqs = int(num_sampled.shape[0])
-        try:
-            observer.record(conf[:num_reqs], num_sampled)
-        except Exception as exc:  # observation must never break inference
-            from vllm.logger import init_logger
+        if getattr(spec, "_av_observe", False):
+            observer = getattr(self, "_av_observer", None)
+            if observer is None:
+                import vllm_ascend.envs as envs_ascend
+                from vllm_ascend.worker.v2.spec_decode.dspark.av_observe import (
+                    DSparkAVObserver,
+                )
 
-            init_logger(__name__).warning(
-                "[DSPARK-AV-OBSERVE] record failed, disabling observation: %s", exc
-            )
-            spec._av_observe = False
+                observer = DSparkAVObserver(
+                    num_speculative_steps=self.num_speculative_steps,
+                    num_bonus_tokens=self.model_state.num_new_sampled_tokens_per_step,
+                    device=self.device,
+                    interval=envs_ascend.VLLM_ASCEND_DSPARK_AV_OBSERVE_INTERVAL,
+                )
+                self._av_observer = observer
+            try:
+                observer.record(conf[:num_reqs], num_sampled)
+            except Exception as exc:  # observation must never break inference
+                from vllm.logger import init_logger
+
+                init_logger(__name__).warning(
+                    "[DSPARK-AV-OBSERVE] record failed, disabling observation: %s", exc
+                )
+                spec._av_observe = False
+        shadow = getattr(self, "_av_shadow_obj", None)
+        if shadow is not None:
+            try:
+                shadow.record(conf[:num_reqs])
+            except Exception as exc:  # the shadow must never break inference
+                from vllm.logger import init_logger
+
+                init_logger(__name__).warning(
+                    "[DSPARK-AV-SHADOW] record failed, disabling shadow: %s", exc
+                )
+                self._av_shadow_obj = None
 
     def _copy_num_computed_tokens_to_cpu(self):
         # npu attention backend still need to use seq_lens_cpu,
