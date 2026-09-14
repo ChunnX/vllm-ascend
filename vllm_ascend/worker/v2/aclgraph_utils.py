@@ -278,6 +278,14 @@ class ModelWithContext(nn.Module):
     def compute_draft_logits(self, hidden_states: torch.Tensor):
         return self.original_model.compute_draft_logits(hidden_states)
 
+    def compute_confidence(self, *args, **kwargs):
+        # The DSpark confidence head is called from the sequential sampler when
+        # adaptive verification is on; like compute_logits above, it lives on the
+        # wrapped draft model and is not otherwise reachable through this wrapper,
+        # so the confidence branch would AttributeError while capturing the FULL
+        # draft graph. Proxy it so the confidence op is traced into the graph.
+        return self.original_model.compute_confidence(*args, **kwargs)
+
     def markov_embed(self, token_ids: torch.Tensor):
         return self.original_model.markov_embed(token_ids)
 
