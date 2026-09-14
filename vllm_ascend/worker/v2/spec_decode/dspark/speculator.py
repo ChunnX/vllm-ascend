@@ -118,6 +118,31 @@ class AscendDSparkSpeculator(DSparkSpeculator):
         self.query_cudagraph_manager.speculator = self
         self.query_cudagraph_manager.update_stream = self.update_stream
 
+    def capture(self) -> None:
+        """Bake the confidence-head branch into the captured FULL draft graph.
+
+        Upstream ``_sample_sequential`` guards the confidence computation with a
+        Python ``if self.enable_adaptive_verification``, and ``capture()`` traces
+        ``_generate_draft`` *directly* (upstream ``DFlashSpeculator.capture``
+        bypasses ``propose``). So when the flag is False at trace time the
+        confidence op is never recorded into the graph: every FULL replay then
+        skips it and ``draft_token_confidence_probs`` stays frozen at its
+        pre-capture value -- the bit-identical per-position confidence seen under
+        FULL_DECODE_ONLY, while eager (no captured graph, ``propose`` flips the
+        flag) produces a live signal.
+
+        The model runner has already read this flag (via
+        ``maybe_create_adaptive_verification_manager``) at setup and built no
+        trimming manager, so turning it on for capture only bakes the confidence
+        branch into the FULL graph -- recomputed on every replay -- without
+        enabling the (not-yet-ported) trimming path. Left True afterwards is
+        harmless: every trimming code path is gated on the manager, which is
+        None. Only meaningful when observing; otherwise capture unchanged.
+        """
+        if self._av_observe:
+            self.enable_adaptive_verification = True
+        super().capture()
+
     def set_attn(
         self,
         model_state: Any,
