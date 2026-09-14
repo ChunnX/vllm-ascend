@@ -115,6 +115,18 @@ env_variables: dict[str, Callable[[], Any]] = {
     "VLLM_ASCEND_DSPARK_AV_PROFILE_SMOKE": lambda: bool(
         int(os.getenv("VLLM_ASCEND_DSPARK_AV_PROFILE_SMOKE", "0"))
     ),
+    # [Shadow] Record-only D-Cut trim-decision dry run (stage 1 of the D-Cut
+    # plan, docs/adaptive_verify/). It does NOT trim: at startup it profiles the
+    # AV cost table (same path as the smoke), then every N verify steps it runs
+    # the upstream AdaptiveVerificationManager.get_num_tokens decision math on the
+    # live confidence + that cost table and logs the draft budget it *would*
+    # choose vs the full budget (trim %, estimated accepted-token loss). This
+    # answers "would AV trim at this concurrency / context length" without
+    # touching GDN state, before the real trimming path is wired. Needs a
+    # confidence head (like AV_OBSERVE). 1 enables, 0 (default) disables.
+    "VLLM_ASCEND_DSPARK_AV_SHADOW": lambda: bool(
+        int(os.getenv("VLLM_ASCEND_DSPARK_AV_SHADOW", "0"))
+    ),
     # Minimum KV-cache group width (layers per group). 0 disables the override
     # and keeps upstream grouping exactly. A positive value raises the group
     # width to at least this many layers, so a small heterogeneous draft bucket

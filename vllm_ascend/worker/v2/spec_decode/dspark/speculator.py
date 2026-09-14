@@ -58,7 +58,12 @@ class AscendDSparkSpeculator(DSparkSpeculator):
         # draft_token_confidence_probs, while the model runner still sees it False
         # at init and never builds the (unadapted) trimming manager.
         self._av_observe = bool(envs_ascend.VLLM_ASCEND_DSPARK_AV_OBSERVE)
-        if self._av_observe:
+        self._av_shadow = bool(envs_ascend.VLLM_ASCEND_DSPARK_AV_SHADOW)
+        # Both record-only observation and the shadow trim-decision need the
+        # confidence head live (they only read draft_token_confidence_probs,
+        # never trim); this single flag gates keeping it computed under capture.
+        self._av_wants_confidence = self._av_observe or self._av_shadow
+        if self._av_wants_confidence:
             # Seed a clean value so the first verify step reads zeros, not
             # uninitialized memory, before any propose() has run.
             self.draft_token_confidence_probs.zero_()
@@ -99,13 +104,15 @@ class AscendDSparkSpeculator(DSparkSpeculator):
         # Observation needs the confidence head; the trimming path would raise at
         # load, but record-only leaves enable_adaptive_verification False, so
         # check here and degrade gracefully instead of asserting mid-forward.
-        if self._av_observe and getattr(model.model, "confidence_head", None) is None:
+        if self._av_wants_confidence and getattr(model.model, "confidence_head", None) is None:
             logger.warning(
-                "VLLM_ASCEND_DSPARK_AV_OBSERVE is set but this DSpark checkpoint "
-                "has no confidence head (enable_confidence_head); disabling AV "
-                "observation."
+                "VLLM_ASCEND_DSPARK_AV_OBSERVE/_SHADOW is set but this DSpark "
+                "checkpoint has no confidence head (enable_confidence_head); "
+                "disabling AV observation and shadow."
             )
             self._av_observe = False
+            self._av_shadow = False
+            self._av_wants_confidence = False
         return model
 
     def init_cudagraph_manager(self, cudagraph_mode: CUDAGraphMode) -> None:
@@ -137,9 +144,9 @@ class AscendDSparkSpeculator(DSparkSpeculator):
         branch into the FULL graph -- recomputed on every replay -- without
         enabling the (not-yet-ported) trimming path. Left True afterwards is
         harmless: every trimming code path is gated on the manager, which is
-        None. Only meaningful when observing; otherwise capture unchanged.
+        None. Only meaningful when observing/shadowing; otherwise capture unchanged.
         """
-        if self._av_observe:
+        if self._av_wants_confidence:
             self.enable_adaptive_verification = True
         super().capture()
 
@@ -256,7 +263,7 @@ class AscendDSparkSpeculator(DSparkSpeculator):
         # the upstream confidence-head path fills draft_token_confidence_probs,
         # then restore it so nothing downstream (the trimming manager) ever sees
         # it enabled.
-        observe = self._av_observe and not self.enable_adaptive_verification
+        observe = self._av_wants_confidence and not self.enable_adaptive_verification
         if observe:
             self.enable_adaptive_verification = True
         try:
