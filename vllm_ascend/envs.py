@@ -106,6 +106,15 @@ env_variables: dict[str, Callable[[], Any]] = {
     "VLLM_ASCEND_DSPARK_AV_OBSERVE_INTERVAL": lambda: int(
         os.getenv("VLLM_ASCEND_DSPARK_AV_OBSERVE_INTERVAL", "200")
     ),
+    # [Smoke] Run the DSpark adaptive-verification cost-table profiling path once
+    # at startup to check it works on Ascend. It does NOT enable trimming: a
+    # throwaway manager profiles per-shape step cost under ACLGraph and logs the
+    # cost curves, per-shape timing spread, and monotonicity/NaN checks, so we
+    # can tell whether ACLGraph replay timing can feed a cost model at all.
+    # 1 enables, 0 (default) disables.
+    "VLLM_ASCEND_DSPARK_AV_PROFILE_SMOKE": lambda: bool(
+        int(os.getenv("VLLM_ASCEND_DSPARK_AV_PROFILE_SMOKE", "0"))
+    ),
     # Minimum KV-cache group width (layers per group). 0 disables the override
     # and keeps upstream grouping exactly. A positive value raises the group
     # width to at least this many layers, so a small heterogeneous draft bucket

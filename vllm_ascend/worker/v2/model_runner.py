@@ -744,6 +744,89 @@ class NPUModelRunner(GPUModelRunner):
             self._copy_num_computed_tokens_to_cpu()
             self._maybe_observe_av(num_sampled)
 
+    def capture_model(self) -> int:
+        result = super().capture_model()
+        import vllm_ascend.envs as envs_ascend
+
+        if envs_ascend.VLLM_ASCEND_DSPARK_AV_PROFILE_SMOKE and self.speculator is not None:
+            self._av_profile_smoke()
+        return result
+
+    def _av_profile_smoke(self) -> None:
+        """[Smoke] Check the AV cost-table profiling path works on Ascend (T-B).
+
+        Reuses upstream #47808's profiling -- StepTimingCollector plus
+        AdaptiveVerificationManager.batches_to_profile / set_initial_cost_curves --
+        to measure per-shape step cost under ACLGraph, WITHOUT wiring adaptive
+        verification into serving: the manager is a throwaway (never stored on
+        self, prepare_inputs untouched). If any step fails on Ascend it logs the
+        reason (that is the answer); on success it logs the cost curves, the
+        per-shape timing spread (small spread => timing is stable enough to
+        rank budgets), and monotonicity / NaN checks.
+        """
+        from collections import defaultdict
+
+        import numpy as np
+        from vllm.distributed.parallel_state import get_tensor_model_parallel_rank
+        from vllm.logger import init_logger
+        from vllm.v1.worker.gpu.spec_decode.adaptive_verification import (
+            AdaptiveVerificationManager,
+        )
+        from vllm.v1.worker.gpu.spec_decode.rejection_sampler import get_max_chunk_logits
+
+        log = init_logger(__name__)
+        capture_sizes = self.cudagraph_manager.captured_token_counts()
+        if not capture_sizes:
+            log.warning("[AV-PROFILE-SMOKE] no captured cudagraph sizes; skipping")
+            return
+        try:
+            # Throwaway manager: bypasses maybe_create_* (which would reject GDN),
+            # only used to drive the profiling replays and build the curves.
+            mgr = AdaptiveVerificationManager(
+                self.req_states,
+                self.input_buffers.query_start_loc,
+                num_bonus_tokens=self.model_state.num_new_sampled_tokens_per_step,
+                max_total_logits=get_max_chunk_logits(self.vocab_size),
+            )
+            with self.step_timing.collect() as timings:
+                for batch in mgr.batches_to_profile(capture_sizes):
+                    self._dummy_run(**batch)
+            # set_initial_cost_curves broadcasts across TP ranks, so every rank
+            # must reach it -- keep it before the rank-0 log gate below.
+            mgr.set_initial_cost_curves(timings)
+        except Exception as exc:
+            log.warning("[AV-PROFILE-SMOKE] profiling FAILED on Ascend: %r", exc)
+            return
+
+        if get_tensor_model_parallel_rank() != 0:
+            return
+        draft_table, verify_table = mgr.cost_tables
+        vt = np.asarray(verify_table)
+        dt = np.asarray(draft_table)
+        monotonic = bool(np.all(np.diff(vt) >= -1e-6))
+        has_nan = bool(np.isnan(vt).any() or np.isnan(dt).any())
+        # Per-shape timing spread: small range across replays => stable timing.
+        by_tokens: dict[int, list[float]] = defaultdict(list)
+        for s in timings:
+            by_tokens[s.num_target_tokens].append(s.forward_ms)
+        spread = " ".join(
+            f"tok{k}:med={float(np.median(v)):.3f}ms,range={max(v) - min(v):.3f}"
+            for k, v in sorted(by_tokens.items())
+            if len(v) > 1
+        )
+        log.warning(
+            "[AV-PROFILE-SMOKE] OK: samples=%d verify_len=%d draft_len=%d "
+            "verify[min..max]=%.4f..%.4f monotonic=%s has_nan=%s | spread: %s",
+            len(timings),
+            len(verify_table),
+            len(draft_table),
+            float(vt.min()),
+            float(vt.max()),
+            monotonic,
+            has_nan,
+            spread,
+        )
+
     def _maybe_observe_av(self, num_sampled) -> None:
         """Record-only DSpark adaptive-verification observation.
 
