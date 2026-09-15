@@ -138,6 +138,20 @@ env_variables: dict[str, Callable[[], Any]] = {
     "VLLM_ASCEND_DSPARK_ENABLE_DCUT": lambda: bool(
         int(os.getenv("VLLM_ASCEND_DSPARK_ENABLE_DCUT", "0"))
     ),
+    # Manual per-request draft cap for D-Cut GDN verification (step 3 of the
+    # D-Cut GDN integration, docs/adaptive_verify/). -1 (default) disables manual
+    # trimming. A value >= 0 drives the existing MRV2 trimming path
+    # (compact_batch -> reallocate_drafts) with a deterministic per-request cap
+    # -- each verification request retains at most this many draft tokens
+    # (bounded by its scheduled draft count) -- instead of the confidence cost
+    # model, so the variable-length layout can be validated without depending on
+    # the confidence head. Only takes effect when VLLM_ASCEND_DSPARK_ENABLE_DCUT
+    # is 1; it also bypasses the varlen-backend rejection that would otherwise
+    # leave GDN without an adaptive-verification manager. cap 0 keeps only the
+    # anchor query per request; a large cap matches the no-trim step-1 path.
+    "VLLM_ASCEND_DSPARK_DCUT_MANUAL_CAP": lambda: int(
+        os.getenv("VLLM_ASCEND_DSPARK_DCUT_MANUAL_CAP", "-1")
+    ),
     # Minimum KV-cache group width (layers per group). 0 disables the override
     # and keeps upstream grouping exactly. A positive value raises the group
     # width to at least this many layers, so a small heterogeneous draft bucket

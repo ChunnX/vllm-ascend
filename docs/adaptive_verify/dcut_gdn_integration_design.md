@@ -96,6 +96,28 @@ Qwen3.6-27B 连续多轮人工变长验证:**已提交 token 序列正确** + **
 - 模型状态按**同一已提交前缀**比较，不按同一迭代轮次硬对齐；浮点算子**明确容差**，不把"逐元素一致"
   默认 bitwise。
 
+#### ③ 的具体落地（人工 capacities 注入，跳过 confidence）
+- **策略函数**（`spec_decode/dspark/dcut_manual_cap.py`，numpy-only、可 CPU UT）：
+  `compute_manual_capacities(scheduled_drafts, cap)` = `min(scheduled, cap)`（`cap<0` 不裁），
+  结果逐元素 `<= scheduled`（合法 capacity）；`manual_batch_budget()` 出 `draft_budget=Σcap`。
+  **不吃 confidence 参数——结构上无法依赖 confidence。**
+- **manager 子类** `DcutManualCapVerificationManager`（同文件，惰性工厂建）：只重写两处 confidence 入口
+  `get_num_tokens`（预算=Σ人工 cap，不查 cost table）+ `reallocate_drafts`（`capacities` 直接来自
+  策略函数，替掉 `_assign_draft_token_budget` 排名),其余 `cu_num_logits`/`query_start_loc` cumsum 与
+  上游**逐行相同**;并把 `batches_to_profile`/`set_initial_cost_curves`/`record_confidences` 置空
+  (人工预算不需要 cost model,也不碰 confidence head)。
+- **接线**（`patch/worker/patch_v2/patch_adaptive_verification.py`）：GDN 被上游工厂
+  `maybe_create_adaptive_verification_manager` 拒绝(varlen backend 检查 + 要求 `ALWAYS`)→ 现状
+  `adaptive_verification=None`,裁剪链路根本不跑。patch 工厂:`ENABLE_DCUT=1 且 MANUAL_CAP>=0` 时
+  返回人工 manager(dcut 算子已提供 varlen 路径),否则原样交回上游。这样 `initialize_kv_cache`(base:540)
+  拿到非 None manager,base 的 `cudagraph_mode=FULL_AND_PIECEWISE`(base:574)等 setup 照跑。
+- **env**:`VLLM_ASCEND_DSPARK_DCUT_MANUAL_CAP`(int,默认 -1 关);仅 `VLLM_ASCEND_DSPARK_ENABLE_DCUT=1`
+  时生效。`cap=0` 全裁到只剩 anchor;`cap` 很大 = ① 的不裁。
+- **验收分层**:策略函数的 cap→capacity/budget 与 confidence-无关性 由 CPU UT
+  (`tests/ut/spec_decode/test_dcut_manual_cap.py`)钉死;device 侧 `reallocate_drafts` 复用上游布局,
+  由步骤④的 NPU 连续多轮模型验证覆盖。**注意**:工厂绕过的 varlen backend 检查是在赌"非 GDN(全注意力)
+  层也能在裁剪下跑变长 decode"——这点只有步骤④真实模型跑起来才证得了,若全注意力层不支持会在此暴露。
+
 ### UT 覆盖现状（诚实记录）
 - 两个算子 UT 已在 910B pass。`_dcut_recurrent_golden`（`test_dcut_recurrent_..._delta_rule.py:8`）已用
   **二维 `ssm_state_indices[req, accepted-1]` + 累计 `query_start_loc` + `num_accepted`**——**印证 §1.1/1.2 契约**。

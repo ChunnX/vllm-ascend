@@ -1315,4 +1315,20 @@
 #       https://github.com/vllm-project/vllm/pull/47808
 #    Future Plan:
 #       Remove this patch when the compiled allocator is supported on Ascend.
+#   2. `vllm.v1.worker.gpu.model_runner.maybe_create_adaptive_verification_manager`
+#    Why:
+#       The upstream factory rejects GDN (varlen-mismatch backend check plus the
+#       AttentionCGSupport.ALWAYS requirement), so DSpark GDN gets no adaptive
+#       manager and the D-Cut manual-cap trimming path can never engage.
+#    How:
+#       Wrap the factory: when VLLM_ASCEND_DSPARK_ENABLE_DCUT is on and
+#       VLLM_ASCEND_DSPARK_DCUT_MANUAL_CAP >= 0, return the manual-cap manager
+#       (the dcut GDN ops provide the varlen path; the manual budget needs no
+#       confidence or cost table); otherwise defer to upstream unchanged. Rebind
+#       the name in the model_runner namespace the runner calls it from.
+#    Related PR (if no, explain why):
+#       No -- D-Cut GDN integration is vllm-ascend original work, not upstream.
+#    Future Plan:
+#       Fold into the real adaptive-verification wiring once the confidence-driven
+#       D-Cut trimming path (stage C) lands.
 #
