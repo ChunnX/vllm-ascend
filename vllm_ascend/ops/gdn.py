@@ -32,6 +32,7 @@ from vllm_ascend.attention.utils import (
     maybe_save_kv_layer_to_connector,
     wait_for_kv_layer_from_connector,
 )
+import vllm_ascend.envs as envs_ascend
 from vllm_ascend.device.device_op import DeviceOperator
 from vllm_ascend.distributed.kv_transfer.kv_pool.ascend_store.attention_fence import record_attention_compute_start
 from vllm_ascend.ops.gdn_attn_builder import AscendGDNAttentionBackend
@@ -296,6 +297,10 @@ class AscendGatedDeltaNetAttention(GatedDeltaNetAttention):
         self_kv_cache = self.kv_cache
         ssm_state = self_kv_cache[1]
         num_actual_tokens = attn_metadata.num_actual_tokens
+        # D-Cut integration step 1: route the spec (draft-verify) conv/ssm through
+        # the variable-length dcut kernels. Step 1 keeps the full verify length
+        # (no trimming), so this must match the fixed-length path as a regression.
+        enable_dcut = envs_ascend.VLLM_ASCEND_DSPARK_ENABLE_DCUT
 
         mixed_qkv = mixed_qkv[:num_actual_tokens]
         b = b[:num_actual_tokens]
@@ -321,20 +326,36 @@ class AscendGatedDeltaNetAttention(GatedDeltaNetAttention):
             spec_causal_conv1d_meta = attn_metadata.spec_decode_metadata.spec_causal_conv1d
             spec_query_start_loc_device = spec_causal_conv1d_meta.query_start_loc
             output_spec = torch.empty_like(mixed_qkv_spec)
-            torch.ops._C_ascend.npu_causal_conv1d_custom(
-                output_spec,
-                mixed_qkv_spec,
-                conv_weights_T,
-                conv_state=self_kv_cache[0],
-                bias_opt=self.conv1d.bias,
-                query_start_loc_opt=spec_query_start_loc_device,
-                cache_indices_opt=spec_causal_conv1d_meta.cache_indices,
-                initial_state_mode_opt=None,
-                num_accepted_tokens_opt=spec_causal_conv1d_meta.num_accepted_tokens,
-                activation_mode=activation_num,
-                pad_slot_id=PAD_SLOT_ID,
-                run_mode=1,
-            )
+            if enable_dcut:
+                # dcut varlen conv1d: same packed varlen inputs, no run_mode /
+                # initial_state_mode (dcut focuses on the state-update path).
+                torch.ops._C_ascend.npu_dcut_causal_conv1d(
+                    output_spec,
+                    mixed_qkv_spec,
+                    conv_weights_T,
+                    self_kv_cache[0],
+                    bias=self.conv1d.bias,
+                    query_start_loc=spec_query_start_loc_device,
+                    cache_indices=spec_causal_conv1d_meta.cache_indices,
+                    num_accepted_tokens=spec_causal_conv1d_meta.num_accepted_tokens,
+                    activation_mode=activation_num,
+                    pad_slot_id=PAD_SLOT_ID,
+                )
+            else:
+                torch.ops._C_ascend.npu_causal_conv1d_custom(
+                    output_spec,
+                    mixed_qkv_spec,
+                    conv_weights_T,
+                    conv_state=self_kv_cache[0],
+                    bias_opt=self.conv1d.bias,
+                    query_start_loc_opt=spec_query_start_loc_device,
+                    cache_indices_opt=spec_causal_conv1d_meta.cache_indices,
+                    initial_state_mode_opt=None,
+                    num_accepted_tokens_opt=spec_causal_conv1d_meta.num_accepted_tokens,
+                    activation_mode=activation_num,
+                    pad_slot_id=PAD_SLOT_ID,
+                    run_mode=1,
+                )
             mixed_qkv_spec = output_spec
 
         # 1.2: Process the remaining part
@@ -466,18 +487,40 @@ class AscendGatedDeltaNetAttention(GatedDeltaNetAttention):
             # (csrc/recurrent_gated_delta_rule), NOT the built-in CANN operator.
             # The custom op extends dtype support (e.g. float32 state) and is
             # loaded at runtime via ASCEND_CUSTOM_OPP_PATH.
-            core_attn_out_spec = torch.ops._C_ascend.npu_recurrent_gated_delta_rule(
-                query=query_spec.squeeze(0),
-                key=key_spec.squeeze(0),
-                value=value_spec.squeeze(0),
-                g=g_spec.squeeze(0),
-                beta=beta_spec.squeeze(0),
-                state=ssm_state,
-                scale=key_spec.shape[-1] ** -0.5,
-                actual_seq_lengths=actual_seq_lengths,
-                ssm_state_indices=spec_state_indices_tensor.flatten(),
-                num_accepted_tokens=spec_causal_conv1d_meta.num_accepted_tokens.to(torch.int32),
-            ).unsqueeze(0)
+            if enable_dcut:
+                # dcut varlen recurrent contract (see docs/adaptive_verify/):
+                #  - cumulative query_start_loc, NOT the old actual_seq_lengths
+                #    ([first, +per-request-length]);
+                #  - 2D [B, S] ssm_state_indices, NOT flattened -- the kernel reads
+                #    ssm_state_indices[b, num_accepted-1] for the start state;
+                #  - num_accepted selects the previous round's state row and is
+                #    independent of this round's (possibly shorter) query length.
+                core_attn_out_spec = torch.ops._C_ascend.npu_dcut_recurrent_gated_delta_rule(
+                    query_spec.squeeze(0),
+                    key_spec.squeeze(0),
+                    value_spec.squeeze(0),
+                    ssm_state,
+                    beta=beta_spec.squeeze(0),
+                    scale=key_spec.shape[-1] ** -0.5,
+                    query_start_loc=spec_causal_conv1d_meta.query_start_loc,
+                    ssm_state_indices=spec_state_indices_tensor,
+                    num_accepted_tokens=spec_causal_conv1d_meta.num_accepted_tokens.to(torch.int32),
+                    g=g_spec.squeeze(0),
+                    zero_padded_output=False,
+                ).unsqueeze(0)
+            else:
+                core_attn_out_spec = torch.ops._C_ascend.npu_recurrent_gated_delta_rule(
+                    query=query_spec.squeeze(0),
+                    key=key_spec.squeeze(0),
+                    value=value_spec.squeeze(0),
+                    g=g_spec.squeeze(0),
+                    beta=beta_spec.squeeze(0),
+                    state=ssm_state,
+                    scale=key_spec.shape[-1] ** -0.5,
+                    actual_seq_lengths=actual_seq_lengths,
+                    ssm_state_indices=spec_state_indices_tensor.flatten(),
+                    num_accepted_tokens=spec_causal_conv1d_meta.num_accepted_tokens.to(torch.int32),
+                ).unsqueeze(0)
         else:
             core_attn_out_spec, last_recurrent_state = None, None
 

@@ -127,6 +127,17 @@ env_variables: dict[str, Callable[[], Any]] = {
     "VLLM_ASCEND_DSPARK_AV_SHADOW": lambda: bool(
         int(os.getenv("VLLM_ASCEND_DSPARK_AV_SHADOW", "0"))
     ),
+    # Route the GDN spec (draft-verification) path through the D-Cut variable-
+    # length operators (npu_dcut_causal_conv1d / npu_dcut_recurrent_gated_delta_rule)
+    # instead of the fixed-length npu_causal_conv1d_custom / npu_recurrent_gated_
+    # delta_rule. Step 1 of the D-Cut GDN integration (docs/adaptive_verify/): with
+    # this on but no trimming, the dcut path must match the existing path at full
+    # verify length (a regression check) before manual/confidence trimming is
+    # enabled. Passes the cumulative query_start_loc and the 2D [B, S]
+    # ssm_state_indices the dcut kernels require. 1 enables, 0 (default) disables.
+    "VLLM_ASCEND_DSPARK_ENABLE_DCUT": lambda: bool(
+        int(os.getenv("VLLM_ASCEND_DSPARK_ENABLE_DCUT", "0"))
+    ),
     # Minimum KV-cache group width (layers per group). 0 disables the override
     # and keeps upstream grouping exactly. A positive value raises the group
     # width to at least this many layers, so a small heterogeneous draft bucket
