@@ -17,6 +17,7 @@
 #
 from typing import Any, cast
 
+import numpy as np
 import torch
 from vllm.config import VllmConfig, get_layers_from_vllm_config, set_current_vllm_config
 from vllm.config.compilation import CUDAGraphMode
@@ -63,6 +64,11 @@ class AscendDSparkSpeculator(DSparkSpeculator):
         # confidence head live (they only read draft_token_confidence_probs,
         # never trim); this single flag gates keeping it computed under capture.
         self._av_wants_confidence = self._av_observe or self._av_shadow
+        # Per-confidence-row persistent slot + prefill flag from the propose that
+        # last wrote draft_token_confidence_probs, so the observer realigns the
+        # next verify step by request identity (see _snapshot_av_confidence_alignment).
+        self._av_conf_slots: np.ndarray | None = None
+        self._av_conf_prefill: np.ndarray | None = None
         if self._av_wants_confidence:
             # Seed a clean value so the first verify step reads zeros, not
             # uninitialized memory, before any propose() has run.
@@ -273,7 +279,7 @@ class AscendDSparkSpeculator(DSparkSpeculator):
                     self.input_buffers.positions, self.max_num_tokens, torch.from_numpy(self.input_batch.is_prefilling_np)
                 ),
             ):
-                return super().propose(
+                result = super().propose(
                     input_batch,
                     attn_metadata,
                     slot_mappings,
@@ -291,6 +297,32 @@ class AscendDSparkSpeculator(DSparkSpeculator):
                     mm_inputs,
                     is_profile=is_profile,
                 )
+            # super().propose just wrote draft_token_confidence_probs[:num_reqs] in
+            # THIS batch's row order; snapshot which persistent slot each row maps
+            # to so the observer can realign the next verify step (which runs in a
+            # different batch order) by request identity, not leading row.
+            if self._av_wants_confidence and not dummy_run:
+                self._snapshot_av_confidence_alignment(input_batch)
+            return result
         finally:
             if observe:
                 self.enable_adaptive_verification = False
+
+    def _snapshot_av_confidence_alignment(self, input_batch: InputBatch) -> None:
+        """Record per-confidence-row persistent slot + prefill flag (record-only).
+
+        ``idx_mapping_np[row]`` is the req_states slot for batch ``row``; snapshot
+        it (CPU, no D2H) while it still matches the confidence just written, since
+        the InputBatch buffers are reused/overwritten by the next step's
+        prepare_inputs. ``is_prefilling_np`` is kept only to help locate NaN
+        confidence rows (seen during prefill bursts).
+        """
+        idx_np = getattr(input_batch, "idx_mapping_np", None)
+        num_reqs = int(getattr(input_batch, "num_reqs", 0) or 0)
+        if idx_np is None or num_reqs == 0:
+            self._av_conf_slots = None
+            self._av_conf_prefill = None
+            return
+        self._av_conf_slots = np.asarray(idx_np[:num_reqs]).copy()
+        pref = getattr(input_batch, "is_prefilling_np", None)
+        self._av_conf_prefill = None if pref is None else np.asarray(pref[:num_reqs]).copy()

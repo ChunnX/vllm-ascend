@@ -738,7 +738,7 @@ class NPUModelRunner(GPUModelRunner):
         # Without MTP, update_requests writes the shared NumPy/torch CPU state.
         if self.speculator is not None:
             self._copy_num_computed_tokens_to_cpu()
-            self._maybe_observe_av(num_sampled)
+            self._maybe_observe_av(num_sampled, idx_mapping)
 
     def capture_model(self) -> int:
         result = super().capture_model()
@@ -815,25 +815,45 @@ class NPUModelRunner(GPUModelRunner):
         (draft_table, verify_table), timings = res
         vt = np.asarray(verify_table)
         dt = np.asarray(draft_table)
-        monotonic = bool(np.all(np.diff(vt) >= -1e-6))
         has_nan = bool(np.isnan(vt).any() or np.isnan(dt).any())
-        by_tokens: dict[int, list[float]] = defaultdict(list)
+        # NOTE: the built verify table is monotone BY CONSTRUCTION
+        # (build_cost_tables_from_curves applies np.maximum.accumulate), so its
+        # monotonicity proves nothing about measurement stability. What matters is
+        # (a) whether the RAW per-shape medians are monotone before that clamp, and
+        # (b) whether each shape ran in the intended execution mode -- a shape that
+        # silently ran eager while its neighbours ran a captured FULL graph shows
+        # up as a median outlier (e.g. tok256), not as noise. Break the spread down
+        # by full_cudagraph / num_reqs so those are visible.
+        by_shape: dict[int, list[tuple[float, bool, int]]] = defaultdict(list)
         for s in timings:
-            by_tokens[s.num_target_tokens].append(s.forward_ms)
+            by_shape[s.num_target_tokens].append(
+                (s.forward_ms, bool(s.full_cudagraph), int(s.num_reqs))
+            )
+        shapes = sorted(by_shape.items())
+        raw_medians = [float(np.median([f for f, _, _ in v])) for _, v in shapes]
+        raw_monotonic = bool(np.all(np.diff(raw_medians) >= -1e-6))
         spread = " ".join(
-            f"tok{k}:med={float(np.median(v)):.3f}ms,range={max(v) - min(v):.3f}"
-            for k, v in sorted(by_tokens.items())
+            f"tok{k}[cg={('T' if all(c for _, c, _ in v) else 'F' if not any(c for _, c, _ in v) else 'mix')}"
+            f",nr={v[0][2]}]:med={float(np.median([f for f, _, _ in v])):.3f}ms,"
+            f"range={max(f for f, _, _ in v) - min(f for f, _, _ in v):.3f}"
+            for k, v in shapes
             if len(v) > 1
         )
+        import vllm.envs as vllm_envs
+
+        ctx_len = getattr(vllm_envs, "VLLM_ADAPTIVE_VERIFICATION_PROFILE_CONTEXT_LEN", "?")
         log.warning(
-            "[AV-PROFILE-SMOKE] OK: samples=%d verify_len=%d draft_len=%d "
-            "verify[min..max]=%.4f..%.4f monotonic=%s has_nan=%s | spread: %s",
+            "[AV-PROFILE-SMOKE] OK: samples=%d verify_len=%d draft_len=%d profile_ctx=%s "
+            "verify[min..max]=%.4f..%.4f table_monotonic=%s(forced) raw_median_monotonic=%s "
+            "has_nan=%s | spread(cg=FULLgraph? nr=num_reqs): %s",
             len(timings),
             len(verify_table),
             len(draft_table),
+            ctx_len,
             float(vt.min()),
             float(vt.max()),
-            monotonic,
+            bool(np.all(np.diff(vt) >= -1e-6)),
+            raw_monotonic,
             has_nan,
             spread,
         )
@@ -856,20 +876,27 @@ class NPUModelRunner(GPUModelRunner):
             interval=envs_ascend.VLLM_ASCEND_DSPARK_AV_OBSERVE_INTERVAL,
         )
 
-    def _maybe_observe_av(self, num_sampled) -> None:
+    def _maybe_observe_av(self, num_sampled, idx_mapping) -> None:
         """Record-only DSpark adaptive-verification signals (observe + shadow).
 
-        Enabled by VLLM_ASCEND_DSPARK_AV_OBSERVE (calibration: predicted vs actual
-        per-position acceptance) and/or VLLM_ASCEND_DSPARK_AV_SHADOW (the would-be
-        trim decision). Neither trims: both only read the confidence the
-        speculator produced for these same drafts on the previous propose(). The
-        observer also folds this step's per-request acceptance (num_sampled).
+        Enabled by VLLM_ASCEND_DSPARK_AV_OBSERVE (calibration) and/or
+        VLLM_ASCEND_DSPARK_AV_SHADOW (would-be trim decision). Neither trims.
+
+        The confidence buffer holds the PREVIOUS propose's output (this step's
+        propose runs after postprocess_sampled), i.e. the confidence for exactly
+        the drafts this step just verified. That propose ran in a different batch
+        order, so realign by **persistent request slot**: confidence row r has slot
+        ``spec._av_conf_slots[r]``; num_sampled position p has slot
+        ``idx_mapping[p]``. Pair them iff the slots match; requests present in only
+        one step (prefill admission / preemption / reorder) are counted as
+        ``unmatched`` and excluded, never aligned by leading row.
         """
         spec = self.speculator
         if spec is None or not getattr(spec, "_av_wants_confidence", False):
             return
         conf = getattr(spec, "draft_token_confidence_probs", None)
-        if conf is None or num_sampled is None:
+        prev_slots = getattr(spec, "_av_conf_slots", None)
+        if conf is None or num_sampled is None or prev_slots is None or idx_mapping is None:
             return
         # Only tp rank 0 observes/logs: every rank sees the same num_sampled and
         # confidence, so one is enough and avoids N duplicate lines under TP.
@@ -881,24 +908,41 @@ class NPUModelRunner(GPUModelRunner):
             self._av_log_rank = get_tensor_model_parallel_rank() == 0
         if not self._av_log_rank:
             return
-        num_reqs = int(num_sampled.shape[0])
-        if getattr(spec, "_av_observe", False):
-            observer = getattr(self, "_av_observer", None)
-            if observer is None:
-                import vllm_ascend.envs as envs_ascend
-                from vllm_ascend.worker.v2.spec_decode.dspark.av_observe import (
-                    DSparkAVObserver,
-                )
+        import numpy as np
 
-                observer = DSparkAVObserver(
-                    num_speculative_steps=self.num_speculative_steps,
-                    num_bonus_tokens=self.model_state.num_new_sampled_tokens_per_step,
-                    device=self.device,
-                    interval=envs_ascend.VLLM_ASCEND_DSPARK_AV_OBSERVE_INTERVAL,
-                )
-                self._av_observer = observer
+        num_reqs = int(num_sampled.shape[0])
+        this_slots = idx_mapping
+        if hasattr(this_slots, "detach"):
+            this_slots = this_slots.detach().to("cpu").numpy()
+        this_slots = np.asarray(this_slots).reshape(-1)[:num_reqs]
+        # slot -> confidence row (skip -1 masked/padded slots on either side).
+        slot_to_prev_row = {
+            int(s): r for r, s in enumerate(np.asarray(prev_slots).reshape(-1)) if int(s) >= 0
+        }
+        prev_rows: list[int] = []
+        this_pos: list[int] = []
+        for p in range(num_reqs):
+            s = int(this_slots[p])
+            if s < 0:
+                continue
+            r = slot_to_prev_row.get(s)
+            if r is not None:
+                prev_rows.append(r)
+                this_pos.append(p)
+        unmatched = num_reqs - len(this_pos)
+        observer = self._get_av_observer(spec)
+        if not prev_rows:
+            if observer is not None:  # surface churn even when nothing matched
+                observer.record(num_sampled[:0], num_sampled[:0], unmatched=unmatched)
+            return
+        prev_rows_t = torch.as_tensor(prev_rows, device=conf.device, dtype=torch.long)
+        this_pos_t = torch.as_tensor(this_pos, device=num_sampled.device, dtype=torch.long)
+        conf_aligned = conf.index_select(0, prev_rows_t)
+        num_sampled_aligned = num_sampled.index_select(0, this_pos_t)
+        self._av_diagnose_nan(spec, conf_aligned, prev_rows, int(len(prev_slots)))
+        if observer is not None:
             try:
-                observer.record(conf[:num_reqs], num_sampled)
+                observer.record(conf_aligned, num_sampled_aligned, unmatched=unmatched)
             except Exception as exc:  # observation must never break inference
                 from vllm.logger import init_logger
 
@@ -909,7 +953,7 @@ class NPUModelRunner(GPUModelRunner):
         shadow = getattr(self, "_av_shadow_obj", None)
         if shadow is not None:
             try:
-                shadow.record(conf[:num_reqs])
+                shadow.record(conf_aligned)
             except Exception as exc:  # the shadow must never break inference
                 from vllm.logger import init_logger
 
@@ -917,6 +961,60 @@ class NPUModelRunner(GPUModelRunner):
                     "[DSPARK-AV-SHADOW] record failed, disabling shadow: %s", exc
                 )
                 self._av_shadow_obj = None
+
+    def _get_av_observer(self, spec):
+        """Lazily create the DSparkAVObserver, or None when observation is off."""
+        if not getattr(spec, "_av_observe", False):
+            return None
+        observer = getattr(self, "_av_observer", None)
+        if observer is None:
+            import vllm_ascend.envs as envs_ascend
+            from vllm_ascend.worker.v2.spec_decode.dspark.av_observe import (
+                DSparkAVObserver,
+            )
+
+            observer = DSparkAVObserver(
+                num_speculative_steps=self.num_speculative_steps,
+                num_bonus_tokens=self.model_state.num_new_sampled_tokens_per_step,
+                device=self.device,
+                interval=envs_ascend.VLLM_ASCEND_DSPARK_AV_OBSERVE_INTERVAL,
+            )
+            self._av_observer = observer
+        return observer
+
+    def _av_diagnose_nan(self, spec, conf_aligned, prev_rows, prev_num_reqs) -> None:
+        """One-shot: on the first NaN confidence, report whether the NaN rows were
+        prefilling, to locate the source (bs16 logs showed conf=nan on a large
+        prefill-burst step). Never raises into inference."""
+        if getattr(self, "_av_nan_reported", False):
+            return
+        try:
+            finite_rows = torch.isfinite(conf_aligned).all(dim=1)
+            if bool(finite_rows.all()):
+                return
+            self._av_nan_reported = True
+            import numpy as np
+            from vllm.logger import init_logger
+
+            nan_mask = (~finite_rows).cpu().numpy()
+            n_nan = int(nan_mask.sum())
+            prefill = getattr(spec, "_av_conf_prefill", None)
+            pf: object = "?"
+            if prefill is not None:
+                prefill = np.asarray(prefill).reshape(-1)
+                nan_prev = [prev_rows[i] for i in range(len(prev_rows)) if nan_mask[i]]
+                nan_prev = [r for r in nan_prev if r < len(prefill)]
+                pf = int(prefill[nan_prev].sum()) if nan_prev else 0
+            init_logger(__name__).warning(
+                "[DSPARK-AV-OBSERVE] first NaN confidence: %d/%d matched rows "
+                "non-finite, %s of them prefilling (proposing-step num_reqs=%d)",
+                n_nan,
+                len(prev_rows),
+                pf,
+                prev_num_reqs,
+            )
+        except Exception:
+            self._av_nan_reported = True
 
     def _copy_num_computed_tokens_to_cpu(self):
         # npu attention backend still need to use seq_lens_cpu,
