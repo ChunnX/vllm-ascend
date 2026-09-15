@@ -29,13 +29,26 @@
 - **契约**：**禁止** `num_accepted = min(previous_accepted, current_query_len)`。上一轮选 6，本轮只处理
   2 个 query，仍必须读第 6 个状态。并写清 `num_accepted` 是否含 anchor（与"接受的 draft 数"区分）。
 
-### 1.4 人工 cap 是**模型级 compaction**，不是只改 GDN 元数据
+### 1.4 人工 cap 是**模型级 compaction**，且要注入**逐请求 capacities**（不是只给总预算）
 只把累计偏移改成 `[0,2,5]` 而不重排真实输入,请求 2 会读到 `A2 A3 B0`（错）。
 - **契约**：cap 必须**统一作用于真实输入及其全部派生布局**：input_ids、positions、attention/GDN 的
   query 边界、KV slot mapping、验证采样的 draft/logits 索引与计数。GDN builder **消费**已经一致的
   裁剪结果,不能单独决定裁剪。
-- 落点：复用 base 里 #15098 的 `compact_batch`/`reallocate_drafts`（prepare_inputs），用**人工预算**
-  驱动（而非 confidence 的 `get_num_tokens`）。→ 独立算子测试只能证算子对,不能算"模型连续多轮验证"完成。
+- **关键（review 补正）**：`compact_batch()`（`adaptive_verification.py:339`）只按**总预算在 CPU 侧
+  均分** draft 数；真正的**逐请求容量**在 `reallocate_drafts()`（`:379`）里由 `_assign_draft_token_budget`
+  (confidence) 产出 `capacities`。**只喂"总预算"得不到你指定的逐请求 cap**（人工 [0,3] 只设总预算 3
+  不保证还是 [0,3]，也没真解耦 confidence）。
+- **人工注入方案**：
+  ```
+  request_id → 本轮保留 draft 数 (manual capacities，按最终请求顺序)
+      ↓  跳过 confidence 排名，直接提供合法 capacities
+  capacities[i] = min(manual_cap[i], scheduled_drafts[i])   # 受实际 scheduled draft 约束
+      ↓
+  总预算 = sum(capacities)；保留原有非 draft token 数；query = 1 + cap（仅普通 decode 请求）
+      ↓  复用后续累计偏移 / 输入构造 / 采样布局（与真实 AV 同一条路）
+  ```
+  人工模式跳过 confidence、直接给 capacities；真实 AV 仍由原策略生成 capacities。**共用下游执行路径，
+  不维护第二套 compaction。** → 独立算子测试只证算子对，不算"模型连续多轮验证"完成。
 
 ### 1.5 cap 语义 + cap=0 分支
 - **定义**：`cap = 保留的 draft token 数`；普通 decode 请求 target query 数 = `1 + cap`。
@@ -68,18 +81,29 @@ Qwen3.6-27B 连续多轮人工变长验证:**已提交 token 序列正确** + **
 - **TP**：人工 cap 阶段就检查**各 rank 对同一请求的 cap 和布局一致**(不必等真实 AV);人工 cap 是
   确定性的,应作为可验证条件写出来,而不是"天然一致"。
 
-## 5. 实施顺序（review 修订）
+## 5. 实施顺序（review 修订：先"不裁剪接入"，再开人工裁剪）
 
-1. **接口契约确定**（本文 §1，动手前写死：本轮长度 / 上一轮状态选择 / 模型整体输入布局 三者的契约）。
-2. **D-Cut 不裁剪回归**：`cap=num_spec`,dcut 路径与现有算子路径逐元素一致(定 tol)。
-3. **独立跨轮算子验证**：算子级对照跑 §1.5 的跨轮用例(上轮接受>本轮长度、异构 cap、cap=0、slot 复用、
-   padding、状态衔接)——证算子对。
-4. **MRV2 统一人工裁剪**：把人工 cap 接进模型级 compaction(§1.4),让 input_ids/positions/query 边界/
-   slot mapping/draft·logits 索引与 GDN 元数据一致。
-5. **模型连续多轮验证**：§3 里程碑 + §4 两类对照 + TP 一致性。
+**先落地两块**：D-Cut 不裁剪模型接入（①）+ 把 §1.4 的人工 capacities 注入写具体（B 主线）。
 
-**不需要继续扩影子验证。** 要补的是"本轮长度 / 上一轮状态选择 / 模型整体输入布局"三者的契约——尤其
-§1 的前五条,动手前写清,否则很容易"算子能调、单轮对、跨轮状态已错"。
+| 步骤 | 工作 | 通过标准 |
+|---|---|---|
+| ① | GDN spec 两处切 D-Cut，纠正累计偏移(§1.1) + 二维状态表(§1.2)，**保持原验证长度(不裁)** | 模型连续运行；输出 + 有效状态对回归通过 |
+| ② | 补跨轮参考 + NPU 对照（复用已有 golden `_dcut_recurrent_golden` 扩多轮） | 上轮 accepted > 本轮 query 等关键场景通过 |
+| ③ | 人工 capacities 接进现有 MRV2 裁剪链路（§1.4：`reallocate_drafts` 注入，跳过 confidence） | 指定逐请求 cap → 得到对应实际布局，**完全不依赖 confidence** |
+| ④ | 连续多轮模型验证 | 缩短→恢复、部分/全部 cap=0、重排、TP 一致性通过 |
+
+- **①②可交错**；**③等状态契约(§1)确认后再开**。
+- 模型状态按**同一已提交前缀**比较，不按同一迭代轮次硬对齐；浮点算子**明确容差**，不把"逐元素一致"
+  默认 bitwise。
+
+### UT 覆盖现状（诚实记录）
+- 两个算子 UT 已在 910B pass。`_dcut_recurrent_golden`（`test_dcut_recurrent_..._delta_rule.py:8`）已用
+  **二维 `ssm_state_indices[req, accepted-1]` + 累计 `query_start_loc` + `num_accepted`**——**印证 §1.1/1.2 契约**。
+- 但 golden 是**单轮**算子语义；`test_dcut_causal_conv1d.py` 目前是与**旧算子 update 路径**对比（非独立顺序参考）。
+  → **连续多轮状态演进**（每轮从上轮实际接受位置起步、长度缩短/恢复、请求重排）是**步骤②要补的**，
+  UT pass ≠ 模型接入回归过。
+
+**不需要再扩影子验证。** 要补的是"本轮长度 / 上一轮状态选择 / 模型整体输入布局"三者的契约（§1）。
 
 ## 6. 依赖
 #15207 算子在 910B 编译通过 + 自带 UT + 第 2 步不裁剪回归过,才进第 3 步跨轮;第 4 步依赖 base 的
