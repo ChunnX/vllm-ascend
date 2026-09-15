@@ -16,13 +16,22 @@ Ascend cost table -- on the live confidence, and accumulates the budget it would
 have chosen versus the full (untrimmed) budget. Every ``interval`` steps it logs
 the trim ratio and the estimated accepted-token loss.
 
-The decision math here MIRRORS ``get_num_tokens`` in
-``vllm/v1/worker/gpu/spec_decode/adaptive_verification.py`` (kept intentionally
-close so the numbers are faithful) but reads only the confidence tensor and the
-cost table, not the manager's request-state / stale-confidence plumbing. Stage 3
-of the plan replaces this shadow with the real manager call once the trimming
-path is wired; if this file and upstream ``get_num_tokens`` drift, this is the
-side to re-sync.
+RESTRICTED-SCENARIO SIMULATOR -- not equivalent to the real manager. The
+decision math MIRRORS ``get_num_tokens`` in
+``vllm/v1/worker/gpu/spec_decode/adaptive_verification.py`` but under fixed
+steady-decode assumptions that the real call does NOT enforce:
+  * every request has the full ``n`` draft tokens (no partial/ragged drafts);
+  * each request contributes exactly one non-draft (anchor/bonus) token;
+  * every request is in the sampling (post-prefill) phase;
+  * it reads the *live* confidence, whereas the manager uses a *stale* double-
+    buffered copy from the previous step.
+So its numbers are indicative only for steady decode; a prefill-mixed or ragged
+batch violates the assumptions. Do NOT use it as a hard gate to stop/greenlight
+the project -- treat it as a directional probe pending (a) the corrected
+observer calibration, (b) a trustworthy cost table, and (c) an applicability
+check + a direct comparison test against the real ``get_num_tokens``. Stage 3 of
+the plan replaces this shadow with the real manager call; if this file and
+upstream ``get_num_tokens`` drift, this is the side to re-sync.
 
 Why a cost table at all: cost is graph-bucket-aware, and (per RFC #15149)
 "removing a few logical tokens is useful only when it reaches a cheaper
@@ -59,6 +68,7 @@ class DSparkAVShadow:
         self.max_total_logits = int(max_total_logits)
         self.interval = max(1, int(interval))
         self._steps = 0
+        self._nan_rows = 0
         self._sum_reqs = 0
         self._sum_full = 0.0  # full (untrimmed) draft tokens
         self._sum_budget = 0.0  # chosen draft budget
@@ -109,6 +119,13 @@ class DSparkAVShadow:
         conf = confidence.detach().to("cpu", dtype=torch.float32).numpy()
         if conf.ndim != 2 or conf.shape[0] == 0 or conf.shape[1] == 0:
             return
+        # Drop non-finite rows (NaN confidence seen during prefill bursts) so they
+        # never reach cumprod/sort/argmax; count them for the flush line.
+        finite = np.isfinite(conf).all(axis=1)
+        self._nan_rows += int((~finite).sum())
+        conf = conf[finite]
+        if conf.shape[0] == 0:
+            return
         budget, full, est_full, est_budget = self._decide(conf)
         self._steps += 1
         self._sum_reqs += conf.shape[0]
@@ -137,11 +154,12 @@ class DSparkAVShadow:
         # when VLLM_ASCEND_DSPARK_AV_SHADOW is set, and INFO is filtered by
         # default in many deployments.
         logger.warning(
-            "[DSPARK-AV-SHADOW] steps=%d reqs/step~%.1f | draft/req full~%.2f "
-            "chosen~%.2f trim=%.1f%% | est_accept_draft full~%.2f chosen~%.2f "
-            "loss~%.3f",
+            "[DSPARK-AV-SHADOW] steps=%d reqs/step~%.1f dropped_nan=%d | "
+            "draft/req full~%.2f chosen~%.2f trim=%.1f%% | est_accept_draft "
+            "full~%.2f chosen~%.2f loss~%.3f",
             k,
             mean_reqs,
+            self._nan_rows,
             full_len,
             cut_len,
             mean_trim,
@@ -150,6 +168,7 @@ class DSparkAVShadow:
             mean_est_full - mean_est_budget,
         )
         self._steps = 0
+        self._nan_rows = 0
         self._sum_reqs = 0
         self._sum_full = 0.0
         self._sum_budget = 0.0
