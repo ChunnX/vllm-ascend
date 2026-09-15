@@ -21,14 +21,14 @@ survival is accumulated *per sample* then averaged (mean(cumprod) != cumprod of
 an averaged confidence). Each log line shows raw ``conf`` (reference), predicted
 ``surv`` = cumprod(conf), and actual ``acc``, with ``gap = surv - acc``.
 
-Alignment caveat: the confidence for a step's drafts was produced by the
-*previous* ``propose`` in the speculator's batch order, aligned to this step's
-``num_sampled`` only by leading row. In steady-state decode the request set is
-stable so the rows line up, but prefill admission / preemption / reorder can
-misalign rows *systematically*, not just as zero-mean noise. This is a coarse
-calibration estimate; the correct fix is a request/slot-identity-aligned
-collection (recorded as a follow-up in the D-Cut plan). Non-finite confidence
-rows (seen during prefill bursts) are dropped and counted, never summed.
+Alignment: the confidence for a step's drafts was produced by the *previous*
+``propose`` in that step's batch order, while ``num_sampled`` is this step's
+verification in a possibly different order (prefill admission / preemption /
+reorder). The model runner realigns the two by **persistent request slot**
+(``idx_mapping``) before calling ``record``, so only requests present in both
+steps are paired; churned requests are reported as ``unmatched``. Non-finite
+confidence rows (seen during prefill bursts) are dropped and counted
+(``dropped_nan``), never summed.
 """
 
 import torch
@@ -72,20 +72,26 @@ class DSparkAVObserver:
         self._sum_acc = torch.zeros(self.n, dtype=torch.float32, device=device)
         self._count = 0  # valid (finite) request rows folded in
         self._nan_rows = 0  # request rows dropped for non-finite confidence
+        self._unmatched = 0  # this-step rows with no prior confidence (churn)
         self._steps = 0
 
-    def record(self, confidence: torch.Tensor, num_sampled: torch.Tensor) -> None:
+    def record(
+        self,
+        confidence: torch.Tensor,
+        num_sampled: torch.Tensor,
+        unmatched: int = 0,
+    ) -> None:
         """Fold one verification step in.
 
         confidence: [num_reqs, n] the head's CONDITIONAL per-position acceptance
-            probability (NOT survival).
+            probability (NOT survival). Rows must already be aligned to
+            ``num_sampled`` by request identity (the caller matches persistent
+            slots between the proposing and verifying steps).
         num_sampled: [num_reqs] tokens accepted per request, including the bonus.
-
-        Calibration caveat: the confidence for these drafts was produced by the
-        previous propose() in the speculator's batch order, aligned to this step's
-        num_sampled only by leading row (see module docstring). This is a coarse
-        estimate; a request/slot-identity-aligned collection is the correct fix.
+        unmatched: this-step requests with no prior-step confidence (churn),
+            excluded from the pairing and only counted for visibility.
         """
+        self._unmatched += int(unmatched)
         num_reqs = int(num_sampled.shape[0])
         if num_reqs == 0 or self.n == 0:
             return
@@ -118,14 +124,16 @@ class DSparkAVObserver:
 
     def flush(self) -> None:
         if self._count == 0:
-            if self._nan_rows:
+            if self._nan_rows or self._unmatched:
                 logger.warning(
-                    "[DSPARK-AV-OBSERVE] no finite rows over %d steps "
-                    "(dropped %d non-finite rows)",
+                    "[DSPARK-AV-OBSERVE] no matched rows over %d steps "
+                    "(dropped %d non-finite, %d unmatched/churn)",
                     self.interval,
                     self._nan_rows,
+                    self._unmatched,
                 )
                 self._nan_rows = 0
+                self._unmatched = 0
             return
         # One D2H sync, only on the logging boundary.
         conf = (self._sum_conf / self._count).cpu().tolist()
@@ -146,10 +154,11 @@ class DSparkAVObserver:
         # filtered by default in many deployments, so warning guarantees the
         # observation is actually visible.
         logger.warning(
-            "[DSPARK-AV-OBSERVE] reqs=%d dropped_nan=%d over %d steps | "
-            "mean_accept_len~%.2f | %s",
+            "[DSPARK-AV-OBSERVE] reqs=%d dropped_nan=%d unmatched=%d over %d steps "
+            "| mean_accept_len~%.2f | %s",
             self._count,
             self._nan_rows,
+            self._unmatched,
             self.interval,
             mean_accept_len,
             cols,
@@ -159,3 +168,4 @@ class DSparkAVObserver:
         self._sum_acc.zero_()
         self._count = 0
         self._nan_rows = 0
+        self._unmatched = 0
