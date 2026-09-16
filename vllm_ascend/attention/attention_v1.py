@@ -375,7 +375,16 @@ class AscendAttentionMetadataBuilder(AttentionMetadataBuilder[AscendMetadata]):
                 dcut_graph_debug.log_axes(
                     "fia",
                     "build",
-                    (num_reqs, int(query_start_loc_cpu[-1])),
+                    # The first row's query length is part of the key: B rows
+                    # of one token and one row of B tokens share the same
+                    # request and token counts but are different geometries,
+                    # and a capture that used up the allowance for one would
+                    # hide the replay of the other.
+                    (
+                        num_reqs,
+                        int(query_start_loc_cpu[-1]),
+                        actual_seq_lengths_q[0] if actual_seq_lengths_q else 0,
+                    ),
                     repeats=3,
                     b_fia=num_reqs_fia,
                     num_reqs=num_reqs,

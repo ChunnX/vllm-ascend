@@ -119,7 +119,10 @@ def log_axes(
     """Emit one line for this component, phase, and graph shape.
 
     ``shape_key`` identifies the graph shape, so a run yields one comparable
-    line per shape per phase instead of one per step.
+    line per shape per phase instead of one per step. It has to carry whatever
+    separates a graph replay from an eager build of the same size -- the graph
+    mode, the branch counts, the query-length geometry -- or the warmup pass
+    uses up the allowance and hides the line the dump exists for.
 
     ``repeats`` raises that allowance for a component whose phase label cannot
     be trusted to separate capture from replay. Nothing below the model runner

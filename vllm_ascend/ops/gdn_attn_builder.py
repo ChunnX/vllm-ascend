@@ -1261,7 +1261,16 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
         dcut_graph_debug.log_axes(
             "gdn",
             self._debug_phase,
-            (int(m.num_reqs), int(m.num_actual_tokens)),
+            # The branch counts are part of the key: a warmup decode build of
+            # the same size would otherwise use up this shape's allowance and
+            # hide the graph replay, which is the line worth having.
+            (
+                int(m.num_reqs),
+                int(m.num_actual_tokens),
+                attn_metadata.num_spec_decodes,
+                attn_metadata.num_decodes,
+                attn_metadata.num_prefills,
+            ),
             # The phase label only reflects the capture path that announces
             # itself; a piecewise capture does not, so keep room for a second
             # line of the same shape and read the occurrence counter.

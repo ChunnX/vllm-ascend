@@ -151,13 +151,17 @@ class AscendMambaHybridModelState(MambaHybridModelState, AscendModelState):
         mode -- so a second line of the same shape stays allowed.
         """
         padding = slice(input_batch.num_reqs, num_reqs)
+        cg_mode = getattr(cudagraph_mode, "name", cudagraph_mode)
         upper_bound = getattr(input_batch, "seq_lens_cpu_upper_bound", None)
         dcut_graph_debug.log_axes(
             "mamba-hybrid",
             "capture" if for_capture else "replay",
-            (int(num_reqs), int(num_tokens)),
+            # The graph mode is part of the key: an eager warmup step of the
+            # same size would otherwise use up this shape's allowance and hide
+            # the graph step.
+            (int(num_reqs), int(num_tokens), cg_mode),
             repeats=2,
-            cg_mode=getattr(cudagraph_mode, "name", cudagraph_mode),
+            cg_mode=cg_mode,
             b_live=input_batch.num_reqs,
             b_graph=num_reqs,
             b_max=self.vllm_config.scheduler_config.max_num_seqs,
