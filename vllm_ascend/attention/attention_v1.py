@@ -363,7 +363,7 @@ class AscendAttentionMetadataBuilder(AttentionMetadataBuilder[AscendMetadata]):
                 ],
                 dim=0,
             )
-        if dcut_graph_debug.enabled():
+        if dcut_graph_debug.enabled("fia"):
             # B_fia, observed rather than derived from the request count: this
             # is the axis GDN's fixed-capacity view must not be confused with,
             # and a zero-query row here still needs a valid KV length and block
@@ -371,18 +371,19 @@ class AscendAttentionMetadataBuilder(AttentionMetadataBuilder[AscendMetadata]):
             # layer has no capture/replay flag to read; the repeat allowance and
             # the occurrence counter separate warmup, capture and replay by the
             # order they arrive in.
-            dcut_graph_debug.log_axes(
-                "fia",
-                "build",
-                (num_reqs, int(query_start_loc_cpu[-1])),
-                repeats=3,
-                b_fia=num_reqs_fia,
-                num_reqs=num_reqs,
-                actual_seq_qlen=actual_seq_lengths_q,
-                kv_lens=seq_lens_list,
-                block_rows=(None if block_table is None else block_table.shape[0]),
-                block_ptr=(None if block_table is None else f"{block_table.data_ptr():#x}"),
-            )
+            with dcut_graph_debug.guarded("fia"):
+                dcut_graph_debug.log_axes(
+                    "fia",
+                    "build",
+                    (num_reqs, int(query_start_loc_cpu[-1])),
+                    repeats=3,
+                    b_fia=num_reqs_fia,
+                    num_reqs=num_reqs,
+                    actual_seq_qlen=actual_seq_lengths_q,
+                    kv_lens=seq_lens_list,
+                    block_rows=(None if block_table is None else block_table.shape[0]),
+                    block_ptr=(None if block_table is None else f"{block_table.data_ptr():#x}"),
+                )
         return query_start_loc, actual_seq_lengths_q, seq_lens_list, seq_lens, block_table
 
     def build(

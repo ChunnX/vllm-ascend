@@ -12,7 +12,7 @@ class _RecordingLogger:
     def __init__(self) -> None:
         self.lines: list[str] = []
 
-    def warning(self, message: str, *args: object) -> None:
+    def warning(self, message: str, *args: object, **kwargs: object) -> None:
         self.lines.append(message % args)
 
 
@@ -79,6 +79,32 @@ def test_multiple_fields_stay_readable_on_one_line(lines: list[str]) -> None:
     dcut_graph_debug.log_axes("mamba-hybrid", "replay", (8, 8), b_live=1, b_graph=8, q=8)
 
     assert lines == ["[D-Cut AXES] mamba-hybrid phase=replay b_live=1 | b_graph=8 | q=8"]
+
+
+def test_a_broken_dump_disables_itself_instead_of_failing_the_run(lines: list[str]) -> None:
+    """The instrument must not take down the run it is switched on to observe.
+
+    The fields come from whatever the surrounding layer exposes, and reaching
+    for the wrong one has already aborted graph capture twice.
+    """
+    with dcut_graph_debug.guarded("gdn"):
+        raise AttributeError("no such attribute")
+
+    assert "gdn" in dcut_graph_debug._disabled
+    assert len(lines) == 1
+    assert "disabled" in lines[0]
+
+    # A second failure of the same component stays quiet.
+    with dcut_graph_debug.guarded("gdn"):
+        raise AttributeError("again")
+    assert len(lines) == 1
+
+    # Other components keep logging.
+    dcut_graph_debug.log_axes("fia", "build", (8, 8), b_fia=8)
+    assert len(lines) == 2
+
+    dcut_graph_debug.reset()
+    assert "gdn" not in dcut_graph_debug._disabled
 
 
 def test_describe_reports_address_and_truncates_long_values() -> None:

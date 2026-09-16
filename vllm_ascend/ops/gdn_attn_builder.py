@@ -323,6 +323,10 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
         # Phase label for the axis dump. Capture flips it for the duration of
         # build_for_cudagraph_capture; every other build is a replay.
         self._debug_phase: str = "replay"
+        # Names the KV cache group in the axis dump. Kept here because the GDN
+        # base does not chain to AttentionMetadataBuilder.__init__, so it never
+        # stores layer_names.
+        self._debug_layer: str = layer_names[0] if layer_names else "?"
         sequence_index_capacity = max(
             self.vllm_config.scheduler_config.max_num_seqs,
             self.decode_cudagraph_max_bs,
@@ -1217,8 +1221,9 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
             attn_metadata,
             non_spec_conv1d_cache_indices,
         )
-        if dcut_graph_debug.enabled():
-            self._log_graph_axes(m, attn_metadata)
+        if dcut_graph_debug.enabled("gdn"):
+            with dcut_graph_debug.guarded("gdn"):
+                self._log_graph_axes(m, attn_metadata)
         return attn_metadata
 
     def build_for_cudagraph_capture(self, common_attn_metadata: CommonAttentionMetadata) -> GDNAttentionMetadata:
@@ -1229,7 +1234,7 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
         its capture flag clear. Only the phase label is added; the capture
         metadata itself stays upstream's, so this is inert with the dump off.
         """
-        if not dcut_graph_debug.enabled():
+        if not dcut_graph_debug.enabled("gdn"):
             return super().build_for_cudagraph_capture(common_attn_metadata)
         self._debug_phase = "capture"
         try:
@@ -1261,7 +1266,7 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
             # itself; a piecewise capture does not, so keep room for a second
             # line of the same shape and read the occurrence counter.
             repeats=2,
-            layer=self.layer_names[0] if self.layer_names else "?",
+            layer=self._debug_layer,
             b_graph=m.num_reqs,
             q=m.num_actual_tokens,
             b_gdn=b_gdn,

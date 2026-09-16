@@ -17,6 +17,8 @@ Off by default (``VLLM_ASCEND_DSPARK_DCUT_DEBUG_AXES``). Debug only: reads
 device tensors back to the host, which is a synchronization point.
 """
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 import torch
@@ -31,10 +33,34 @@ logger = init_logger(__name__)
 _MAX_PRINTED_VALUES = 40
 
 _emitted: dict[tuple, int] = {}
+_disabled: set[str] = set()
 
 
-def enabled() -> bool:
-    return envs_ascend.VLLM_ASCEND_DSPARK_DCUT_DEBUG_AXES
+def enabled(component: str = "") -> bool:
+    return envs_ascend.VLLM_ASCEND_DSPARK_DCUT_DEBUG_AXES and component not in _disabled
+
+
+@contextmanager
+def guarded(component: str) -> Iterator[None]:
+    """Keep the instrument from taking down the run it is meant to observe.
+
+    The fields come from whatever the surrounding layer happens to expose, and
+    reaching for the wrong one has twice aborted graph capture before its first
+    shape -- a debug dump that is only switched on for an already-failing run
+    has no business doing that. Report the failure with its traceback once and
+    take this component out of service for the rest of the process; the other
+    components keep logging.
+    """
+    try:
+        yield
+    except Exception:
+        if component not in _disabled:
+            _disabled.add(component)
+            logger.warning(
+                "[D-Cut AXES] %s dump failed and is now disabled for this process; the run continues without it",
+                component,
+                exc_info=True,
+            )
 
 
 def describe(tensor: torch.Tensor | None, *, values: bool = True) -> str:
@@ -89,5 +115,6 @@ def log_axes(
 
 
 def reset() -> None:
-    """Forget what has been logged, so a later run logs its shapes again."""
+    """Forget what has been logged and re-enable every component."""
     _emitted.clear()
+    _disabled.clear()

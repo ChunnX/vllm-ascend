@@ -97,15 +97,16 @@ class AscendMambaHybridModelState(MambaHybridModelState, AscendModelState):
             num_accepted_tokens=num_accepted_tokens,
             num_decode_draft_tokens_cpu=num_decode_draft_tokens_cpu,
         )
-        if dcut_graph_debug.enabled():
-            self._log_batch_axes(
-                input_batch,
-                cudagraph_mode,
-                for_capture,
-                num_reqs,
-                num_tokens,
-                num_decode_draft_tokens_cpu,
-            )
+        if dcut_graph_debug.enabled("mamba-hybrid"):
+            with dcut_graph_debug.guarded("mamba-hybrid"):
+                self._log_batch_axes(
+                    input_batch,
+                    cudagraph_mode,
+                    for_capture,
+                    num_reqs,
+                    num_tokens,
+                    num_decode_draft_tokens_cpu,
+                )
         self.attn_metadata = build_attn_metadata(
             attn_groups=attn_groups,
             num_reqs=num_reqs,
