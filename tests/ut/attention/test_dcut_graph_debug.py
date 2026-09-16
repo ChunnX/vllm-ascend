@@ -2,6 +2,7 @@
 
 import pytest
 import torch
+import vllm.distributed.parallel_state as parallel_state
 
 from vllm_ascend.attention import dcut_graph_debug
 
@@ -20,8 +21,38 @@ class _RecordingLogger:
 def lines(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     recorder = _RecordingLogger()
     monkeypatch.setattr(dcut_graph_debug, "logger", recorder)
+    # No distributed group in a unit test; stand in for the resolved rank.
+    monkeypatch.setattr(dcut_graph_debug, "_log_rank", True)
     dcut_graph_debug.reset()
     return recorder.lines
+
+
+def test_enabled_is_silent_while_the_tp_group_is_not_up(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``enabled`` runs outside the guard, so it must not raise on its own.
+
+    Asking for the tensor-parallel rank before the group exists raises, and the
+    call sites consult this to decide whether to assemble any fields at all.
+    """
+
+    def _not_initialized() -> int:
+        raise AssertionError("tensor model parallel group is not initialized")
+
+    monkeypatch.setattr(dcut_graph_debug, "_log_rank", None)
+    monkeypatch.setattr(
+        dcut_graph_debug.envs_ascend,
+        "VLLM_ASCEND_DSPARK_DCUT_DEBUG_AXES",
+        True,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        parallel_state,
+        "get_tensor_model_parallel_rank",
+        _not_initialized,
+    )
+
+    assert dcut_graph_debug.enabled("gdn") is False
+    # Unresolved, so a later build can still settle it.
+    assert dcut_graph_debug._log_rank is None
 
 
 def test_axes_lines_are_one_per_phase_and_shape(lines: list[str]) -> None:

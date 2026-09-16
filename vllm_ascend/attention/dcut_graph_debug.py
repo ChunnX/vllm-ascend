@@ -34,10 +34,36 @@ _MAX_PRINTED_VALUES = 40
 
 _emitted: dict[tuple, int] = {}
 _disabled: set[str] = set()
+# None until the tensor-parallel group is up; see _is_log_rank.
+_log_rank: bool | None = None
+
+
+def _is_log_rank() -> bool:
+    """Whether this rank should log, resolved once the TP group exists.
+
+    Every rank builds the same request axes, so one rank's lines answer the
+    question and four ranks' interleaved lines just make it unreadable.
+
+    The group is not up during early startup and asking for the rank then
+    raises. ``enabled`` is called outside the guard -- the call sites need it
+    to decide whether to assemble any fields at all -- so swallow that here and
+    stay silent, leaving the answer unresolved so a later build settles it.
+    """
+    global _log_rank
+    if _log_rank is None:
+        from vllm.distributed.parallel_state import get_tensor_model_parallel_rank
+
+        try:
+            _log_rank = get_tensor_model_parallel_rank() == 0
+        except Exception:
+            return False
+    return _log_rank
 
 
 def enabled(component: str = "") -> bool:
-    return envs_ascend.VLLM_ASCEND_DSPARK_DCUT_DEBUG_AXES and component not in _disabled
+    if not envs_ascend.VLLM_ASCEND_DSPARK_DCUT_DEBUG_AXES or component in _disabled:
+        return False
+    return _is_log_rank()
 
 
 @contextmanager
