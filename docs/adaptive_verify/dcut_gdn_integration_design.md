@@ -4,7 +4,9 @@
 > 输出 + 有效 GDN/KV 状态对照参考通过。与 confidence/预算解耦——先用人工 cap 打通并钉死状态
 > 正确性，再谈真实 AV manager（阶段 C）。
 >
-> 行号基准：`76780b1a1`（Ascend）/ v0.28.0（vLLM）。
+> 原设计与历史行号基准：`76780b1a1`（Ascend）/ v0.28.0（vLLM）。
+> 本次契约复核基准：`2bb8a9c5c`（Ascend）。开发基线为 vLLM `v0.28.0` tag +
+> vllm-ascend main 上保留既有 DSpark 优化的开发分支；每次验证固定运行端两个仓库的 SHA。
 >
 > **2026-09-15 修订**：上一版把"替换两个算子"和"模型级裁剪"混为一谈，且有多处接口语义错误
 > （`actual_seq_lengths` vs `query_start_loc`、`num_accepted` 被误裁、state index 布局、注入层）。
@@ -12,9 +14,33 @@
 >
 > **2026-09-16 修订**：算子契约（§1.1–1.4）已由 UT + eager 冒烟印证；新暴露的是**图层契约**
 > （§1.6、§1.7）。cap=99 在 FULL 图下仍乱码、接受率全 0，而 eager 下 cap=99/2 精度正确，
-> 所以当前阻塞在捕获/回放的分支与缓冲区契约，不在算子、不在 confidence。
+> 排查重点是捕获/回放的分支与缓冲区契约；人工 cap 不依赖 confidence 决策，但 eager 冒烟
+> 不能排除算子入图后的问题。`2bb8a9c5c` 已修复重复 `build()` 与零 draft 捕获分支，
+> 尚不能据此宣称 FULL 精度问题已解决。本次新增六个轴、F3 观测和待验证的固定请求轴方案。
 
 ## 1. 接口契约（先定死，再实现；每条都要在动手前明确）
+
+### 1.0 六个轴与请求身份
+
+这些概念必须分别表达；模型级 compaction 仍复用上游 AV 链路，GDN builder 只消费其结果。
+
+| 名称 | 定义 | 数据来源与约束 |
+|---|---|---|
+| `B_max` | 服务允许的最大请求数 | `max_num_seqs`，是容量上限，不是当前真实 batch size |
+| `B_live` | 本轮真实请求数 | 裁剪后的请求映射；cap=0 仍计为真实请求，不含 padding |
+| `Q` | 本轮真实 query token 总数 | 纯 spec decode 时为 `sum(1 + cap_i)`，不含图 token padding |
+| `B_graph` | 所选图 descriptor 的请求容量 | 从实际 descriptor 读取；当前 MRV2 varlen 策略为 `min(Q_bucket, B_max)` |
+| `B_fia` | FIA 实际消费的请求行数 | 从传入 FIA 的 query/KV 边界及 block-table 视图读取，不从 `B_graph` 猜测 |
+| `B_gdn` | GDN 算子实际消费的请求轴长度 | 从 conv/recurrent 的 qsl、状态索引表和 accepted 张量形状核对 |
+
+`Q_bucket` 另记为实际图的 token 容量，必须与真实 `Q` 分开。上述 `Q` 不用于表示 capture size。
+捕获没有真实服务请求时，日志保留 `B_live=null` 并记录 `B_dummy`、`is_dummy=true`；不能把
+dummy 请求数写成线上真实并发。pure-spec 回放要求 `B_live <= B_graph`、`B_live <= B_gdn`、
+`Q <= Q_bucket`，各局部视图中的行到请求映射一致。
+
+请求身份由显式真实请求数或 mask 传递，独立于 KV 长度、本轮 query 长度和上一轮 accepted。
+FIA 可以有自己的 dummy query/KV 行；GDN 的 inactive 行必须零 query，不得因此更新状态。
+`B_fia = B_live + 至多一行` 是作者的一种实现选择，不作为 FIA 的通用行数限制。
 
 ### 1.1 recurrent 传**累计** `query_start_loc`，不是旧 `actual_seq_lengths`
 现有 `_build_actual_seq_lengths()`（`ops/gdn_attn_builder.py:162`）存的是 `[起始, 逐请求长度]`：
@@ -30,8 +56,9 @@
 - **S 与容量（代码已定，照抄即可）**：`S = num_spec + 1`；预分配行容量
   `decode_cudagraph_max_bs = max_num_seqs * (num_spec + 1)`，再被
   `compilation_config.max_cudagraph_capture_size` 截（vLLM `gdn_attn.py:118-128`）。
-  **要区分"缓冲区容量"与"本次调用的 B"**：FULL 图下本次调用的 B 是 `m.num_reqs`
-  （= descriptor 的请求槽数），有效行在前、其后为 padding 行。
+  **要区分"缓冲区容量"与"本次调用的 B"**：当前 pure-spec FULL 路径用 `m.num_reqs`
+  切出本次 GDN 请求轴。固定 `B_gdn = B_max` 是 §1.8 的待验证选择；改切片前必须确认
+  所有底层 buffer 容量足够，不能假定 `decode_cudagraph_max_bs >= B_max`。
 
 ### 1.3 人工 cap **不截断** `num_accepted_tokens`（两个独立量）
 - **本轮 cap**：决定本轮处理几个 query。
@@ -75,7 +102,8 @@
 
 ### 1.6 捕获与回放必须走**同一条算子路径**（2026-09-16 新增，当前阻塞）
 FULL 图的 Python 分支在捕获那一刻定形，回放不重选分支。所以 GDN 的 `spec` / 普通 decode 分支
-选择必须在捕获和回放之间**恒等**。当前不恒等：
+选择必须在捕获和回放之间**恒等**。以下为 `76780b1a1` 的缺陷链，`2bb8a9c5c` 已修复
+分支选择；它是否足以解决模型故障，仍需运行端 FULL 验证：
 
 1. AV manager 非空 → base 覆盖 `cudagraph_mode = FULL_AND_PIECEWISE` 并传 `varlen_decode=True`
    （vLLM `model_runner.py:574-587`）。
@@ -85,7 +113,7 @@ FULL 图的 Python 分支在捕获那一刻定形，回放不重选分支。所�
 4. builder 见"runtime draft 数之和为 0"就把 spec mask 清零转普通 decode
    （`ops/gdn_attn_builder.py:632-643`）→ **图里捕获的是普通 decode 的 conv/recurrent**。
 5. 回放时真实 batch 有 draft → 构造 spec metadata，但执行的仍是捕获的普通 decode 算子及其
-   捕获期缓冲区地址 → 增量乱码、逐位接受率全 0。
+   捕获期缓冲区地址，形成精度风险。这能解释异常的一种机制，不能证明是唯一根因。
 
 - **契约**：`num_decode_draft_tokens == 0` 表示"spec 分支里的 1-query 行"，**不表示"转普通
   decode"**。语义上二者等价（`num_accepted = 1` 时读写的都是 `ssm_state_indices[b, 0]`
@@ -99,17 +127,23 @@ FULL 图的 Python 分支在捕获那一刻定形，回放不重选分支。所�
   **不足以**覆盖 §1.7。
 
 ### 1.7 padding 请求行必须是**零长度**（2026-09-16 新增）
-- **目标契约**：FIA 给每个 padding 图行一个完整 K+1 span，但 GDN recurrent 要求这些行零长。
+- **目标契约**：FIA padding 行可以有正 query span，但 GDN recurrent 要求 inactive 行零长。
   执行者是 `_remove_spec_graph_padding_queries`（`ops/gdn_attn_builder.py:57`）。
-- **当前不满足**：`num_tokens_after_padding = max(num_tokens, batch_desc.num_tokens)`
+- **仍需验证的布局**：`num_tokens_after_padding = max(num_tokens, batch_desc.num_tokens)`
   （`worker/v2/model_runner.py:351`）里的 `num_tokens` 是裁剪后的值，所以裁剪后 token 数一旦
   不正好落在 capture size 上，`_pad_adaptive_query_start_loc_for_fia`（`:1112`）就把正长度
   均摊给 padding 请求。复现布局：11 请求 / cap=2 / 33 token / 40-token 图 / 32 请求槽 → 21 个
   padding 行里 7 个拿到长度 1。
-- **后果链**：这些行 draft 分类是 `-1` → 非 spec → 与真实 spec 行混合后计入 `num_prefills`
+- **归一化未生效时的后果链**：这些行 draft 分类是 `-1` → 非 spec → 与真实 spec 行混合后计入 `num_prefills`
   → **跳过 `:1041` 的 pure-spec 持久缓冲区块**（该块要求 `num_prefills == 0 and num_decodes == 0`）
   → spec metadata 退回每步新建的临时张量 → FULL 回放读捕获期地址。
-- **更严重的是执行者当前不可达**：见 §5 步骤 ⑤（重复 `build()`）。
+- **修复状态**：`2bb8a9c5c` 已通过 batch 级共享局部视图恢复执行者，见 §5 步骤 ⑤。
+  但当前识别式仍是 `(seq_lens_cpu_upper_bound == 0) & (draft_tokens < 0)`，必须由 F2 改成
+  显式请求身份，不能把 KV 长度为零当成 padding 的可靠来源。
+- **CPU/device 缺口**：MRV2 当前只刷新 CPU `seq_lens_np[:B_live]`、清理 `[B_graph:]`，中间
+  padding 区间可能残留；vLLM `v0.28.0` 的 `prepare_pos_seq_lens` 则有额外 Triton program
+  将 device 未使用行清零。不是“两侧均残留”。FIA 的 dummy KV 长度修正只作用于其局部视图，
+  不得全局把共享 CPU/device padding 填 1，使 GDN 再次丢失 inactive 身份。
 - **关于"污染"**：padding 行写的 `NULL_BLOCK_ID = 0` 是 vLLM 保留的 null block，**这一个动作
   本身是设计意图**；但不等于整条混合路径安全，仍需按有效状态索引与有效输出验收，不提前给
   安全结论。
@@ -117,6 +151,68 @@ FULL 图的 Python 分支在捕获那一刻定形，回放不重选分支。所�
   （未 padding）token 数。需确认 FULL 捕获期（bucket 大小）与回放期（真实值）之间没有被捕获
   进图的形状假设被破坏——`ops/gdn.py:305` 的 `mixed_qkv[:num_actual_tokens]`；SPEC_ONLY 分支
   不使用 `spec_token_indx`（`ops/gdn.py:312-314`），所以它的长度变化在该分支无影响。
+
+### 1.8 状态不变量与固定请求轴实验
+
+以下是不依赖具体图实现的验收契约：
+
+- 每个真实 decode 请求至少保留一个 anchor；只裁 draft 后缀，不从中间挖洞。
+- 上轮 accepted 决定历史状态选择，不被本轮 cap 或 query 长度截断；请求重排时状态索引整行同行。
+- GDN 空行的 query 长度为零、状态索引无效；算子必须在读取状态前跳过空行。
+  累计 qsl 的 inactive 尾部重复最后一个有效累计边界，不是将非空 batch 的 qsl 尾部直接填零。
+- padding token 不得写入真实 KV 或 conv/SSM 状态；batch 收缩时刷新图可读到的整个 inactive tail。
+- 同一捕获图的输入地址、shape、stride、storage offset 符合捕获契约，replay 前内容刷新完成；
+  不要求不同图必须共用地址，共用 storage 时必须验证不同视图间的刷新和执行顺序。
+- uniform target、ragged target、drafter 的图资源不可混用。descriptor 隔离是行为要求；
+  分表已满足时不重复建表，只有发现键冲突或资源别名错误时才改变索引方式。
+- TP 各 rank 使用同一请求映射、cap、query 边界与裁剪计划，以实际比较验收。
+- confidence 不可信时保持完整验证长度；图 metadata 不可信时退出该图，重建合法 metadata 后
+  走已验证路径。不能拿坏 metadata 仅关闭裁剪继续 replay。
+- prefill、mixed、PD handoff 有明确路由边界；纯 spec decode 才进入本阶段 ragged FULL。
+  未裁剪 batch 也必须匹配所选图的契约，不能仅凭“不裁”认定可用 uniform 图。
+- `NULL_BLOCK_ID=0` 与 `PAD_SLOT_ID=-1` 语义不同。D-Cut GDN inactive 行按算子契约使用无效
+  状态索引，FIA dummy block row 与原生 decode 路径分别核对，不做全局 sentinel 替换。
+
+**`B_gdn = B_max`：待验证的实现选择（来源：上游作者经验，我们尚无同根因证据）。**
+用户于 2026-09-16 提供的文章 §3.4.5/§4.4 称固定请求轴解决了跨 bucket 精度异常，用户说明
+文章对应 [PR #15207](https://github.com/vllm-project/vllm-ascend/pull/15207)。已审阅的该 PR
+算子版本不等同于文章完整 FULL 接线；尚无对应固定轴接线 commit 可供核对。
+
+F1′ 只在 D-Cut pure-spec FULL 内实验：qsl 为 `[B_max+1]`、state indices 为 `[B_max,S]`、
+accepted 为 `[B_max]`，mask 和派生 metadata 同步调整。先审计分配容量，再发布固定形状视图；
+有效行与 inactive tail 一并刷新，各 KV cache group 保留各自状态归属。普通 decode 路径不顺手
+改轴。当前轴方案与固定轴方案做 F4 对照；不同图具有不同请求轴本身不是错误证据。
+
+### 1.9 F3 观测契约：记录实际轴，而非由配置推断
+
+观测位置固定为 **capture 准备 / replay metadata 刷新 / 图 dispatch**。先采未修基线，再进行
+固定轴实验；不依赖 FULL replay 重新执行模型内 Python 分支来打印日志。
+
+每条记录包含 `phase`、capture/step ID、TP rank、target/draft 身份、KV group/layer、实际 backend、
+完整 descriptor、原生/spec 分支及路由结果。必须带齐 **`B_max / B_live / Q / Q_bucket /
+B_graph / B_fia / B_gdn`**。准备阶段尚未构造的轴填 `null` 并说明原因，通过同一 ID 关联完成态，
+不得从另一条轴猜测；capture 的 `B_live` 按 §1.0 标注 dummy。
+
+对应张量记录 `shape + data_ptr`，并补充 dtype/device、stride、storage offset 和有效刷新范围：
+query 边界、FIA CPU/device KV 长度及 block table、GDN 状态索引 `[B,S]`、accepted、请求 mask、
+KV slot mapping。CPU numpy 视图记录自己的地址，明确区分 host/device 指针。
+在有界诊断样本中记录 qsl、KV 长度、accepted、请求映射及 inactive tail 的值或一致性检查结果，
+使“轴是否随 bucket 变化”与“地址相同但内容是否陈旧”都可核对。
+
+日志默认关闭、限量采集；device 数值回读放在捕获区域外，避免在 capture 内新增同步或改变图。
+记录 stream/event 刷新完成关系；诊断开销不计入阶段 D 的性能数据。cap=99 通过仅算冒烟，
+必须继续覆盖单图/多图捕获、切图、收缩/增长和状态不变性。
+
+### 1.10 文章经验的后续审计项与 DSpark 边界
+
+| 经验来源 | 本项目审计内容 | 证据与适用边界 |
+|---|---|---|
+| 文章 §4.2：概率绑定图与固定输出地址 | 核对 confidence 输出对应的图/执行、请求集合和轮次；每份结果只消费一次，失效则完整验证 | 我们复用 DSpark confidence head 与 AV 管线，不照搬 DFlash selected-token softmax；人工 cap 不依赖这些概率 |
+| 文章 §4.3：DFlash 未使用 KV tail | 查清 DSpark 自己的 hidden-state/context padding 与 slot mapping，若存在无效写入则屏蔽对应 slot | 这是 DFlash 的已述故障，尚不是 DSpark 的已证实缺陷；保留真实 token 的 KV 写入 |
+| 文章 §4.1：清理 inactive tail | 核对每张图能读取的全部尾部和跨图共享视图，覆盖 batch 收缩、增长及请求槽位复用 | §1.8 是目标契约，审计尚待完成；不得用一次 cap=99 冒烟代替 |
+
+文章认为 D-Cut 与 DSpark 更适合组合，这是作者判断，不替代本模型的收益验证。
+通用状态与图资源契约可以采纳，DFlash 的故障与开销必须先映射到 DSpark 实际调用链。
 
 ## 2. 两个 hook 点（GDN spec 路径）
 
@@ -145,6 +241,10 @@ Qwen3.6-27B 连续多轮人工变长验证：**已提交 token 序列正确** + 
 - **图级（新增）**：同一 bucket 下比 eager 与 FULL 的输出与有效状态；覆盖
   **8/16/32/40-token 图**、**bucket 内部落点**（token 数 ≠ capture size，制造正长度 padding）、
   1/2/4 个真实请求、不同 padding 数量、cap=99/2/0。
+- **跨图 F4**：只捕获单图 vs 捕获全部 bucket 后回放同一张 8-token 图；小图→大图→小图；
+  batch 收缩/增长、请求重排/槽位复用；逐 bucket 请求轴 vs 固定 `B_max`。
+  conv + recurrent 输出和有效状态均对照，包含 `num_accepted > 本轮 query 长度` 与 padding
+  状态不变。capture/warmup 会修改状态，每组比较前恢复相同初始状态，跨轮组内保持真实连续性。
 - **TP**：人工 cap 阶段就检查**各 rank 对同一请求的 cap 和布局一致**（不必等真实 AV）；人工 cap 是
   确定性的，应作为可验证条件写出来，而不是"天然一致"。已跑通的 TP4 只能记为**功能冒烟**，
   要逐项比**总预算 / 逐请求 capacities / 请求映射 / query 边界**。
@@ -156,15 +256,20 @@ Qwen3.6-27B 连续多轮人工变长验证：**已提交 token 序列正确** + 
 | ① | GDN spec 两处切 D-Cut，纠正累计偏移(§1.1) + 二维状态表(§1.2)，**保持原验证长度(不裁)** | ✅ NPU 回归过：开/关 `ENABLE_DCUT` 输出逐词一致 |
 | ② | 跨轮算子参考 + NPU 对照（`_dcut_recurrent_golden` 扩多轮 + conv 多轮） | ✅ 910B 4 个 UT 过；**待补**见下 |
 | ③ | 人工 capacities 接进现有 MRV2 裁剪链路（§1.4：`reallocate_drafts` 注入，跳过 confidence） | ✅ 6 个 CPU 策略 UT 过；eager cap=99/2 精度正确 |
-| ⑤ | **修 `build()` 重复定义**，把两个前置处理接回生效路径（§1.7） | 🔴 待做，见下 |
-| ⑥ | **统一捕获/回放算子路径**（§1.6） | 🔴 待做，当前阻塞项 |
-| ④ | 连续多轮模型验证 | ⛔ 被 ⑤⑥ 阻塞：缩短→恢复、部分/全部 cap=0、重排、TP 布局一致性 |
+| ⑤ | **修 `build()` 重复定义**，把两个前置处理接回生效路径（§1.7） | `2bb8a9c5c` 已提交，图回归未验收 |
+| ⑥ | **统一捕获/回放算子路径**（§1.6） | `2bb8a9c5c` 已提交，图回归未验收 |
+| ④ | 连续多轮模型验证 | 待 F0/F3 基线、F4 与 F1′/F2 实验：缩短→恢复、部分/全部 cap=0、重排、TP 布局一致性 |
 
-- **⑤⑥ 要一起验，不要分开宣称修好**：cap=99 只受 ⑥ 影响（padding token 数为 0），
-  cap<full 才会触发 §1.7 所述的正长度 padding，需要 ⑤。
+当前顺序：**F0 → F3 → F4 最小测试 → F1′ + 必要 F2 → 模型回归 → F5/F6 → F7**。
+F6 的支持边界在实验开始前明确，最终能力声明在验证后落地；FULL_DECODE_ONLY 是目标，
+PIECEWISE 是诊断与性能对照。各 F 项见 [开发计划](dcut_development_plan.md) 阶段 B0。
+
+- **⑤⑥ 要一起验，不要分开宣称修好**：单请求 cap=99 命中 8-token 图时无 token padding，
+  主要覆盖分支修复；cap=99 在其他 batch/bucket 组合下仍可能有 padding。必须另测 bucket
+  内部落点来覆盖 ⑤，不能只按 cap 大小判断是否需要 padding 归一化。
 - 模型状态按**同一已提交前缀**比较；浮点算子**明确容差**，不把"逐元素一致"默认 bitwise。
 
-#### ⑤ 的具体落地（重复 `build()`）
+#### ⑤ 的具体落地（历史缺陷，已由 `2bb8a9c5c` 修复）
 - `AscendGDNAttentionMetadataBuilder` 里 `build` 定义在 `ops/gdn_attn_builder.py:591` 和 `:979`，
   **Python 生效的是 `:979`**。`:591` 来自上游合入（`fa50f6ae8`，2026-09-15），`:979` 来自本地
   shared-metadata 性能重构（`cff680f36`，2026-08-18）。
@@ -224,3 +329,9 @@ Qwen3.6-27B 连续多轮人工变长验证：**已提交 token 序列正确** + 
 - 阶段 C 的真实 manager 依赖 ④，且需要在修好的执行路径上**重建 cost table**（人工 manager 把
   profiling 置空，早期 smoke 也未建 varlen 图，而上游 `get_num_tokens` 第一行即
   `assert self.cost_tables is not None`）。
+
+## 7. 变更历史
+
+| 日期 | 内容 | 验证状态 |
+|---|---|---|
+| 2026-09-16 | 固化六轴、状态与观测契约；固定 `B_gdn` 降为待验证选择；区分 DFlash 经验与 DSpark 审计；同步分支修复状态 | 文档与 `2bb8a9c5c`、vLLM `v0.28.0` 接口复核；本次未实施 F1′/F3，也未新增 NPU 结果 |
