@@ -36,6 +36,7 @@ from vllm.v1.attention.backends.utils import (
 from vllm.v1.kv_cache_interface import AttentionSpec
 
 import vllm_ascend.envs as envs_ascend
+from vllm_ascend.attention import dcut_graph_debug
 from vllm_ascend.ops.triton.fla.utils import (
     prepare_chunk_indices,
     prepare_chunk_offsets,
@@ -319,6 +320,9 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
         # zero-draft decode row stays a one-query speculative row instead of
         # switching branches; see _compute_shared_batch_plan.
         self.unify_spec_decode_graph_path: bool = envs_ascend.VLLM_ASCEND_DSPARK_ENABLE_DCUT
+        # Phase label for the axis dump. Capture flips it for the duration of
+        # build_for_cudagraph_capture; every other build is a replay.
+        self._debug_phase: str = "replay"
         sequence_index_capacity = max(
             self.vllm_config.scheduler_config.max_num_seqs,
             self.decode_cudagraph_max_bs,
@@ -1209,9 +1213,66 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
         attn_metadata = self._attach_spec_decode_metadata(
             attn_metadata,
         )
-        return self._attach_non_spec_decode_metadata(
+        attn_metadata = self._attach_non_spec_decode_metadata(
             attn_metadata,
             non_spec_conv1d_cache_indices,
+        )
+        if dcut_graph_debug.enabled():
+            self._log_graph_axes(m, attn_metadata)
+        return attn_metadata
+
+    def build_for_cudagraph_capture(self, common_attn_metadata: CommonAttentionMetadata) -> GDNAttentionMetadata:
+        """Tag the capture phase so its axis dump can be compared with replay.
+
+        Only the phase label is added; the capture metadata itself stays
+        upstream's, so this is inert with the axis dump off.
+        """
+        if not dcut_graph_debug.enabled():
+            return super().build_for_cudagraph_capture(common_attn_metadata)
+        self._debug_phase = "capture"
+        try:
+            return super().build_for_cudagraph_capture(common_attn_metadata)
+        finally:
+            self._debug_phase = "replay"
+
+    def _log_graph_axes(self, m: CommonAttentionMetadata, attn_metadata: GDNAttentionMetadata) -> None:
+        """Record the GDN request axis and every input a captured graph holds.
+
+        ``b_gdn`` is the question this answers: it currently follows the graph
+        descriptor's request capacity, so it changes from one token bucket to
+        the next, and a stateful operator's request axis is part of its state
+        read/write contract rather than just a size. The padding-identification
+        inputs are logged beside it because the GDN builder infers which rows
+        are inactive from a sequence length of zero, and the CPU mirror that
+        reaches it is not the one the input batch zeroes per step.
+        """
+        spec_state_indices = attn_metadata.spec_state_indices_tensor
+        spec_qsl = attn_metadata.spec_query_start_loc
+        b_gdn = None if spec_qsl is None else spec_qsl.shape[0] - 1
+        seq_lens_upper = m.seq_lens_cpu_upper_bound
+
+        dcut_graph_debug.log_axes(
+            "gdn",
+            self._debug_phase,
+            (int(m.num_reqs), int(m.num_actual_tokens)),
+            layer=self.layer_names[0] if self.layer_names else "?",
+            b_graph=m.num_reqs,
+            q=m.num_actual_tokens,
+            b_gdn=b_gdn,
+            b_max=self.vllm_config.scheduler_config.max_num_seqs,
+            row_capacity=self.decode_cudagraph_max_bs,
+            branch=(
+                f"spec={attn_metadata.num_spec_decodes} decode={attn_metadata.num_decodes} "
+                f"prefill={attn_metadata.num_prefills} spec_tokens={attn_metadata.num_spec_decode_tokens}"
+            ),
+            qsl_in=m.query_start_loc_cpu[: m.num_reqs + 1].tolist(),
+            seq_lens_upper=("none" if seq_lens_upper is None else seq_lens_upper[: m.num_reqs].tolist()),
+            spec_qsl=dcut_graph_debug.describe(spec_qsl),
+            num_accepted=dcut_graph_debug.describe(attn_metadata.num_accepted_tokens),
+            state_indices=dcut_graph_debug.describe(spec_state_indices, values=False),
+            state_col0=("none" if spec_state_indices is None else spec_state_indices[:, 0].tolist()),
+            masks=dcut_graph_debug.describe(attn_metadata.spec_sequence_masks),
+            spec_token_indx=dcut_graph_debug.describe(attn_metadata.spec_token_indx, values=False),
         )
 
     def _build_prefill_has_initial_state_and_causal_conv1d_meta(

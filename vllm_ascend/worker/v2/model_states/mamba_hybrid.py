@@ -28,6 +28,7 @@ from vllm.v1.worker.gpu.model_states.mamba_hybrid import (
 )
 from vllm.v1.worker.utils import AttentionGroup
 
+from vllm_ascend.attention import dcut_graph_debug
 from vllm_ascend.worker.v2.attn_utils import build_attn_metadata
 from vllm_ascend.worker.v2.input_batch import AscendInputBatch
 from vllm_ascend.worker.v2.model_states.default import AscendModelState
@@ -96,6 +97,15 @@ class AscendMambaHybridModelState(MambaHybridModelState, AscendModelState):
             num_accepted_tokens=num_accepted_tokens,
             num_decode_draft_tokens_cpu=num_decode_draft_tokens_cpu,
         )
+        if dcut_graph_debug.enabled():
+            self._log_batch_axes(
+                input_batch,
+                cudagraph_mode,
+                for_capture,
+                num_reqs,
+                num_tokens,
+                num_decode_draft_tokens_cpu,
+            )
         self.attn_metadata = build_attn_metadata(
             attn_groups=attn_groups,
             num_reqs=num_reqs,
@@ -116,3 +126,40 @@ class AscendMambaHybridModelState(MambaHybridModelState, AscendModelState):
             for_cudagraph_capture=for_capture,
         )
         return self.attn_metadata
+
+    def _log_batch_axes(
+        self,
+        input_batch: AscendInputBatch,
+        cudagraph_mode: CUDAGraphMode,
+        for_capture: bool,
+        num_reqs: int,
+        num_tokens: int,
+        num_decode_draft_tokens_cpu: torch.Tensor | None,
+    ) -> None:
+        """Record the axes only this layer can see, and which CPU mirror wins.
+
+        The live request count and the graph descriptor's capacity are both
+        known here and nowhere below, and this is also where the choice of CPU
+        sequence-length mirror is made: ``seq_lens_np`` is the persistent buffer
+        whose padding rows keep the previous step's values, while the input
+        batch also carries a freshly zeroed upper bound. Only the former is
+        forwarded, so the padding slices of both are logged side by side.
+        """
+        padding = slice(input_batch.num_reqs, num_reqs)
+        upper_bound = getattr(input_batch, "seq_lens_cpu_upper_bound", None)
+        dcut_graph_debug.log_axes(
+            "mamba-hybrid",
+            "capture" if for_capture else "replay",
+            (int(num_reqs), int(num_tokens)),
+            cg_mode=getattr(cudagraph_mode, "name", cudagraph_mode),
+            b_live=input_batch.num_reqs,
+            b_graph=num_reqs,
+            b_max=self.vllm_config.scheduler_config.max_num_seqs,
+            q=num_tokens,
+            q_actual=input_batch.num_tokens,
+            draft_counts=("none" if num_decode_draft_tokens_cpu is None else num_decode_draft_tokens_cpu.tolist()),
+            qsl=input_batch.query_start_loc_np[: num_reqs + 1].tolist(),
+            # The two padding slices below should agree and do not have to.
+            pad_seq_lens_np=input_batch.seq_lens_np[padding].tolist(),
+            pad_upper_bound=("none" if upper_bound is None else upper_bound[padding].tolist()),
+        )

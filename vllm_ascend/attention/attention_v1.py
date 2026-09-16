@@ -42,6 +42,7 @@ from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.kv_cache_interface import AttentionSpec, CrossAttentionSpec
 
 from vllm_ascend.ascend_forward_context import _EXTRA_CTX
+from vllm_ascend.attention import dcut_graph_debug
 from vllm_ascend.attention.attention_mask import AttentionMaskBuilder
 from vllm_ascend.attention.utils import (
     AscendCommonAttentionMetadata,
@@ -361,6 +362,25 @@ class AscendAttentionMetadataBuilder(AttentionMetadataBuilder[AscendMetadata]):
                     block_table.new_zeros((num_reqs_fia - block_table.shape[0], block_table.shape[1])),
                 ],
                 dim=0,
+            )
+        if dcut_graph_debug.enabled():
+            # B_fia, observed rather than derived from the request count: this
+            # is the axis GDN's fixed-capacity view must not be confused with,
+            # and a zero-query row here still needs a valid KV length and block
+            # row. `capturing` is the forward context's own flag, recorded as
+            # data because it is not guaranteed to be set at build time; the
+            # repeat allowance keeps both lines when it is not.
+            dcut_graph_debug.log_axes(
+                "fia",
+                f"capturing={bool(getattr(_EXTRA_CTX, 'capturing', False))}",
+                (num_reqs, int(query_start_loc_cpu[-1])),
+                repeats=2,
+                b_fia=num_reqs_fia,
+                num_reqs=num_reqs,
+                actual_seq_qlen=actual_seq_lengths_q,
+                kv_lens=seq_lens_list,
+                block_rows=(None if block_table is None else block_table.shape[0]),
+                block_ptr=(None if block_table is None else f"{block_table.data_ptr():#x}"),
             )
         return query_start_loc, actual_seq_lengths_q, seq_lens_list, seq_lens, block_table
 

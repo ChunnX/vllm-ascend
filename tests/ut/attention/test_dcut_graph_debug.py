@@ -1,0 +1,90 @@
+# SPDX-License-Identifier: Apache-2.0
+
+import pytest
+import torch
+
+from vllm_ascend.attention import dcut_graph_debug
+
+
+class _RecordingLogger:
+    """Collects formatted lines, so the test does not depend on log routing."""
+
+    def __init__(self) -> None:
+        self.lines: list[str] = []
+
+    def warning(self, message: str, *args: object) -> None:
+        self.lines.append(message % args)
+
+
+@pytest.fixture
+def lines(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    recorder = _RecordingLogger()
+    monkeypatch.setattr(dcut_graph_debug, "logger", recorder)
+    dcut_graph_debug.reset()
+    return recorder.lines
+
+
+def test_axes_lines_are_one_per_phase_and_shape(lines: list[str]) -> None:
+    """One comparable line per graph shape, not one per decode step.
+
+    The point of the dump is to put a capture line beside a replay line for the
+    same shape; a per-step log would bury that in a live run.
+    """
+    for _ in range(3):
+        dcut_graph_debug.log_axes("gdn", "capture", (8, 8), b_gdn=8)
+        dcut_graph_debug.log_axes("gdn", "replay", (8, 8), b_gdn=8)
+    # A different shape is a different line, and so is another component.
+    dcut_graph_debug.log_axes("gdn", "replay", (32, 256), b_gdn=32)
+    dcut_graph_debug.log_axes("fia", "replay", (8, 8), b_fia=8)
+
+    assert len(lines) == 4
+    assert sum("phase=capture" in line for line in lines) == 1
+    assert sum(line.startswith("[D-Cut AXES] gdn ") for line in lines) == 3
+    assert "b_gdn=32" in lines[2]
+
+
+def test_repeats_keep_both_lines_when_the_phase_is_unknown(lines: list[str]) -> None:
+    """A component that cannot tell capture from replay still gets both lines."""
+    for index in range(5):
+        dcut_graph_debug.log_axes("fia", "capturing=False", (8, 8), repeats=2, call=index)
+
+    assert len(lines) == 2
+    assert "call=0" in lines[0]
+    assert "call=1" in lines[1]
+
+
+def test_reset_lets_a_later_run_log_its_shapes_again(lines: list[str]) -> None:
+    dcut_graph_debug.log_axes("gdn", "replay", (8, 8), b_gdn=8)
+    dcut_graph_debug.log_axes("gdn", "replay", (8, 8), b_gdn=8)
+    assert len(lines) == 1
+
+    dcut_graph_debug.reset()
+    dcut_graph_debug.log_axes("gdn", "replay", (8, 8), b_gdn=8)
+    assert len(lines) == 2
+
+
+def test_multiple_fields_stay_readable_on_one_line(lines: list[str]) -> None:
+    dcut_graph_debug.log_axes("mamba-hybrid", "replay", (8, 8), b_live=1, b_graph=8, q=8)
+
+    assert lines == ["[D-Cut AXES] mamba-hybrid phase=replay b_live=1 | b_graph=8 | q=8"]
+
+
+def test_describe_reports_address_and_truncates_long_values() -> None:
+    """The address matters as much as the contents.
+
+    A graph input that is freshly allocated per step cannot be an input to a
+    captured graph however right its values look, so every description carries
+    the pointer.
+    """
+    assert dcut_graph_debug.describe(None) == "none"
+
+    tensor = torch.arange(4, dtype=torch.int32)
+    described = dcut_graph_debug.describe(tensor)
+    assert "shape=(4,)" in described
+    assert f"ptr={tensor.data_ptr():#x}" in described
+    assert "val=[0, 1, 2, 3]" in described
+
+    assert "val=" not in dcut_graph_debug.describe(tensor, values=False)
+
+    long_tensor = torch.arange(dcut_graph_debug._MAX_PRINTED_VALUES + 7, dtype=torch.int32)
+    assert "...(+7)" in dcut_graph_debug.describe(long_tensor)

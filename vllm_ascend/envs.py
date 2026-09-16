@@ -138,6 +138,14 @@ env_variables: dict[str, Callable[[], Any]] = {
     "VLLM_ASCEND_DSPARK_ENABLE_DCUT": lambda: bool(
         int(os.getenv("VLLM_ASCEND_DSPARK_ENABLE_DCUT", "0"))
     ),
+    # Log the D-Cut graph request axes and the tensors each component feeds its
+    # own operators, once per capture and replay shape. A full graph fixes GDN
+    # shapes and addresses at capture and the linear-attention layers get no
+    # replay-time parameter update, so a capture/replay disagreement on any axis
+    # is silently wrong output; six request counts are in play and deriving one
+    # from another has proven unreliable. Debug only: reads device tensors back
+    # to the host, which synchronizes. 1 enables, 0 (default) disables.
+    "VLLM_ASCEND_DSPARK_DCUT_DEBUG_AXES": lambda: bool(int(os.getenv("VLLM_ASCEND_DSPARK_DCUT_DEBUG_AXES", "0"))),
     # Manual per-request draft cap for D-Cut GDN verification (step 3 of the
     # D-Cut GDN integration, docs/adaptive_verify/). -1 (default) disables manual
     # trimming. A value >= 0 drives the existing MRV2 trimming path
