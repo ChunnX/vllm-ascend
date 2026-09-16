@@ -19,6 +19,7 @@ from dataclasses import dataclass, fields
 import torch
 from vllm.config import VllmConfig
 from vllm.distributed import get_pcp_group
+from vllm.logger import logger
 from vllm.v1.attention.backend import AttentionCGSupport, CommonAttentionMetadata
 from vllm.v1.attention.backends.gdn_attn import (
     GDNAttentionBackend,
@@ -32,9 +33,9 @@ from vllm.v1.attention.backends.utils import (
     mamba_get_block_table_tensor,
     split_decodes_and_prefills,
 )
-from vllm.logger import logger
 from vllm.v1.kv_cache_interface import AttentionSpec
 
+import vllm_ascend.envs as envs_ascend
 from vllm_ascend.ops.triton.fla.utils import (
     prepare_chunk_indices,
     prepare_chunk_offsets,
@@ -43,6 +44,9 @@ from vllm_ascend.ops.triton.fla.utils import (
 )
 
 _GDN_CHUNK_SIZE = 64
+# Distinguishes the GDN-local metadata view from the batch plans that share the
+# same per-invocation cache dict.
+_GDN_LOCAL_METADATA_CACHE_TAG = "gdn_local_metadata"
 # Keep this aligned with solve_tril.LARGE_BLOCK_T in ops/triton/fla/solve_tril.py.
 _GDN_SOLVE_TRIL_LARGE_BLOCK_SIZE = 608 * 2
 _GDN_CUMSUM_WORKING_SET = 2**18
@@ -310,6 +314,11 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
         device: torch.device,
     ):
         super().__init__(kv_cache_spec, layer_names, vllm_config, device)
+        # D-Cut drives adaptive verification, which captures variable-length
+        # decode graphs. Those graphs must hold one operator path, so a
+        # zero-draft decode row stays a one-query speculative row instead of
+        # switching branches; see _compute_shared_batch_plan.
+        self.unify_spec_decode_graph_path: bool = envs_ascend.VLLM_ASCEND_DSPARK_ENABLE_DCUT
         sequence_index_capacity = max(
             self.vllm_config.scheduler_config.max_num_seqs,
             self.decode_cudagraph_max_bs,
@@ -588,20 +597,59 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
         num_accepted_tokens[fold_indices.to(num_accepted_tokens.device)] = self.num_spec + 1
         return spec_sequence_masks_cpu, num_accepted_tokens
 
-    def build(  # type: ignore[override]
+    def _compute_gdn_local_metadata(
         self,
-        common_prefix_len: int,
         common_attn_metadata: CommonAttentionMetadata,
-        num_accepted_tokens: torch.Tensor | None = None,
-        num_decode_draft_tokens_cpu: torch.Tensor | None = None,
-        fast_build: bool = False,
-    ) -> GDNAttentionMetadata:
+        num_decode_draft_tokens_cpu: torch.Tensor | None,
+    ) -> CommonAttentionMetadata:
+        """GDN-local query view of the batch, before any plan is derived.
+
+        Two corrections have to land before the batch shape is classified:
+        inactive FIA graph rows must become zero-length for the recurrent state
+        update, and a one-token stateful prompt chunk must look like an ordinary
+        decode so it replays the same graph.
+        """
         if self.use_full_cuda_graph and self.use_spec_decode:
             common_attn_metadata = _remove_spec_graph_padding_queries(
                 common_attn_metadata,
                 num_decode_draft_tokens_cpu,
             )
-        m = _treat_single_token_prefills_with_state_as_decodes(common_attn_metadata)
+        return _treat_single_token_prefills_with_state_as_decodes(common_attn_metadata)
+
+    def _get_gdn_local_metadata(
+        self,
+        common_attn_metadata: CommonAttentionMetadata,
+        num_decode_draft_tokens_cpu: torch.Tensor | None,
+        batch_shared_cache: dict | None,
+    ) -> CommonAttentionMetadata:
+        """Compute that view once per invocation, not once per KV cache group.
+
+        Both corrections rebuild ``query_start_loc``, and
+        ``_shared_batch_plan_key`` identifies a batch by tensor address, so
+        running them per group would hand every group a distinct view: the plan
+        cache would miss on each one and each group would refresh its graph
+        buffers from its own copy. Memoize on the same batch-scoped cache the
+        plan uses, keyed off the inputs this view actually reads.
+        """
+        if batch_shared_cache is None:
+            return self._compute_gdn_local_metadata(common_attn_metadata, num_decode_draft_tokens_cpu)
+
+        ptr = lambda t: None if t is None else t.data_ptr()  # noqa: E731
+        key = (
+            _GDN_LOCAL_METADATA_CACHE_TAG,
+            common_attn_metadata.num_reqs,
+            common_attn_metadata.num_actual_tokens,
+            ptr(common_attn_metadata.query_start_loc),
+            ptr(common_attn_metadata.query_start_loc_cpu),
+            ptr(common_attn_metadata.seq_lens_cpu_upper_bound),
+            ptr(common_attn_metadata.is_prefilling),
+            ptr(num_decode_draft_tokens_cpu),
+        )
+        m = batch_shared_cache.get(key)
+        if m is None:
+            m = self._compute_gdn_local_metadata(common_attn_metadata, num_decode_draft_tokens_cpu)
+            batch_shared_cache[key] = m
+        return m
 
     def _compute_shared_batch_plan(
         self,
@@ -630,7 +678,15 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
             num_reqs = num_decode_draft_tokens_cpu.numel()
             spec_sequence_masks_cpu = self.spec_sequence_masks_cpu[:num_reqs]
             runtime_draft_tokens = num_decode_draft_tokens_cpu[num_decode_draft_tokens_cpu >= 0]
-            if runtime_draft_tokens.sum().item() > 0:
+            if runtime_draft_tokens.sum().item() > 0 or self.unify_spec_decode_graph_path:
+                # A zero count is a one-query speculative row, not an ordinary
+                # decode row: both read and write ssm_state_indices[row, 0]
+                # when num_accepted is 1, so the two are equivalent, and only
+                # the speculative branch keeps a variable-length decode graph on
+                # one operator path from capture through replay. Real batches
+                # mark a draft-free row with -1 (see the mamba hybrid model
+                # state), so an all-zero count only ever comes from a
+                # cudagraph-capture dummy batch, whose query lengths are all 1.
                 torch.ge(
                     num_decode_draft_tokens_cpu,
                     0,
@@ -985,10 +1041,12 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
         fast_build: bool = False,
         batch_shared_cache: dict | None = None,
     ) -> GDNAttentionMetadata:
-        m = common_attn_metadata
-        plan = self._get_shared_batch_plan(
-            m, num_accepted_tokens, num_decode_draft_tokens_cpu, batch_shared_cache
+        m = self._get_gdn_local_metadata(
+            common_attn_metadata,
+            num_decode_draft_tokens_cpu,
+            batch_shared_cache,
         )
+        plan = self._get_shared_batch_plan(m, num_accepted_tokens, num_decode_draft_tokens_cpu, batch_shared_cache)
 
         num_prefills = plan.num_prefills
         num_decodes = plan.num_decodes
