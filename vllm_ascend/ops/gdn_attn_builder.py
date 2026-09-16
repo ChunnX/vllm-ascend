@@ -1224,8 +1224,10 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
     def build_for_cudagraph_capture(self, common_attn_metadata: CommonAttentionMetadata) -> GDNAttentionMetadata:
         """Tag the capture phase so its axis dump can be compared with replay.
 
-        Only the phase label is added; the capture metadata itself stays
-        upstream's, so this is inert with the axis dump off.
+        A hint, not a guarantee: only the capture path that routes through here
+        gets labelled, and a piecewise capture reaches the ordinary build with
+        its capture flag clear. Only the phase label is added; the capture
+        metadata itself stays upstream's, so this is inert with the dump off.
         """
         if not dcut_graph_debug.enabled():
             return super().build_for_cudagraph_capture(common_attn_metadata)
@@ -1255,6 +1257,10 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
             "gdn",
             self._debug_phase,
             (int(m.num_reqs), int(m.num_actual_tokens)),
+            # The phase label only reflects the capture path that announces
+            # itself; a piecewise capture does not, so keep room for a second
+            # line of the same shape and read the occurrence counter.
+            repeats=2,
             layer=self.layer_names[0] if self.layer_names else "?",
             b_graph=m.num_reqs,
             q=m.num_actual_tokens,

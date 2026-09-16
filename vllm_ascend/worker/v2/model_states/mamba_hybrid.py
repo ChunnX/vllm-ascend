@@ -144,6 +144,10 @@ class AscendMambaHybridModelState(MambaHybridModelState, AscendModelState):
         whose padding rows keep the previous step's values, while the input
         batch also carries a freshly zeroed upper bound. Only the former is
         forwarded, so the padding slices of both are logged side by side.
+
+        ``for_capture`` is a hint rather than a guarantee -- a piecewise
+        ``prepare_inputs_to_capture`` arrives here with it clear and no graph
+        mode -- so a second line of the same shape stays allowed.
         """
         padding = slice(input_batch.num_reqs, num_reqs)
         upper_bound = getattr(input_batch, "seq_lens_cpu_upper_bound", None)
@@ -151,6 +155,7 @@ class AscendMambaHybridModelState(MambaHybridModelState, AscendModelState):
             "mamba-hybrid",
             "capture" if for_capture else "replay",
             (int(num_reqs), int(num_tokens)),
+            repeats=2,
             cg_mode=getattr(cudagraph_mode, "name", cudagraph_mode),
             b_live=input_batch.num_reqs,
             b_graph=num_reqs,

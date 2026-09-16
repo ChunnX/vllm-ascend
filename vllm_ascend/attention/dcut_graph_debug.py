@@ -67,9 +67,15 @@ def log_axes(
     """Emit one line for this component, phase, and graph shape.
 
     ``shape_key`` identifies the graph shape, so a run yields one comparable
-    line per shape per phase instead of one per step. ``repeats`` raises that
-    allowance for a component that cannot tell capture from replay on its own:
-    the lines then arrive in execution order, capture first.
+    line per shape per phase instead of one per step.
+
+    ``repeats`` raises that allowance for a component whose phase label cannot
+    be trusted to separate capture from replay. Nothing below the model runner
+    has a reliable flag: metadata is built before the forward context exists,
+    and the capture path does not always announce itself (a piecewise
+    ``prepare_inputs_to_capture`` arrives with the capture flag clear and no
+    graph mode). With an allowance above one, each line carries its occurrence
+    index, so warmup, capture and replay are told apart by arrival order.
     """
     key = (component, phase, shape_key)
     already = _emitted.get(key, 0)
@@ -77,8 +83,9 @@ def log_axes(
         return
     _emitted[key] = already + 1
 
-    body = " | ".join(f"{name}={value}" for name, value in fields.items())
-    logger.warning("[D-Cut AXES] %s phase=%s %s", component, phase, body)
+    parts = [] if repeats == 1 else [f"n={already}"]
+    parts.extend(f"{name}={value}" for name, value in fields.items())
+    logger.warning("[D-Cut AXES] %s phase=%s %s", component, phase, " | ".join(parts))
 
 
 def reset() -> None:

@@ -367,14 +367,15 @@ class AscendAttentionMetadataBuilder(AttentionMetadataBuilder[AscendMetadata]):
             # B_fia, observed rather than derived from the request count: this
             # is the axis GDN's fixed-capacity view must not be confused with,
             # and a zero-query row here still needs a valid KV length and block
-            # row. `capturing` is the forward context's own flag, recorded as
-            # data because it is not guaranteed to be set at build time; the
-            # repeat allowance keeps both lines when it is not.
+            # row. Metadata is built before the forward context exists, so this
+            # layer has no capture/replay flag to read; the repeat allowance and
+            # the occurrence counter separate warmup, capture and replay by the
+            # order they arrive in.
             dcut_graph_debug.log_axes(
                 "fia",
-                f"capturing={bool(getattr(_EXTRA_CTX, 'capturing', False))}",
+                "build",
                 (num_reqs, int(query_start_loc_cpu[-1])),
-                repeats=2,
+                repeats=3,
                 b_fia=num_reqs_fia,
                 num_reqs=num_reqs,
                 actual_seq_qlen=actual_seq_lengths_q,

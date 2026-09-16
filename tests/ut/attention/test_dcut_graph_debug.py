@@ -43,14 +43,26 @@ def test_axes_lines_are_one_per_phase_and_shape(lines: list[str]) -> None:
     assert "b_gdn=32" in lines[2]
 
 
-def test_repeats_keep_both_lines_when_the_phase_is_unknown(lines: list[str]) -> None:
-    """A component that cannot tell capture from replay still gets both lines."""
-    for index in range(5):
-        dcut_graph_debug.log_axes("fia", "capturing=False", (8, 8), repeats=2, call=index)
+def test_repeats_keep_later_lines_and_number_them(lines: list[str]) -> None:
+    """A component whose phase label cannot be trusted still gets both lines.
 
-    assert len(lines) == 2
-    assert "call=0" in lines[0]
-    assert "call=1" in lines[1]
+    Nothing below the model runner has a reliable capture flag, so arrival
+    order is the discriminator and each line has to say where it sits in that
+    order.
+    """
+    for index in range(5):
+        dcut_graph_debug.log_axes("fia", "build", (8, 8), repeats=3, call=index)
+
+    assert len(lines) == 3
+    assert "n=0 | call=0" in lines[0]
+    assert "n=1 | call=1" in lines[1]
+    assert "n=2 | call=2" in lines[2]
+
+
+def test_single_line_shapes_carry_no_occurrence_counter(lines: list[str]) -> None:
+    dcut_graph_debug.log_axes("gdn", "capture", (8, 8), b_gdn=8)
+
+    assert lines == ["[D-Cut AXES] gdn phase=capture b_gdn=8"]
 
 
 def test_reset_lets_a_later_run_log_its_shapes_again(lines: list[str]) -> None:
