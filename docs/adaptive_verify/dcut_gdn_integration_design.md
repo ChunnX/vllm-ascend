@@ -18,6 +18,15 @@
 > 不能排除算子入图后的问题。`2bb8a9c5c` 已修复重复 `build()` 与零 draft 捕获分支，
 > 尚不能据此宣称 FULL 精度问题已解决。本次新增六个轴、F3 观测和待验证的固定请求轴方案。
 
+> **2026-09-17 修订（阶段 B0 图契约通过）**：cap=99 + FULL_DECODE_ONLY 在 `max_num_seqs=8`
+> 下 1/2/4/8 个请求精度全部正确。根因是两个缺陷叠加，都与算子契约无关：① `2bb8a9c5c` 的
+> batch 级记忆化缓存了整个 metadata 对象，而该对象携带 per-group 的 `block_table_tensor`，
+> 导致 10 个 Mamba KV cache group 里 9 组按第 0 组的 block table 推导状态索引（`e41230fc7`
+> 修复）；② 开启 AV 会把 decode descriptor 切成 varlen 形态，`num_tokens <= max_num_seqs`
+> 的 bucket 一律按 1 token/请求编图，而真实 spec batch 回放的是 1 请求/校验宽度——GDN 层没有
+> replay 期参数刷新，捕获几何就是唯一几何（`0d6dd7559` 改回 uniform 描述符）。§1.6 已解决，
+> §1.7 在 cap=99 + uniform 描述符下不再被触发，进入裁剪阶段才重新上线。
+
 ## 1. 接口契约（先定死，再实现；每条都要在动手前明确）
 
 ### 1.0 六个轴与请求身份
@@ -100,7 +109,27 @@ FIA 可以有自己的 dummy query/KV 行；GDN 的 inactive 行必须零 query�
 - 反过来，`num_decode_draft_tokens == 0`（不是 `-1`）这种行**只由 dummy 捕获产生**
   （vLLM `gdn_attn.py:546` 用 `diff(query_start_loc) - 1`），这一点是 §1.6 的基础。
 
-### 1.6 捕获与回放必须走**同一条算子路径**（2026-09-16 新增，当前阻塞）
+### 1.6 捕获与回放必须走**同一条算子路径**，且**同一几何**（2026-09-17 已解决）
+
+**结论**：分支一致（`2bb8a9c5c`）是必要条件但不充分。真正让 cap=99 FULL 乱码的是**几何**：
+`varlen_decode` 让 descriptor 变成 `min(num_tokens, max_num_reqs)` 行、dummy 均分 token，
+于是 `num_tokens <= max_num_seqs` 的每个 bucket 都按 **1 token/请求**编图，而真实 spec batch
+回放的是 **1 请求/校验宽度**。满足 `min(Q_bucket, B_max) == Q_bucket/(K+1)` 的只有
+`Q_bucket = B_max*(K+1)` 一个解，所以除了恰好满并发，**每个 bucket 的几何都是错的**；
+`max_num_seqs=1` 之所以正确，是 varlen 在那里退化成了 uniform 几何，不是并发低。
+
+**为什么 GDN 不能像 full attention 那样容忍**：full attention 每步用 `graph_task_update`
+以刷新后的主机侧长度重发 kernel；linear_attn 层没有任何 replay 期刷新——`attention_v1.py:802`
+的注释称它们"由 `update_conv1d_graph_params` 单独更新"，但**该函数在全仓不存在**，只出现在
+这条注释里。`zip` 过滤是真的，承诺的另一条路径是空的。所以捕获进 conv/recurrent task 的
+几何就是它们唯一会跑的几何。
+
+**修法（`0d6dd7559`）**：D-Cut 路径保留 uniform 描述符（`round_up(Q, K+1)/(K+1)` 行 × `K+1`
+宽），即不带 D-Cut 时已验证通过的那批图。裁剪后的 batch 不是 uniform，匹配不到 FULL
+descriptor 而回落——这比回放一张为别的请求布局编的图要好，也是裁剪未验证阶段的正确分层。
+可用 `VLLM_ASCEND_DSPARK_DCUT_UNIFORM_DECODE_GRAPH=0` 恢复旧行为做对照。
+
+**以下为历史缺陷链（`76780b1a1`），保留作分支一致性的依据：**
 FULL 图的 Python 分支在捕获那一刻定形，回放不重选分支。所以 GDN 的 `spec` / 普通 decode 分支
 选择必须在捕获和回放之间**恒等**。以下为 `76780b1a1` 的缺陷链，`2bb8a9c5c` 已修复
 分支选择；它是否足以解决模型故障，仍需运行端 FULL 验证：
@@ -126,7 +155,12 @@ FULL 图的 Python 分支在捕获那一刻定形，回放不重选分支。所�
   （例：40-token 图 = 24 行长度 1 + 8 行长度 2，存在正 draft 计数），所以"修掉小 bucket"
   **不足以**覆盖 §1.7。
 
-### 1.7 padding 请求行必须是**零长度**（2026-09-16 新增）
+### 1.7 padding 请求行必须是**零长度**（2026-09-16 新增；cap=99 下当前不触发）
+
+> **2026-09-17 状态**：uniform 描述符下 `B_graph == B_live`，cap=99 一个 padding 行都没有，
+> 因此本节的执行者 `_remove_spec_graph_padding_queries` 在当前能跑通的配置里**不被执行**，
+> 也就没有实跑覆盖。进入裁剪（ragged replay）阶段会全部重新上线，届时必须补图级用例，
+> 不能只靠单测。
 - **目标契约**：FIA padding 行可以有正 query span，但 GDN recurrent 要求 inactive 行零长。
   执行者是 `_remove_spec_graph_padding_queries`（`ops/gdn_attn_builder.py:57`）。
 - **仍需验证的布局**：`num_tokens_after_padding = max(num_tokens, batch_desc.num_tokens)`

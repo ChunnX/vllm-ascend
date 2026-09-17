@@ -102,7 +102,24 @@ subject 完全相同），其中只有一份含上游 GQA/MRV2 那次合入、�
 > 但 eager 冒烟不能排除算子入图问题。`2bb8a9c5c` 已修复下述两处分支/调用缺陷，
 > 尚无本计划验收过的 FULL 修复结果，不能把代码提交等同于模型精度通过。
 
-### 阶段 B0 —— 合并缺陷 + GDN 图契约统一（当前阻塞，先做）
+### 阶段 B0 —— 合并缺陷 + GDN 图契约统一（2026-09-17 通过）
+
+> **通过标准达成**：cap=99 + FULL_DECODE_ONLY，`max_num_seqs=8` 下 1/2/4/8 个请求精度全部
+> 正确；dcut=0 的 eager 与 FULL 同时保持正确。二分定位到两个缺陷，都与算子契约无关：
+> ① `2bb8a9c5c` 的 batch 级记忆化缓存了整个 metadata 对象，而它携带 per-group 的
+> `block_table_tensor`，使 10 个 Mamba KV cache group 里 9 组按第 0 组的 block table 推导
+> 状态索引（`e41230fc7`）；② AV 开启后 decode descriptor 变成 varlen 形态，
+> `num_tokens <= max_num_seqs` 的 bucket 一律按 1 token/请求编图，与真实 spec batch 的
+> 1 请求/校验宽度不符（`0d6dd7559` 改回 uniform）。机制见接入设计 §1.6。
+>
+> **由此作废的计划项**：F1′（固定 `B_gdn = B_max`）与 F2（分离 FIA/GDN padding 语义）在
+> cap=99 + uniform 描述符下**不再需要**——`B_graph == B_live`，没有 padding 行。两项都推迟到
+> 裁剪阶段，那时才是它们真正要解决的场景。F4 最小测试台同样降级为裁剪阶段的前置项。
+>
+> **四格对照的正面结论**：eager 在 dcut=0/1 下都正确，说明 cap=99 时
+> `npu_dcut_causal_conv1d` / `npu_dcut_recurrent_gated_delta_rule` 与定长算子等价，
+> `ops/gdn.py:301` 声明的回归不变量成立，该项不再列为风险。
+
 
 **已有修复**：`2bb8a9c5c` 移除重复 `build()`，将 GDN 局部 metadata 归一化挂到 batch 级共享
 缓存，并在 D-Cut 开启时保留零 draft 捕获行的 spec 分支。这些修改保留；算子路径一致只是
@@ -257,3 +274,4 @@ confidence 是否逐元素一致（draft 侧有 allreduce 时 `argmax` 可能翻
 | 日期 | 内容 | 验证状态 |
 |---|---|---|
 | 2026-09-16 | 同步 `2bb8a9c5c` 修复状态；固化 F0/F3/F4 优先顺序、固定轴实验与 F2 配套；明确 FULL 目标及图模式/裁剪策略两个对照维度 | 文档修订；F1′/F3 未实施，未新增运行端精度或性能结果 |
+| 2026-09-17 | 阶段 B0 标记通过；记录 block table 缺陷与 varlen 编图几何两项根因；F1′/F2/F4 推迟到裁剪阶段；算子等价性风险移除 | 运行端验证：cap=99 + FULL，`max_num_seqs=8`，1/2/4/8 请求精度正确；dcut=0 eager/FULL 同时正确；48 个相关 UT 通过 |
