@@ -129,9 +129,10 @@ def test_enabled_only_when_some_position_is_capped():
 def test_manual_batch_budget_sums_capped_capacities():
     num_drafts_per_req = {"a": 4, "b": 1, "c": 0, "d": 3}
     num_non_draft_tokens_per_req = {"a": 1, "b": 1, "c": 1, "d": 1}
-    drafts, non_draft, capacity_per_req, draft_budget = manual_batch_budget(
+    batch_budget, capacity_per_req = manual_batch_budget(
         num_drafts_per_req, num_non_draft_tokens_per_req, (2,)
     )
+    drafts, non_draft, draft_budget = batch_budget
     # min(4,2)+min(1,2)+min(0,2)+min(3,2) = 2+1+0+2 = 5
     assert draft_budget == 5
     assert capacity_per_req == {"a": 2, "b": 1, "c": 0, "d": 2}
@@ -139,6 +140,28 @@ def test_manual_batch_budget_sums_capped_capacities():
     # The per-request dicts pass through untouched (order and values preserved).
     assert drafts == num_drafts_per_req
     assert non_draft == num_non_draft_tokens_per_req
+
+
+def test_batch_budget_keeps_the_upstream_three_tuple_shape():
+    """Regression: the stash arity is a base-class contract.
+
+    ``AdaptiveVerificationManager.compact_batch`` unpacks ``_batch_budget`` as
+    ``(num_drafts_per_req, num_non_draft_tokens_per_req, draft_budget)`` and the
+    manual manager does not override it, so it runs between the two entry points
+    that *are* overridden. Widening the stash to carry the per-request
+    capacities raised ``ValueError: too many values to unpack (expected 3)`` on
+    the first real request; the capacities travel beside it instead.
+    """
+    batch_budget, capacity_per_req = manual_batch_budget(
+        {"a": 4, "b": 3}, {"a": 1, "b": 1}, (7, 0, 1)
+    )
+    assert len(batch_budget) == 3
+    num_drafts_per_req, num_non_draft_tokens_per_req, draft_budget = batch_budget
+    assert num_drafts_per_req == {"a": 4, "b": 3}
+    assert num_non_draft_tokens_per_req == {"a": 1, "b": 1}
+    assert isinstance(draft_budget, int)
+    # The capacities are a separate return value, not a fourth element.
+    assert capacity_per_req == {"a": 4, "b": 0}
 
 
 def test_manual_batch_budget_keys_the_pattern_to_requests():
@@ -153,7 +176,7 @@ def test_manual_batch_budget_keys_the_pattern_to_requests():
     """
     num_drafts_per_req = {"a": 7, "b": 7, "c": 7}
     num_non_draft_tokens_per_req = dict.fromkeys(num_drafts_per_req, 1)
-    _, _, capacity_per_req, draft_budget = manual_batch_budget(
+    (_, _, draft_budget), capacity_per_req = manual_batch_budget(
         num_drafts_per_req, num_non_draft_tokens_per_req, (7, 0, 1)
     )
     assert capacity_per_req == {"a": 7, "b": 0, "c": 1}
@@ -182,5 +205,5 @@ def test_manual_batch_budget_is_deterministic():
     first = manual_batch_budget(num_drafts_per_req, num_non_draft_tokens_per_req, (2,))
     second = manual_batch_budget(num_drafts_per_req, num_non_draft_tokens_per_req, (2,))
     # No confidence, no cost table: identical inputs give identical budget.
-    assert first[3] == second[3] == 4
-    assert first[2] == second[2]
+    assert first[0][2] == second[0][2] == 4
+    assert first[1] == second[1]

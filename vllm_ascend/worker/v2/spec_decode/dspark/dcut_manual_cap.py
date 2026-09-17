@@ -104,15 +104,23 @@ def manual_batch_budget(
     num_drafts_per_req: dict[str, int],
     num_non_draft_tokens_per_req: dict[str, int],
     manual_caps: Sequence[int],
-) -> tuple[dict[str, int], dict[str, int], dict[str, int], int]:
-    """Build the ``_batch_budget`` tuple ``get_num_tokens`` stashes, from a cap
-    pattern.
+) -> tuple[tuple[dict[str, int], dict[str, int], int], dict[str, int]]:
+    """Build what ``get_num_tokens`` stashes, from a cap pattern.
 
-    Extends ``AdaptiveVerificationManager.get_num_tokens``'s stash with the
-    resolved per-request capacities, so ``reallocate_drafts`` can look them up
-    instead of re-deriving them from a different request order. ``draft_budget``
-    is the sum of exactly those capacities, which is what makes the device-side
-    layout consistent with the batch size already chosen from this budget.
+    Returns ``(batch_budget, capacity_per_req)``.
+
+    ``batch_budget`` keeps ``AdaptiveVerificationManager``'s exact
+    ``(num_drafts_per_req, num_non_draft_tokens_per_req, draft_budget)`` shape.
+    Its arity is a contract, not an implementation detail: ``compact_batch``
+    also unpacks ``_batch_budget`` as a three-tuple and the manual manager does
+    *not* override it, so widening the stash breaks a base-class method that
+    runs between the two entry points that are overridden.
+
+    The resolved per-request capacities therefore travel beside it rather than
+    inside it. ``reallocate_drafts`` looks them up instead of re-deriving them
+    from a different request order, and ``draft_budget`` is the sum of exactly
+    those capacities, which is what makes the device-side layout consistent with
+    the batch size already chosen from this budget.
     """
     scheduled_drafts = np.fromiter(
         num_drafts_per_req.values(), dtype=np.int32, count=len(num_drafts_per_req)
@@ -123,12 +131,12 @@ def manual_batch_budget(
         for req_id, capacity in zip(num_drafts_per_req, capacities)
     }
     draft_budget = int(capacities.sum())
-    return (
+    batch_budget = (
         num_drafts_per_req,
         num_non_draft_tokens_per_req,
-        capacity_per_req,
         draft_budget,
     )
+    return batch_budget, capacity_per_req
 
 
 @functools.lru_cache(maxsize=1)
@@ -153,6 +161,11 @@ def get_manual_cap_manager_cls():
         def __init__(self, *args, manual_caps: Sequence[int], **kwargs) -> None:
             super().__init__(*args, **kwargs)
             self.manual_caps = tuple(manual_caps)
+            # Travels beside the base class's _batch_budget, with the same
+            # lifetime: set in get_num_tokens, consumed and cleared in
+            # reallocate_drafts. It cannot live inside _batch_budget because
+            # compact_batch unpacks that as a three-tuple.
+            self._manual_capacities: dict[str, int] | None = None
 
         def batches_to_profile(self, capture_sizes):
             # Manual budget needs no cost tables; profile nothing so a GDN
@@ -179,21 +192,20 @@ def get_manual_cap_manager_cls():
                 req_id: int(num_tokens_per_req[req_id]) - num_drafts_per_req[req_id]
                 for req_id in req_ids
             }
-            self._batch_budget = manual_batch_budget(
+            self._batch_budget, self._manual_capacities = manual_batch_budget(
                 num_drafts_per_req, num_non_draft_tokens_per_req, self.manual_caps
             )
-            _, _, _, draft_budget = self._batch_budget
+            _, _, draft_budget = self._batch_budget
             return sum(num_non_draft_tokens_per_req.values()) + draft_budget
 
         def reallocate_drafts(self, req_ids, idx_mapping):
             batch_budget, self._batch_budget = self._batch_budget, None
+            capacity_per_req, self._manual_capacities = self._manual_capacities, None
             assert batch_budget is not None
-            (
-                _num_drafts_per_req,
-                num_non_draft_tokens_per_req,
-                capacity_per_req,
-                draft_budget,
-            ) = batch_budget
+            assert capacity_per_req is not None
+            _num_drafts_per_req, num_non_draft_tokens_per_req, draft_budget = (
+                batch_budget
+            )
             num_reqs = idx_mapping.shape[0]
             num_non_draft_tokens = np.fromiter(
                 (num_non_draft_tokens_per_req[req_id] for req_id in req_ids),
