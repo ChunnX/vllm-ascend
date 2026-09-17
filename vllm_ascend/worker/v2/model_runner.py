@@ -1146,18 +1146,22 @@ def graph_manager_wrapper(model_runner):
         lora_capture_cases: list[int] | None = None,
         varlen_decode: bool = False,
     ):
-        # Adaptive verification asks for variable-length decode descriptors,
-        # which carry min(num_tokens, max_num_seqs) requests with the dummy
-        # tokens spread evenly: every bucket at or below max_num_seqs is then
-        # captured as one token per request, while the batch that replays it
-        # holds one request per verify width. The GDN layers get no replay-time
-        # parameter update, so that captured geometry is the only geometry they
-        # ever run. Capture the uniform verify width instead -- the shape a real
-        # speculative batch actually presents, and the one that already replays
-        # correctly without D-Cut.
+        # Temporary diagnostic switch, scoped to D-Cut. Adaptive verification
+        # asks for variable-length decode descriptors; with them, cap=99 replays
+        # wrong output, and with the uniform descriptors the non-D-Cut path
+        # already uses it is correct for one through eight requests. Why the
+        # variable-length descriptor fails is NOT yet explained: the operator
+        # graph tests show both hooks follow query_start_loc on replay, so the
+        # capture-time length distribution is not what binds them. Until that is
+        # localised, keep the shape that demonstrably replays correctly, and
+        # keep the override off any other adaptive-verification model.
         import vllm_ascend.envs as envs_ascend
 
-        if varlen_decode and envs_ascend.VLLM_ASCEND_DSPARK_DCUT_UNIFORM_DECODE_GRAPH:
+        if (
+            varlen_decode
+            and envs_ascend.VLLM_ASCEND_DSPARK_ENABLE_DCUT
+            and envs_ascend.VLLM_ASCEND_DSPARK_DCUT_UNIFORM_DECODE_GRAPH
+        ):
             varlen_decode = False
         return ModelAclGraphManager(
             vllm_config,

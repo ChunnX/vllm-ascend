@@ -29,6 +29,7 @@ _NUM_VALUE_HEADS = 4
 _HEAD_DIM = 64
 _CONV_WIDTH = 4
 _CONV_DIM = 64
+_CONV_STATE_LEN = 8
 
 # One row of eight tokens beside seven inactive rows, and eight rows of one
 # token: the two distributions a single eight-token bucket has to serve. The
@@ -65,13 +66,6 @@ def _state_indices(widths: list[int]) -> torch.Tensor:
         for row, width in enumerate(widths)
     ]
     return torch.tensor(rows, dtype=torch.int32)
-
-
-def _cache_indices(widths: list[int]) -> torch.Tensor:
-    return torch.tensor(
-        [row if width > 0 else PAD_SLOT_ID for row, width in enumerate(widths)],
-        dtype=torch.int32,
-    )
 
 
 def _accepted(widths: list[int]) -> torch.Tensor:
@@ -299,16 +293,21 @@ class _ConvInputs:
         self.x = torch.randn(_NUM_TOKENS, _CONV_DIM, generator=generator).to(dtype).npu()
         self.weight = torch.randn(_CONV_WIDTH, _CONV_DIM, generator=generator).to(dtype).npu()
         self.bias = torch.randn(_CONV_DIM, generator=generator).to(dtype).npu()
-        self.state = torch.randn(_NUM_ROWS, _STATE_LEN, _CONV_DIM, generator=generator).to(dtype).npu()
+        # One conv state block per candidate position, addressed by the same
+        # [B, S] table the model hands this operator -- the spec path passes
+        # spec_state_indices_tensor, not a per-request slot id.
+        self.state = (
+            torch.randn(_NUM_ROWS * _STATE_LEN, _CONV_STATE_LEN, _CONV_DIM, generator=generator).to(dtype).npu()
+        )
         self.pristine_state = self.state.clone()
         self.output = torch.empty_like(self.x)
         self.query_start_loc = _query_start_loc(_EIGHT_NARROW_ROWS).npu()
-        self.cache_indices = _cache_indices(_EIGHT_NARROW_ROWS).npu()
+        self.cache_indices = _state_indices(_EIGHT_NARROW_ROWS).npu()
         self.num_accepted = _accepted(_EIGHT_NARROW_ROWS).npu()
 
     def set_widths(self, widths: list[int]) -> None:
         self.query_start_loc.copy_(_query_start_loc(widths))
-        self.cache_indices.copy_(_cache_indices(widths))
+        self.cache_indices.copy_(_state_indices(widths))
         self.num_accepted.copy_(_accepted(widths))
 
     def reset_state(self) -> None:

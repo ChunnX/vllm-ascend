@@ -146,19 +146,19 @@ env_variables: dict[str, Callable[[], Any]] = {
     # from another has proven unreliable. Debug only: reads device tensors back
     # to the host, which synchronizes. 1 enables, 0 (default) disables.
     "VLLM_ASCEND_DSPARK_DCUT_DEBUG_AXES": lambda: bool(int(os.getenv("VLLM_ASCEND_DSPARK_DCUT_DEBUG_AXES", "0"))),
-    # Capture the D-Cut decode graphs at the uniform verify width instead of the
-    # variable-length worst case. Adaptive verification switches the decode
-    # descriptor to min(num_tokens, max_num_seqs) requests with the tokens spread
-    # evenly, so every bucket at or below max_num_seqs captures one token per
-    # request while a real speculative batch replays one request per verify
-    # width. Full attention tolerates that -- it re-issues its kernel with
-    # refreshed host lengths -- but the GDN layers get no replay-time update, so
-    # the captured recurrent geometry is the only geometry. The uniform
-    # descriptor reproduces the replay geometry exactly, which is the shape that
-    # passes today without D-Cut. A trimmed batch is not uniform and simply
-    # matches no full-graph descriptor, falling back instead of replaying the
-    # wrong shape. 1 (default) captures uniform, 0 restores the variable-length
-    # capture.
+    # Temporary diagnostic: capture the D-Cut decode graphs at the uniform verify
+    # width instead of the variable-length worst case. With the variable-length
+    # descriptor, cap=99 replays wrong output; with the uniform descriptor the
+    # non-D-Cut path already uses, it is correct for one through eight requests.
+    # Why the variable-length descriptor fails is not yet explained -- the
+    # operator graph tests show both GDN hooks follow query_start_loc on replay,
+    # so the capture-time length distribution is not what binds them, and the
+    # difference has to be localised in the model integration. A trimmed batch
+    # is not uniform and matches no full-graph descriptor, so it falls back
+    # rather than replaying a shape captured for another layout; that is why
+    # trimming needs the variable-length route and this switch is not the end
+    # state. Applies only when the D-Cut switch is on. 1 (default) captures
+    # uniform, 0 restores the variable-length capture.
     "VLLM_ASCEND_DSPARK_DCUT_UNIFORM_DECODE_GRAPH": lambda: bool(
         int(os.getenv("VLLM_ASCEND_DSPARK_DCUT_UNIFORM_DECODE_GRAPH", "1"))
     ),
