@@ -363,6 +363,30 @@ class AscendAttentionMetadataBuilder(AttentionMetadataBuilder[AscendMetadata]):
                 ],
                 dim=0,
             )
+        # A graph padding row also arrives inside an already full-length list.
+        # A variable-length decode descriptor carries more requests than are
+        # live, so the surplus rows exist with both their query span and their
+        # KV length at zero -- nothing above ever wrote them. The block above
+        # only fires when the list is short, so those rows keep a zero KV
+        # length, and FIA validates actualSeqLengthsKv per row. Give them the
+        # same positive dummy length: their output is trimmed downstream and
+        # reshape_and_cache slices to the unpadded token count, so any valid
+        # positive length works.
+        #
+        # Only the host list is corrected. The sequence-length tensor is a
+        # graph-stable input whose address a captured graph holds, and GDN
+        # derives inactive-request identity from the shared sequence lengths, so
+        # neither may be rewritten here for FIA's benefit -- the full-graph
+        # replay path reads this list through update_graph_params.
+        inactive_rows = [
+            index
+            for index, (end, kv_len) in enumerate(zip(actual_seq_lengths_q, seq_lens_list))
+            if kv_len == 0 and end == (actual_seq_lengths_q[index - 1] if index else 0)
+        ]
+        if inactive_rows:
+            seq_lens_list = list(seq_lens_list)
+            for index in inactive_rows:
+                seq_lens_list[index] = 1
         if dcut_graph_debug.enabled("fia"):
             # B_fia, observed rather than derived from the request count: this
             # is the axis GDN's fixed-capacity view must not be confused with,
@@ -375,24 +399,27 @@ class AscendAttentionMetadataBuilder(AttentionMetadataBuilder[AscendMetadata]):
                 dcut_graph_debug.log_axes(
                     "fia",
                     "build",
-                    # The first row's query length and KV length are part of
-                    # the key. B rows of one token and one row of B tokens share
-                    # the same request and token counts while being different
-                    # geometries, and a capture batch carries a dummy KV length
-                    # where the replay of the same geometry carries the real
-                    # one -- the pair worth comparing. Without both, the capture
-                    # uses up the allowance and the replay logs nothing.
+                    # The first row's query length and whether any row needed a
+                    # dummy KV length are part of the key. B rows of one token
+                    # and one row of B tokens share the same request and token
+                    # counts while being different geometries, and a capture
+                    # batch has every row live where the replay of the same
+                    # geometry carries graph padding -- the pair worth
+                    # comparing. The KV length itself must stay out: it grows
+                    # with the sequence, so keying on it prints once per decode
+                    # step forever.
                     (
                         num_reqs,
                         int(query_start_loc_cpu[-1]),
                         actual_seq_lengths_q[0] if actual_seq_lengths_q else 0,
-                        seq_lens_list[0] if seq_lens_list else 0,
+                        bool(inactive_rows),
                     ),
                     repeats=3,
                     b_fia=num_reqs_fia,
                     num_reqs=num_reqs,
                     actual_seq_qlen=actual_seq_lengths_q,
                     kv_lens=seq_lens_list,
+                    kv_dummy_rows=len(inactive_rows),
                     block_rows=(None if block_table is None else block_table.shape[0]),
                     block_ptr=(None if block_table is None else f"{block_table.data_ptr():#x}"),
                 )
