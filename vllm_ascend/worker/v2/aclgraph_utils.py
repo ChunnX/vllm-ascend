@@ -37,7 +37,6 @@ from vllm.v1.worker.gpu.input_batch import InputBuffers
 from vllm.v1.worker.gpu.model_states.interface import ModelState
 from vllm.v1.worker.utils import AttentionGroup
 
-import vllm_ascend.envs as envs_ascend
 from vllm_ascend.ascend_forward_context import _EXTRA_CTX
 from vllm_ascend.compilation.acl_graph import set_graph_params, update_full_graph_params
 from vllm_ascend.compilation.breakable_aclgraph import BreakableACLGraphWrapper
@@ -112,80 +111,6 @@ def _get_graph_update_backend(
     raise RuntimeError("No executable attention backend is available for full-graph parameter updates.")
 
 
-def trimmed_decode_descriptors(
-    *,
-    decode_mode: CUDAGraphMode,
-    width: int,
-    max_num_reqs: int,
-    max_decode_tokens: int,
-    max_capture_size: int,
-    lora_capture_cases: list[int],
-) -> list[BatchExecutionDescriptor]:
-    """Uniform decode descriptors for a trimmed verify width, one per request count.
-
-    A global D-Cut cap trims every request to the same width, so a trimmed step
-    is still a uniform decode batch -- just narrower than the verify width the
-    base captures. Nothing matches it, so it falls back and the tokens D-Cut
-    removed buy nothing.
-
-    The sizes come from the request count, not from ``cudagraph_capture_sizes``.
-    Rounding a captured size up to a multiple of the width lands between request
-    counts -- width 3 yields 3, 6, 9, 18, 24, so four requests would round 12 up
-    to 18 -- and the token and request padding that follows brings back the
-    padding-row handling this stage has no need for. One descriptor per request
-    count keeps every replay exact.
-    """
-    descs: list[BatchExecutionDescriptor] = []
-    for num_reqs in range(1, max_num_reqs + 1):
-        num_tokens = num_reqs * width
-        if num_tokens > max_decode_tokens or num_tokens > max_capture_size:
-            break
-        descs.extend(
-            BatchExecutionDescriptor(
-                cg_mode=decode_mode,
-                num_tokens=num_tokens,
-                num_reqs=num_reqs,
-                uniform_token_count=width,
-                num_active_loras=num_active_loras,
-            )
-            for num_active_loras in lora_capture_cases
-        )
-    return descs
-
-
-def merge_decode_descriptors(
-    candidates: dict[tuple[int, int], list[BatchExecutionDescriptor]],
-    capture_descs: dict[CUDAGraphMode, list[BatchExecutionDescriptor]],
-    descs: list[BatchExecutionDescriptor],
-    decode_mode: CUDAGraphMode,
-) -> list[BatchExecutionDescriptor]:
-    """Make extra descriptors reachable without demoting the ones already there.
-
-    ``candidates`` maps a token count to a priority-ordered list, and a
-    descriptor whose uniform token count is None matches any batch, so an entry
-    appended after one would never be reached. Each of these goes to the front
-    of its own token count instead: it is the only entry there that needs
-    neither token nor request padding.
-
-    A token count the base captured nothing at or above has no dispatch entry to
-    reach a graph through, so a descriptor there is dropped rather than captured
-    into memory nothing can replay. Returns what was actually added.
-    """
-    added: list[BatchExecutionDescriptor] = []
-    for desc in descs:
-        key = (desc.num_tokens, desc.num_active_loras)
-        reachable = candidates.get(key)
-        if reachable is None or desc in reachable:
-            continue
-        candidates[key] = [desc, *reachable]
-        added.append(desc)
-    if added:
-        captured = capture_descs.setdefault(decode_mode, [])
-        captured.extend(added)
-        captured.sort(key=lambda d: d.num_tokens, reverse=True)
-    return added
-
-
 class ModelAclGraphManager(ModelCudaGraphManager):
     """ACL Model Cuda Graph Manager for Ascend NPUs."""
 
@@ -213,50 +138,6 @@ class ModelAclGraphManager(ModelCudaGraphManager):
         self.capture_sizes = collect_sorted_captured_token_sizes(self._capture_descs)
         if super().needs_capture():
             set_graph_params(self.capture_sizes)
-
-    def _dcut_trimmed_decode_width(self) -> int | None:
-        """The width a global D-Cut cap trims to, when it needs its own graphs."""
-        if not envs_ascend.VLLM_ASCEND_DSPARK_DCUT_TRIM_DECODE_GRAPH:
-            return None
-        # The manual cap only trims when the D-Cut switch is on; without it
-        # these graphs would be captured for a width nothing ever presents.
-        if not envs_ascend.VLLM_ASCEND_DSPARK_ENABLE_DCUT:
-            return None
-        cap = envs_ascend.VLLM_ASCEND_DSPARK_DCUT_MANUAL_CAP
-        if cap < 0:
-            return None
-        width = cap + 1
-        # The full verify width is what the base already captures, exactly.
-        if not 1 <= width < self.decode_query_len:
-            return None
-        return width
-
-    def _init_candidates(self) -> None:
-        """Add the trimmed-width decode graphs on top of the base's own."""
-        super()._init_candidates()
-        width = self._dcut_trimmed_decode_width()
-        decode_mode = self.cudagraph_mode.decode_mode()
-        if width is None or self.varlen_decode or not (self.cudagraph_mode.separate_routine() and decode_mode):
-            return
-        added = merge_decode_descriptors(
-            self._candidates,
-            self._capture_descs,
-            trimmed_decode_descriptors(
-                decode_mode=decode_mode,
-                width=width,
-                max_num_reqs=self.max_num_reqs,
-                max_decode_tokens=self.max_num_reqs * self.decode_query_len,
-                max_capture_size=self.compilation_config.max_cudagraph_capture_size,
-                lora_capture_cases=self.lora_capture_cases,
-            ),
-            decode_mode,
-        )
-        logger.info(
-            "[D-Cut] added %d decode graphs at trimmed verify width %d (full width %d)",
-            len(added),
-            width,
-            self.decode_query_len,
-        )
 
     def init_breakable_cg_runner(self, model: nn.Module) -> None:
         if self.breakable_cg_runner is None:

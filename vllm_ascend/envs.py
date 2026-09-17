@@ -162,19 +162,6 @@ env_variables: dict[str, Callable[[], Any]] = {
     "VLLM_ASCEND_DSPARK_DCUT_UNIFORM_DECODE_GRAPH": lambda: bool(
         int(os.getenv("VLLM_ASCEND_DSPARK_DCUT_UNIFORM_DECODE_GRAPH", "1"))
     ),
-    # Also capture decode graphs at the width a global D-Cut manual cap trims to.
-    # A global cap trims every request to the same width, so a trimmed step is
-    # still a uniform decode batch -- just narrower than the verify width the
-    # base captures, which is why it matches no full-graph descriptor today and
-    # falls back to piecewise, and the tokens D-Cut removes buy nothing. Adds
-    # max_num_seqs graphs (one per request count, so every replay is exact and
-    # no padding row appears), which costs capture time and graph memory, so it
-    # is opt-in while the premise that a trimmed batch reaches a cheaper shape
-    # is still unmeasured. Needs VLLM_ASCEND_DSPARK_DCUT_MANUAL_CAP >= 0 and a
-    # cap below the full verify width. 1 enables, 0 (default) disables.
-    "VLLM_ASCEND_DSPARK_DCUT_TRIM_DECODE_GRAPH": lambda: bool(
-        int(os.getenv("VLLM_ASCEND_DSPARK_DCUT_TRIM_DECODE_GRAPH", "0"))
-    ),
     # Manual per-request draft cap for D-Cut GDN verification (step 3 of the
     # D-Cut GDN integration, docs/adaptive_verify/). -1 (default) disables manual
     # trimming. A value >= 0 drives the existing MRV2 trimming path
