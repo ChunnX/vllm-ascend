@@ -37,10 +37,14 @@ _CONV_DIM = 64
 _ONE_WIDE_ROW = [8, 0, 0, 0, 0, 0, 0, 0]
 _EIGHT_NARROW_ROWS = [1, 1, 1, 1, 1, 1, 1, 1]
 _TWO_WIDE_ROWS = [4, 4, 0, 0, 0, 0, 0, 0]
+# Six tokens on an eight-token axis. A trimmed batch rarely lands exactly on a
+# capture size, so the replay occupies part of the token axis the graph holds
+# and the tail slots carry whatever the previous step left.
+_PARTIAL_TOKENS = [3, 3, 0, 0, 0, 0, 0, 0]
 
 
 def _query_start_loc(widths: list[int]) -> torch.Tensor:
-    assert len(widths) == _NUM_ROWS and sum(widths) == _NUM_TOKENS
+    assert len(widths) == _NUM_ROWS and sum(widths) <= _NUM_TOKENS
     starts = [0]
     for width in widths:
         starts.append(starts[-1] + width)
@@ -206,6 +210,28 @@ def test_recurrent_graph_replay_control_same_widths_new_values() -> None:
     torch.testing.assert_close(inputs.state.cpu(), expected_state, rtol=3e-3, atol=1e-2)
 
 
+def test_recurrent_graph_replays_fewer_tokens_than_it_captured() -> None:
+    """A trimmed replay occupies part of the token axis the graph holds.
+
+    Trimming rarely lands exactly on a capture size, so the batch is padded up
+    to the descriptor and ``query_start_loc`` ends below the query tensor's
+    length, with the tail slots holding the previous step's values. Only the
+    tokens the boundary claims are compared; the model slices the rest off.
+    """
+    inputs = _RecurrentInputs(torch.bfloat16, seed=1234)
+    expected_output, expected_state = _eager_result(inputs, _PARTIAL_TOKENS)
+
+    graph, graph_output = _capture(inputs, _EIGHT_NARROW_ROWS)
+    inputs.set_widths(_PARTIAL_TOKENS)
+    inputs.reset_state()
+    graph.replay()
+    torch.npu.synchronize()
+
+    used = sum(_PARTIAL_TOKENS)
+    torch.testing.assert_close(graph_output.cpu()[:used], expected_output[:used], rtol=3e-3, atol=1e-2)
+    torch.testing.assert_close(inputs.state.cpu(), expected_state, rtol=3e-3, atol=1e-2)
+
+
 def test_recurrent_confines_state_writes_to_the_active_request() -> None:
     """An inactive row must not reach another request's state rows.
 
@@ -359,4 +385,34 @@ def test_conv1d_graph_replay_control_same_widths_new_values() -> None:
     torch.npu.synchronize()
 
     torch.testing.assert_close(inputs.output.cpu(), expected_output, rtol=1e-2, atol=1e-2)
+    torch.testing.assert_close(inputs.state.cpu(), expected_state, rtol=1e-2, atol=1e-2)
+
+
+
+def test_conv1d_graph_replays_fewer_tokens_than_it_captured() -> None:
+    """Same partial token axis for the conv hook."""
+    inputs = _ConvInputs(torch.bfloat16, seed=4321)
+
+    inputs.set_widths(_PARTIAL_TOKENS)
+    inputs.reset_state()
+    inputs.run()
+    torch.npu.synchronize()
+    expected_output = inputs.output.cpu()
+    expected_state = inputs.state.cpu()
+
+    inputs.set_widths(_EIGHT_NARROW_ROWS)
+    inputs.reset_state()
+    inputs.run()
+    torch.npu.synchronize()
+    graph = torch.npu.NPUGraph()
+    with torch.npu.graph(graph, capture_error_mode="thread_local", auto_dispatch_capture=True):
+        inputs.run()
+
+    inputs.set_widths(_PARTIAL_TOKENS)
+    inputs.reset_state()
+    graph.replay()
+    torch.npu.synchronize()
+
+    used = sum(_PARTIAL_TOKENS)
+    torch.testing.assert_close(inputs.output.cpu()[:used], expected_output[:used], rtol=1e-2, atol=1e-2)
     torch.testing.assert_close(inputs.state.cpu(), expected_state, rtol=1e-2, atol=1e-2)
