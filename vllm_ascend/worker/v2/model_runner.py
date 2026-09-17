@@ -51,6 +51,7 @@ from vllm_ascend.ascend_forward_context import (
     set_mc2_mask,
     set_mc2_tokens_capacity,
 )
+from vllm_ascend.attention import dcut_graph_debug
 from vllm_ascend.attention.attention_v1 import AscendAttentionBackend
 from vllm_ascend.attention.mla_v1 import AscendMLABackend
 from vllm_ascend.core.profiling_chunk_predictor import (
@@ -467,6 +468,13 @@ class NPUModelRunner(GPUModelRunner):
 
         query_start_loc_np = query_start_loc_np[: num_reqs_padded + 1]
         query_start_loc = query_start_loc[: num_reqs_padded + 1]
+
+        if dcut_graph_debug.enabled("dispatch"):
+            with dcut_graph_debug.guarded("dispatch"):
+                self._log_dispatch_axes(
+                    batch_desc, num_reqs, num_reqs_padded, num_tokens, query_start_loc
+                )
+
         self.eplb.set_batch_phase(batch_req_state.has_prefill)
 
         # Get prefill tokens if any.
@@ -1108,6 +1116,58 @@ class NPUModelRunner(GPUModelRunner):
             num_reqs_padded = num_reqs_padded + 1
 
         return query_start_loc_np, num_reqs_padded
+
+    def _log_dispatch_axes(
+        self,
+        batch_desc: BatchExecutionDescriptor,
+        num_reqs: int,
+        num_reqs_padded: int,
+        num_tokens: int,
+        query_start_loc: torch.Tensor,
+    ) -> None:
+        """Dump the graph choice this batch's shape earned, before the forward.
+
+        The per-operator dumps run inside the attention builders, which is after
+        the descriptor has already been picked, so they show what the operators
+        were fed but not *why*. This line is the missing half: the axes dispatch
+        actually matched on, the descriptor it returned, and whether the batch is
+        ragged. A batch that falls back to eager and a batch that replays a graph
+        with padding rows are two different failures, and nothing else in the log
+        tells them apart.
+
+        Widths come from the device tensor, not the host mirror: with adaptive
+        verification the mirror is only refreshed for FIA backends, so elsewhere
+        it still holds the evenly-distributed ``compact_batch`` widths rather
+        than the per-request ones ``reallocate_drafts`` published. Reading the
+        device costs a synchronization point, as the other components in this
+        dump already do.
+
+        The shape key deliberately leaves the width vector out. Widths shift
+        whenever acceptance does, so keying on them would print a fresh line
+        every step for the whole run; the bucket, the row counts and whether the
+        batch is ragged are the distinctions worth one line each.
+        """
+        widths = torch.diff(query_start_loc[: num_reqs + 1]).tolist()
+        ragged = len(set(widths)) > 1
+        dcut_graph_debug.log_axes(
+            "dispatch",
+            "prepare",
+            (batch_desc.cg_mode, num_reqs, batch_desc.num_tokens, ragged),
+            # The live batch versus the descriptor's capacity: equal means no
+            # padding rows, which is the condition a ragged full graph needs.
+            b_live=num_reqs,
+            b_graph=num_reqs_padded,
+            desc_num_reqs=batch_desc.num_reqs,
+            q_live=num_tokens,
+            q_graph=batch_desc.num_tokens,
+            cg_mode=batch_desc.cg_mode.name,
+            # What _is_compatible matched on. uniform=None is what keeps a
+            # trimmed batch out of every uniform descriptor.
+            uniform_token_count=batch_desc.uniform_token_count,
+            desc_max_query_len=batch_desc.max_query_len,
+            widths=widths,
+            ragged=ragged,
+        )
 
     def _pad_adaptive_query_start_loc_for_fia(
         self,
