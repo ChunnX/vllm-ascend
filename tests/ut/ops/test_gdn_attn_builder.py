@@ -1348,15 +1348,20 @@ def test_gdn_builder_defines_build_once_and_routes_through_the_local_view() -> N
     } <= {node.func.id for node in ast.walk(view) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)}
 
 
-def test_gdn_local_view_zeroes_padding_rows_and_is_shared_across_kv_cache_groups() -> None:
-    """Inactive graph rows must be zero-length, and every group needs one view.
+def test_gdn_local_view_zeroes_padding_rows_and_keeps_each_group_block_table() -> None:
+    """Inactive graph rows must be zero-length; the block table must stay local.
 
     The FIA-padded query boundary gives padding requests a positive length
     whenever the token count lands inside a graph bucket. Those rows classify
     as non-speculative, so they fold into ``num_prefills`` and cost the batch
-    its pure-spec persistent graph buffers. The view also has to be computed
-    once per invocation: it rebuilds ``query_start_loc``, and the plan cache
-    identifies a batch by tensor address.
+    its pure-spec persistent graph buffers.
+
+    The correction is computed once per invocation, because it rebuilds
+    ``query_start_loc`` and the plan cache identifies a batch by tensor address.
+    What must NOT be shared is the metadata object around it: it carries the
+    block table this group addresses, and ``build`` derives this group's conv
+    and recurrent state indices from it, so one shared object sends every Mamba
+    group to the first group's state slots.
     """
     batch_spec = BatchSpec(
         seq_lens=[64, 64, 0, 0],
@@ -1377,35 +1382,33 @@ def test_gdn_local_view_zeroes_padding_rows_and_is_shared_across_kv_cache_groups
     num_decode_draft_tokens_cpu = torch.tensor([7, 7, -1, -1], dtype=torch.int32)
 
     batch_shared_cache: dict = {}
-    view = builder._get_gdn_local_metadata(
-        common_attn_metadata,
-        num_decode_draft_tokens_cpu,
-        batch_shared_cache,
+    # build_attn_metadata varies exactly two fields per KV cache group.
+    group0 = common_attn_metadata
+    group1 = common_attn_metadata.replace(
+        block_table_tensor=common_attn_metadata.block_table_tensor + 1000,
     )
+
+    view0 = builder._get_gdn_local_metadata(group0, num_decode_draft_tokens_cpu, batch_shared_cache)
+    view1 = builder._get_gdn_local_metadata(group1, num_decode_draft_tokens_cpu, batch_shared_cache)
 
     # The padding rows keep their slot but lose their tokens.
-    assert torch.equal(view.query_start_loc_cpu, torch.tensor([0, 8, 16, 16, 16], dtype=torch.int32))
-    assert view.num_actual_tokens == 16
-    assert view.num_reqs == batch_spec.batch_size
+    assert torch.equal(view0.query_start_loc_cpu, torch.tensor([0, 8, 16, 16, 16], dtype=torch.int32))
+    assert view0.num_actual_tokens == 16
+    assert view0.num_reqs == batch_spec.batch_size
 
-    # A second group in the same invocation gets the identical object, so the
-    # plan cache below it still hits.
-    assert (
-        builder._get_gdn_local_metadata(
-            common_attn_metadata,
-            num_decode_draft_tokens_cpu,
-            batch_shared_cache,
-        )
-        is view
-    )
-    assert (
-        builder._get_gdn_local_metadata(
-            common_attn_metadata,
-            num_decode_draft_tokens_cpu,
-            None,
-        )
-        is not view
-    )
+    # One correction for the whole invocation: the second group presents the
+    # same tensors, so the plan key still identifies a single batch.
+    assert view1.query_start_loc_cpu is view0.query_start_loc_cpu
+    assert view1.query_start_loc is view0.query_start_loc
+    assert view1.num_actual_tokens == view0.num_actual_tokens
+
+    # Each group still addresses its own block table.
+    assert view0.block_table_tensor is group0.block_table_tensor
+    assert view1.block_table_tensor is group1.block_table_tensor
+
+    # Without a cache every caller recomputes, so nothing is shared.
+    uncached = builder._get_gdn_local_metadata(group0, num_decode_draft_tokens_cpu, None)
+    assert uncached.query_start_loc_cpu is not view0.query_start_loc_cpu
 
 
 @pytest.mark.parametrize("unify_graph_path", [True, False])
