@@ -500,6 +500,29 @@ class NPUModelRunner(GPUModelRunner):
         seq_lens = self.input_buffers.seq_lens[:num_reqs_padded]
         if adaptive_verification_active and self.use_fia:
             self.input_buffers.seq_lens_np[:num_reqs] = seq_lens[:num_reqs].cpu().numpy()
+            # Clear the graph's padding rows too. This buffer is persistent and
+            # only its live prefix was just written, so without this the rows
+            # between num_reqs and num_reqs_padded keep the previous step's
+            # sequence lengths.
+            #
+            # A stale length there is not cosmetic: it is how GDN tells a
+            # padding row apart. _remove_spec_graph_padding_queries treats a row
+            # as inactive only when its length is zero *and* it has no drafts,
+            # and that is the one thing forcing those rows to zero length in the
+            # recurrent state update. A nonzero leftover makes the test fail, so
+            # the rows keep the full query span FIA needs, GDN counts them as
+            # ordinary decode or prefill rows, and num_prefills > 0 disqualifies
+            # the batch from the full-graph speculative padding path -- after
+            # dispatch has already committed to replaying a full graph. What
+            # replays is then a graph fed metadata built for a different path.
+            #
+            # Only reachable when num_reqs < num_reqs_padded, which needs a
+            # variable-length decode graph: a uniform trimmed batch fills every
+            # row, which is why the uniform-route measurements never saw it.
+            # Scoped to adaptive verification because the non-D-Cut full-graph
+            # path gives its padding rows a full query span instead of a
+            # zero-length one, and has not been measured against zeroed lengths.
+            self.input_buffers.seq_lens_np[num_reqs:num_reqs_padded] = 0
 
         # Pad for full CUDA graph mode.
         self.input_buffers.seq_lens_np[num_reqs_padded:] = 0

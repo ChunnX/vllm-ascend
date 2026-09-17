@@ -365,24 +365,26 @@ class AscendAttentionMetadataBuilder(AttentionMetadataBuilder[AscendMetadata]):
             )
         # A graph padding row also arrives inside an already full-length list.
         # A variable-length decode descriptor carries more requests than are
-        # live, so the surplus rows exist with both their query span and their
-        # KV length at zero -- nothing above ever wrote them. The block above
-        # only fires when the list is short, so those rows keep a zero KV
-        # length, and FIA validates actualSeqLengthsKv per row. Give them the
-        # same positive dummy length: their output is trimmed downstream and
-        # reshape_and_cache slices to the unpadded token count, so any valid
-        # positive length works.
+        # live, so the surplus rows exist with their KV length at zero --
+        # nothing above ever wrote them. The block above only fires when the
+        # list is short, so those rows keep a zero KV length, and FIA validates
+        # actualSeqLengthsKv per row. Give them a positive dummy length: their
+        # output is trimmed downstream and reshape_and_cache slices to the
+        # unpadded token count, so any valid positive length works.
+        #
+        # A zero KV length identifies the row on its own, whatever its query
+        # span. The span is not a second condition: the token axis rounds up to
+        # the captured bucket, and the leftover tokens are spread over the
+        # padding rows, so with a ragged batch those rows routinely carry one or
+        # two query tokens rather than none. Requiring a zero-length query here
+        # left exactly those rows at a zero KV length.
         #
         # Only the host list is corrected. The sequence-length tensor is a
         # graph-stable input whose address a captured graph holds, and GDN
         # derives inactive-request identity from the shared sequence lengths, so
         # neither may be rewritten here for FIA's benefit -- the full-graph
         # replay path reads this list through update_graph_params.
-        inactive_rows = [
-            index
-            for index, (end, kv_len) in enumerate(zip(actual_seq_lengths_q, seq_lens_list))
-            if kv_len == 0 and end == (actual_seq_lengths_q[index - 1] if index else 0)
-        ]
+        inactive_rows = [index for index, kv_len in enumerate(seq_lens_list) if kv_len == 0]
         if inactive_rows:
             seq_lens_list = list(seq_lens_list)
             for index in inactive_rows:
