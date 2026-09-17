@@ -12,10 +12,11 @@ from vllm.v1.kv_cache_interface import KVCacheConfig
 from vllm.v1.worker.gpu import model_runner as vllm_model_runner
 from vllm.v1.worker.gpu.model_runner import GPUModelRunner
 
+import vllm_ascend.envs as envs_ascend
 from vllm_ascend.ascend_forward_context import MoECommType
 from vllm_ascend.utils import vllm_version_is
 from vllm_ascend.worker.v2.input_batch import AscendInputBatch, AscendInputBuffers
-from vllm_ascend.worker.v2.model_runner import NPUModelRunner
+from vllm_ascend.worker.v2.model_runner import NPUModelRunner, graph_manager_wrapper
 from vllm_ascend.worker.v2.pcp_manager import AscendPCPManager
 
 
@@ -508,6 +509,40 @@ def test_sample_tokens_spec_pp_broadcasts_draft_tokens():
         runner.pp_handler.broadcast_draft_tokens.assert_called_once_with()
     else:
         runner.pp_handler.broadcast_draft_tokens.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("uniform_capture", "requested", "expected"),
+    [(True, True, False), (False, True, True), (True, False, False)],
+)
+def test_dcut_decode_graphs_capture_the_uniform_verify_width(
+    uniform_capture: bool,
+    requested: bool,
+    expected: bool,
+) -> None:
+    """Adaptive verification must not move the captured GDN geometry.
+
+    A variable-length decode descriptor carries min(num_tokens, max_num_seqs)
+    requests with the dummy tokens spread evenly, so every bucket at or below
+    max_num_seqs is captured as one token per request while the speculative
+    batch that replays it holds one request per verify width. The GDN layers
+    get no replay-time parameter update, so the captured geometry is the only
+    one they run; the uniform descriptor is the shape a real batch presents.
+    """
+    with (
+        patch("vllm_ascend.worker.v2.model_runner.ModelAclGraphManager") as acl_cls,
+        patch.object(envs_ascend, "VLLM_ASCEND_DSPARK_DCUT_UNIFORM_DECODE_GRAPH", uniform_capture),
+        graph_manager_wrapper(SimpleNamespace()),
+    ):
+        vllm_model_runner.ModelCudaGraphManager(
+            SimpleNamespace(),
+            torch.device("cpu"),
+            CUDAGraphMode.FULL_DECODE_ONLY,
+            8,
+            varlen_decode=requested,
+        )
+
+    assert acl_cls.call_args.kwargs["varlen_decode"] is expected
 
 
 def test_initialize_kv_cache_installs_aclgraph_factory_and_pcp():

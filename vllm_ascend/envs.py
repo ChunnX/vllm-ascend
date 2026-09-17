@@ -146,6 +146,22 @@ env_variables: dict[str, Callable[[], Any]] = {
     # from another has proven unreliable. Debug only: reads device tensors back
     # to the host, which synchronizes. 1 enables, 0 (default) disables.
     "VLLM_ASCEND_DSPARK_DCUT_DEBUG_AXES": lambda: bool(int(os.getenv("VLLM_ASCEND_DSPARK_DCUT_DEBUG_AXES", "0"))),
+    # Capture the D-Cut decode graphs at the uniform verify width instead of the
+    # variable-length worst case. Adaptive verification switches the decode
+    # descriptor to min(num_tokens, max_num_seqs) requests with the tokens spread
+    # evenly, so every bucket at or below max_num_seqs captures one token per
+    # request while a real speculative batch replays one request per verify
+    # width. Full attention tolerates that -- it re-issues its kernel with
+    # refreshed host lengths -- but the GDN layers get no replay-time update, so
+    # the captured recurrent geometry is the only geometry. The uniform
+    # descriptor reproduces the replay geometry exactly, which is the shape that
+    # passes today without D-Cut. A trimmed batch is not uniform and simply
+    # matches no full-graph descriptor, falling back instead of replaying the
+    # wrong shape. 1 (default) captures uniform, 0 restores the variable-length
+    # capture.
+    "VLLM_ASCEND_DSPARK_DCUT_UNIFORM_DECODE_GRAPH": lambda: bool(
+        int(os.getenv("VLLM_ASCEND_DSPARK_DCUT_UNIFORM_DECODE_GRAPH", "1"))
+    ),
     # Manual per-request draft cap for D-Cut GDN verification (step 3 of the
     # D-Cut GDN integration, docs/adaptive_verify/). -1 (default) disables manual
     # trimming. A value >= 0 drives the existing MRV2 trimming path
