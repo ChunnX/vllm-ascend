@@ -28,6 +28,17 @@ from typing import Any
 # begin-env-vars-definition
 
 
+def _dcut_manual_cap_env() -> tuple[int, ...]:
+    # Inline import: the parser belongs with the D-Cut policy it serves, and
+    # that package pulls in torch/vLLM, which this module must not do at import
+    # time. Reached only when the variable is actually read.
+    from vllm_ascend.worker.v2.spec_decode.dspark.dcut_manual_cap import (
+        parse_manual_cap_spec,
+    )
+
+    return parse_manual_cap_spec(os.getenv("VLLM_ASCEND_DSPARK_DCUT_MANUAL_CAP", "-1"))
+
+
 def _strict_binary_env(name: str, default: str = "0") -> bool:
     value = os.getenv(name, default)
     if value not in {"0", "1"}:
@@ -143,8 +154,11 @@ env_variables: dict[str, Callable[[], Any]] = {
     # shapes and addresses at capture and the linear-attention layers get no
     # replay-time parameter update, so a capture/replay disagreement on any axis
     # is silently wrong output; six request counts are in play and deriving one
-    # from another has proven unreliable. Debug only: reads device tensors back
-    # to the host, which synchronizes. 1 enables, 0 (default) disables.
+    # from another has proven unreliable. The "dispatch" component adds the
+    # descriptor the batch's shape matched, before the forward, so a fall back to
+    # eager is told apart from a graph replayed with padding rows. Debug only:
+    # reads device tensors back to the host, which synchronizes. 1 enables, 0
+    # (default) disables.
     "VLLM_ASCEND_DSPARK_DCUT_DEBUG_AXES": lambda: bool(int(os.getenv("VLLM_ASCEND_DSPARK_DCUT_DEBUG_AXES", "0"))),
     # Temporary diagnostic: capture the D-Cut decode graphs at the uniform verify
     # width instead of the variable-length worst case. With the variable-length
@@ -162,20 +176,30 @@ env_variables: dict[str, Callable[[], Any]] = {
     "VLLM_ASCEND_DSPARK_DCUT_UNIFORM_DECODE_GRAPH": lambda: bool(
         int(os.getenv("VLLM_ASCEND_DSPARK_DCUT_UNIFORM_DECODE_GRAPH", "1"))
     ),
-    # Manual per-request draft cap for D-Cut GDN verification (step 3 of the
-    # D-Cut GDN integration, docs/adaptive_verify/). -1 (default) disables manual
-    # trimming. A value >= 0 drives the existing MRV2 trimming path
-    # (compact_batch -> reallocate_drafts) with a deterministic per-request cap
-    # -- each verification request retains at most this many draft tokens
-    # (bounded by its scheduled draft count) -- instead of the confidence cost
-    # model, so the variable-length layout can be validated without depending on
-    # the confidence head. Only takes effect when VLLM_ASCEND_DSPARK_ENABLE_DCUT
-    # is 1; it also bypasses the varlen-backend rejection that would otherwise
-    # leave GDN without an adaptive-verification manager. cap 0 keeps only the
-    # anchor query per request; a large cap matches the no-trim step-1 path.
-    "VLLM_ASCEND_DSPARK_DCUT_MANUAL_CAP": lambda: int(
-        os.getenv("VLLM_ASCEND_DSPARK_DCUT_MANUAL_CAP", "-1")
-    ),
+    # Manual draft cap pattern for D-Cut GDN verification (step 3 of the D-Cut
+    # GDN integration, docs/adaptive_verify/). "-1" (default) disables manual
+    # trimming. Otherwise this drives the existing MRV2 trimming path
+    # (compact_batch -> reallocate_drafts) with deterministic per-request caps
+    # instead of the confidence cost model, so the variable-length layout can be
+    # validated without depending on the confidence head.
+    #
+    # Accepts a single integer or a comma-separated pattern:
+    #   "2"      every request retains at most 2 drafts.
+    #   "7,0,3,1" batch position i retains at most pattern[i % 4] drafts.
+    # A negative entry leaves that position untrimmed. Each cap is additionally
+    # bounded by the request's own scheduled draft count, and cap 0 keeps only
+    # the anchor query.
+    #
+    # Prefer a pattern over a single integer when the point is to exercise the
+    # variable-length path. A single cap trims every request to the same width,
+    # so in steady state the batch is uniform at cap+1 tokens per request, which
+    # at the graph layer is just num_speculative_tokens = cap -- it never
+    # produces the ragged batch D-Cut exists to produce. A pattern does.
+    #
+    # Only takes effect when VLLM_ASCEND_DSPARK_ENABLE_DCUT is 1; it also
+    # bypasses the varlen-backend rejection that would otherwise leave GDN
+    # without an adaptive-verification manager.
+    "VLLM_ASCEND_DSPARK_DCUT_MANUAL_CAP": _dcut_manual_cap_env,
     # Minimum KV-cache group width (layers per group). 0 disables the override
     # and keeps upstream grouping exactly. A positive value raises the group
     # width to at least this many layers, so a small heterogeneous draft bucket

@@ -88,7 +88,7 @@ FIA 可以有自己的 dummy query/KV 行；GDN 的 inactive 行必须零 query�
   ```
   request_id → 本轮保留 draft 数 (manual capacities，按最终请求顺序)
       ↓  跳过 confidence 排名，直接提供合法 capacities
-  capacities[i] = min(manual_cap[i], scheduled_drafts[i])   # 受实际 scheduled draft 约束
+  capacities[i] = min(manual_caps[i % len], scheduled_drafts[i])   # 受实际 scheduled draft 约束
       ↓
   总预算 = sum(capacities)；保留原有非 draft token 数；query = 1 + cap（仅普通 decode 请求）
       ↓  复用后续累计偏移 / 输入构造 / 采样布局（与真实 AV 同一条路）
@@ -318,21 +318,32 @@ PIECEWISE 是诊断与性能对照。各 F 项见 [开发计划](dcut_developmen
 
 #### ③ 的具体落地（人工 capacities 注入，跳过 confidence）
 - **策略函数**（`worker/v2/spec_decode/dspark/dcut_manual_cap.py`，numpy-only、可 CPU UT）：
-  `compute_manual_capacities(scheduled_drafts, cap)` = `min(scheduled, cap)`（`cap<0` 不裁），
-  结果逐元素 `<= scheduled`（合法 capacity）；`manual_batch_budget()` 出 `draft_budget=Σcap`。
+  `compute_manual_capacities(scheduled_drafts, manual_caps)`——`manual_caps` 是**逐位置 cap pattern**，
+  batch 位置 `i` 用 `manual_caps[i % len]`，负数表示该位置不裁；结果逐元素 `<= scheduled`（合法
+  capacity）；`manual_batch_budget()` 出 `draft_budget=Σcap` **以及按 req_id 索引的逐请求 capacity**。
   **不吃 confidence 参数——结构上无法依赖 confidence。**
+- **pattern 而非单值,是 ③ 能验变长的前提**：单个全局 cap 把每个请求裁到同一宽度,稳态下
+  batch 是 `cap+1` 的**均匀**批次——在图这一层等价于 `num_speculative_tokens = cap`,
+  **根本造不出 D-Cut 要的参差布局**。`7,0,3,1` 这样的 pattern 才会真参差。
 - **manager 子类** `DcutManualCapVerificationManager`（同文件，惰性工厂建）：只重写两处 confidence 入口
   `get_num_tokens`（预算=Σ人工 cap，不查 cost table）+ `reallocate_drafts`（`capacities` 直接来自
   策略函数，替掉 `_assign_draft_token_budget` 排名），其余 `cu_num_logits`/`query_start_loc` cumsum 与
   上游**逐行相同**；并把 `batches_to_profile`/`set_initial_cost_curves`/`record_confidences` 置空
   （人工预算不需要 cost model，也不碰 confidence head）。
+- **两入口的顺序陷阱**：`get_num_tokens` 拿到的是 scheduler dict 序，`reallocate_drafts` 拿到的是
+  `sort_batch_req_ids` 之后的 batch 序。位置索引的 pattern **不是顺序无关的**，所以 capacity 必须在
+  `get_num_tokens` 里算完、按 req_id 存进 `_batch_budget`，由 `reallocate_drafts` **查表**而非重算——
+  否则两边会把 cap 配到不同请求上、`Σcapacities ≠ draft_budget`，而 batch 尺寸已经按后者定了。
+  全局标量时代靠"min 顺序无关"侥幸成立的不变式，在 pattern 下变成结构保证。
 - **接线**（`patch/worker/patch_v2/patch_adaptive_verification.py:41`）：GDN 被上游工厂
   `maybe_create_adaptive_verification_manager` 拒绝（varlen backend 检查 + 要求 `ALWAYS`）→ 原状
   `adaptive_verification=None`，裁剪链路根本不跑。patch 工厂：`ENABLE_DCUT=1 且 MANUAL_CAP>=0` 时
   返回人工 manager，否则原样交回上游。这样 `initialize_kv_cache`（vLLM `model_runner.py:540`）
   拿到非 None manager，base 的 `cudagraph_mode=FULL_AND_PIECEWISE`（`:573`）等 setup 照跑。
-- **env**：`VLLM_ASCEND_DSPARK_DCUT_MANUAL_CAP`（int，默认 -1 关）；仅
-  `VLLM_ASCEND_DSPARK_ENABLE_DCUT=1` 时生效。`cap=0` 全裁到只剩 anchor；`cap` 很大 = ① 的不裁。
+- **env**：`VLLM_ASCEND_DSPARK_DCUT_MANUAL_CAP`（单个 int 或逗号分隔 pattern，默认 `-1` 关）；仅
+  `VLLM_ASCEND_DSPARK_ENABLE_DCUT=1` 且 pattern 里至少有一个非负项时生效。`cap=0` 全裁到只剩
+  anchor；`cap` 很大 = ① 的不裁；`7,0,3,1` 出参差批次。spec 写错直接抛 `ValueError`（启动即失败，
+  不静默退回不裁）。
 - **验收分层**：策略函数的 cap→capacity/budget 与 confidence-无关性由 CPU UT
   （`tests/ut/spec_decode/test_dcut_manual_cap.py`）钉死；device 侧 `reallocate_drafts` 复用上游布局，
   由步骤 ④ 的 NPU 连续多轮模型验证覆盖。工厂绕过 `ALWAYS` 检查等于在赌"GDN 整个 forward 在裁剪

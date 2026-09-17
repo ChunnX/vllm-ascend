@@ -7,10 +7,30 @@ instead of the confidence cost model. This validates the variable-length
 execution layout -- per-request query boundaries, logit offsets, and draft
 capacities -- without depending on the confidence head or a profiled cost table.
 
-The caps are a pure function of the scheduled draft counts, so they are
-reproducible and identical across TP ranks (every rank sees the same request
-order and scheduled counts). Confidence never enters, by construction: the
-policy functions below take no confidence tensor.
+The cap spec is a *pattern*, not a single number, and that distinction is the
+point. A single global cap trims every request to the same width, so in steady
+state (every request scheduling the full draft count) the batch comes out
+uniform at ``cap + 1`` tokens per request -- indistinguishable, at the graph
+layer, from running with ``num_speculative_tokens = cap``. It therefore cannot
+exercise the ragged layout D-Cut exists to produce. A pattern such as ``7,0,3,1``
+assigns a different cap per batch position, so the batch is genuinely ragged and
+the variable-length path is actually under test.
+
+The caps are a pure function of the scheduled draft counts and the request
+order, so they are reproducible and identical across TP ranks (every rank sees
+the same scheduler request order and the same scheduled counts). Confidence
+never enters, by construction: the policy functions below take no confidence
+tensor.
+
+``get_num_tokens`` resolves the per-request capacity once and stashes it keyed
+by request id; ``reallocate_drafts`` looks those values up rather than
+recomputing them. That matters for a pattern: the two entry points see the same
+requests in *different* orders (scheduler order vs. the ``sort_batch_req_ids``
+batch order), so a position-indexed pattern recomputed on the second order can
+pair caps with different requests and sum to a different budget than the one
+already used to size the batch. Looking the values up makes
+``sum(capacities) == draft_budget`` structural instead of an invariant that
+happens to hold because a global minimum is order-independent.
 
 The manager subclass overrides only the two confidence entry points
 (``get_num_tokens`` and ``reallocate_drafts``) and neuters cost profiling; every
@@ -19,51 +39,96 @@ and the real adaptive path share one downstream (no second compaction).
 """
 
 import functools
+from collections.abc import Sequence
 
 import numpy as np
 
+# A cap entry of -1 (or any negative value) leaves that request untrimmed.
+NO_CAP = -1
 
-def compute_manual_capacities(scheduled_drafts: np.ndarray, manual_cap: int) -> np.ndarray:
-    """Per-request retained draft count under a manual cap.
+
+def parse_manual_cap_spec(raw: str) -> tuple[int, ...]:
+    """Parse the manual-cap env value into a per-batch-position cap pattern.
+
+    Accepts a single integer (``"2"`` -> every request capped at 2, the original
+    global-cap behaviour) or a comma-separated pattern (``"7,0,3,1"`` -> batch
+    position i is capped at ``pattern[i % 4]``). Negative entries mean "do not
+    trim this position".
+
+    Raises:
+        ValueError: if the spec is empty or holds a non-integer entry, so a typo
+            fails at startup rather than silently disabling trimming.
+    """
+    entries = [item.strip() for item in raw.split(",") if item.strip()]
+    if not entries:
+        raise ValueError(f"empty D-Cut manual cap spec: {raw!r}")
+    return tuple(int(item) for item in entries)
+
+
+def manual_cap_enabled(manual_caps: Sequence[int]) -> bool:
+    """Whether a cap spec asks for trimming at all.
+
+    A spec of just ``-1`` is the default "disabled" value; anything that caps at
+    least one position turns the manual manager on.
+    """
+    return any(cap >= 0 for cap in manual_caps)
+
+
+def compute_manual_capacities(
+    scheduled_drafts: np.ndarray, manual_caps: Sequence[int]
+) -> np.ndarray:
+    """Per-request retained draft count under a manual cap pattern.
 
     Args:
-        scheduled_drafts: Per-request scheduled draft count (this round's drafts).
-        manual_cap: ``< 0`` retains every scheduled draft (the no-trim step-1
-            regression). ``>= 0`` retains at most ``manual_cap`` drafts per
-            request.
+        scheduled_drafts: Per-request scheduled draft count (this round's
+            drafts), in the order the caps should be assigned.
+        manual_caps: The cap pattern. Batch position ``i`` is capped at
+            ``manual_caps[i % len(manual_caps)]``; a negative entry retains every
+            scheduled draft for that position (the no-trim step-1 regression).
 
     Returns:
         A fresh int array of retained draft counts, always ``<= scheduled_drafts``
         element-wise (a request can never retain more drafts than it scheduled),
         so the result is a legal capacity for ``reallocate_drafts``. The value
-        depends only on ``scheduled_drafts`` and ``manual_cap`` -- confidence is
+        depends only on ``scheduled_drafts`` and the pattern -- confidence is
         structurally absent.
     """
-    if manual_cap < 0:
-        capped = scheduled_drafts
-    else:
-        capped = np.minimum(scheduled_drafts, manual_cap)
+    num_reqs = scheduled_drafts.shape[0]
+    pattern = np.asarray(manual_caps, dtype=np.int64)
+    caps = pattern[np.arange(num_reqs) % pattern.shape[0]]
+    capped = np.where(caps < 0, scheduled_drafts, np.minimum(scheduled_drafts, caps))
     return capped.astype(scheduled_drafts.dtype, copy=True)
 
 
 def manual_batch_budget(
     num_drafts_per_req: dict[str, int],
     num_non_draft_tokens_per_req: dict[str, int],
-    manual_cap: int,
-) -> tuple[dict[str, int], dict[str, int], int]:
-    """Build the ``_batch_budget`` tuple ``get_num_tokens`` stashes, from a cap.
+    manual_caps: Sequence[int],
+) -> tuple[dict[str, int], dict[str, int], dict[str, int], int]:
+    """Build the ``_batch_budget`` tuple ``get_num_tokens`` stashes, from a cap
+    pattern.
 
-    Mirrors ``AdaptiveVerificationManager.get_num_tokens``'s stash shape
-    ``(num_drafts_per_req, num_non_draft_tokens_per_req, draft_budget)`` but sets
-    ``draft_budget`` to the sum of the manual per-request capacities rather than
-    the cost-model argmax. Order-independent: ``draft_budget`` is a sum.
+    Extends ``AdaptiveVerificationManager.get_num_tokens``'s stash with the
+    resolved per-request capacities, so ``reallocate_drafts`` can look them up
+    instead of re-deriving them from a different request order. ``draft_budget``
+    is the sum of exactly those capacities, which is what makes the device-side
+    layout consistent with the batch size already chosen from this budget.
     """
     scheduled_drafts = np.fromiter(
         num_drafts_per_req.values(), dtype=np.int32, count=len(num_drafts_per_req)
     )
-    capacities = compute_manual_capacities(scheduled_drafts, manual_cap)
+    capacities = compute_manual_capacities(scheduled_drafts, manual_caps)
+    capacity_per_req = {
+        req_id: int(capacity)
+        for req_id, capacity in zip(num_drafts_per_req, capacities)
+    }
     draft_budget = int(capacities.sum())
-    return num_drafts_per_req, num_non_draft_tokens_per_req, draft_budget
+    return (
+        num_drafts_per_req,
+        num_non_draft_tokens_per_req,
+        capacity_per_req,
+        draft_budget,
+    )
 
 
 @functools.lru_cache(maxsize=1)
@@ -81,13 +146,13 @@ def get_manual_cap_manager_cls():
     )
 
     class DcutManualCapVerificationManager(AdaptiveVerificationManager):
-        """Adaptive-verification manager whose budget is a manual cap, not
-        confidence. Overrides the two confidence entry points and skips cost
+        """Adaptive-verification manager whose budget is a manual cap pattern,
+        not confidence. Overrides the two confidence entry points and skips cost
         profiling; all downstream layout is the upstream path unchanged."""
 
-        def __init__(self, *args, manual_cap: int, **kwargs) -> None:
+        def __init__(self, *args, manual_caps: Sequence[int], **kwargs) -> None:
             super().__init__(*args, **kwargs)
-            self.manual_cap = manual_cap
+            self.manual_caps = tuple(manual_caps)
 
         def batches_to_profile(self, capture_sizes):
             # Manual budget needs no cost tables; profile nothing so a GDN
@@ -115,21 +180,21 @@ def get_manual_cap_manager_cls():
                 for req_id in req_ids
             }
             self._batch_budget = manual_batch_budget(
-                num_drafts_per_req, num_non_draft_tokens_per_req, self.manual_cap
+                num_drafts_per_req, num_non_draft_tokens_per_req, self.manual_caps
             )
-            _, _, draft_budget = self._batch_budget
+            _, _, _, draft_budget = self._batch_budget
             return sum(num_non_draft_tokens_per_req.values()) + draft_budget
 
         def reallocate_drafts(self, req_ids, idx_mapping):
             batch_budget, self._batch_budget = self._batch_budget, None
             assert batch_budget is not None
-            num_drafts_per_req, num_non_draft_tokens_per_req, draft_budget = batch_budget
+            (
+                _num_drafts_per_req,
+                num_non_draft_tokens_per_req,
+                capacity_per_req,
+                draft_budget,
+            ) = batch_budget
             num_reqs = idx_mapping.shape[0]
-            scheduled_drafts = np.fromiter(
-                (num_drafts_per_req[req_id] for req_id in req_ids),
-                dtype=np.int32,
-                count=num_reqs,
-            )
             num_non_draft_tokens = np.fromiter(
                 (num_non_draft_tokens_per_req[req_id] for req_id in req_ids),
                 dtype=np.int32,
@@ -137,11 +202,18 @@ def get_manual_cap_manager_cls():
             )
             num_tokens = int(num_non_draft_tokens.sum()) + draft_budget
 
-            # Manual capacities replace the confidence ranking. sum(manual
-            # capacities) == draft_budget (both come from compute_manual_capacities
-            # over the same scheduled counts), so the layout below is consistent.
+            # Manual capacities replace the confidence ranking. They are looked
+            # up per request rather than recomputed, so their sum is exactly the
+            # draft_budget the batch was already sized from even though req_ids
+            # is in batch order while the budget was resolved in scheduler
+            # order -- a position-indexed pattern is not order-independent.
             capacities = self._batch_draft_capacity[:num_reqs]
-            manual_capacities = compute_manual_capacities(scheduled_drafts, self.manual_cap)
+            manual_capacities = np.fromiter(
+                (capacity_per_req[req_id] for req_id in req_ids),
+                dtype=np.int32,
+                count=num_reqs,
+            )
+            assert int(manual_capacities.sum()) == draft_budget
             async_copy_to_gpu(manual_capacities, out=capacities)
 
             num_non_draft_tokens_gpu = self._num_non_draft_tokens[:num_reqs]

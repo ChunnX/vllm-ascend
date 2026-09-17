@@ -11,6 +11,7 @@ from vllm.v1.worker.gpu.spec_decode.adaptive_verification import (
 import vllm_ascend.envs as envs_ascend
 from vllm_ascend.worker.v2.spec_decode.dspark.dcut_manual_cap import (
     get_manual_cap_manager_cls,
+    manual_cap_enabled,
 )
 
 logger = init_logger(__name__)
@@ -37,14 +38,23 @@ def _maybe_create_adaptive_verification_manager(
     guards against, and the manual budget needs neither confidence nor a cost
     table. Otherwise defer to upstream unchanged.
     """
-    manual_cap = envs_ascend.VLLM_ASCEND_DSPARK_DCUT_MANUAL_CAP
-    if envs_ascend.VLLM_ASCEND_DSPARK_ENABLE_DCUT and manual_cap >= 0:
+    manual_caps = envs_ascend.VLLM_ASCEND_DSPARK_DCUT_MANUAL_CAP
+    if envs_ascend.VLLM_ASCEND_DSPARK_ENABLE_DCUT and manual_cap_enabled(manual_caps):
         logger.warning(
-            "[D-Cut] Manual-cap verification manager active (cap=%d): bypassing "
+            "[D-Cut] Manual-cap verification manager active (caps=%s): bypassing "
             "the varlen-backend rejection and the confidence cost model. Draft "
-            "trimming is driven by a deterministic per-request cap, not "
-            "confidence. For D-Cut GDN integration validation, not production.",
-            manual_cap,
+            "trimming is driven by a deterministic per-request cap pattern, not "
+            "confidence. For D-Cut GDN integration validation, not production. "
+            "%s",
+            ",".join(str(cap) for cap in manual_caps),
+            (
+                "A single cap trims every request to the same width, so the batch "
+                "stays uniform; pass a pattern (e.g. 7,0,3,1) to exercise the "
+                "variable-length layout."
+                if len(manual_caps) == 1
+                else f"Batch position i is capped at caps[i % {len(manual_caps)}], "
+                "so the batch is ragged."
+            ),
         )
         manager_cls = get_manual_cap_manager_cls()
         return manager_cls(
@@ -52,7 +62,7 @@ def _maybe_create_adaptive_verification_manager(
             query_start_loc,
             num_bonus_tokens,
             max_total_logits=max_total_logits,
-            manual_cap=manual_cap,
+            manual_caps=manual_caps,
         )
     return _orig_maybe_create(
         enable_adaptive_verification=enable_adaptive_verification,

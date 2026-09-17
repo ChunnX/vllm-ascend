@@ -1322,7 +1322,8 @@
 #       manager and the D-Cut manual-cap trimming path can never engage.
 #    How:
 #       Wrap the factory: when VLLM_ASCEND_DSPARK_ENABLE_DCUT is on and
-#       VLLM_ASCEND_DSPARK_DCUT_MANUAL_CAP >= 0, return the manual-cap manager
+#       VLLM_ASCEND_DSPARK_DCUT_MANUAL_CAP caps at least one position, return
+#       the manual-cap manager
 #       (the dcut GDN ops provide the varlen path; the manual budget needs no
 #       confidence or cost table); otherwise defer to upstream unchanged. Rebind
 #       the name in the model_runner namespace the runner calls it from.
