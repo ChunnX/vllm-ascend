@@ -300,3 +300,134 @@ def test_dcut_recurrent_multi_round_state_carryover() -> None:
             atol=1e-2,
             msg=f"round {round_index} state mismatch",
         )
+
+
+def _recurrent_npu(
+    query,
+    key,
+    value,
+    state,
+    beta,
+    scale,
+    query_start_loc,
+    ssm_state_indices,
+    num_accepted_tokens,
+    g,
+):
+    """Run the operator on a fresh copy of the state, returning both outputs."""
+    state_npu = state.clone().npu()
+    output_npu = torch.ops._C_ascend.npu_dcut_recurrent_gated_delta_rule(
+        query.npu(),
+        key.npu(),
+        value.npu(),
+        state_npu,
+        beta=beta.npu(),
+        scale=scale,
+        query_start_loc=query_start_loc.npu(),
+        ssm_state_indices=ssm_state_indices.npu(),
+        num_accepted_tokens=num_accepted_tokens.npu(),
+        g=g.npu(),
+        zero_padded_output=False,
+    )
+    torch.npu.synchronize()
+    return output_npu.cpu(), state_npu.cpu()
+
+
+def test_dcut_recurrent_live_row_is_unaffected_by_empty_request_rows() -> None:
+    """One wide live row beside empty rows, against the golden.
+
+    This is the model's shape when a full-graph decode descriptor carries more
+    request rows than there are requests: row zero holds the whole verification
+    window and the rest are empty, their state index pointing at the null block
+    the allocator never hands out.
+
+    Nothing had checked it. The golden's existing cases keep every row live, and
+    its multi-round case covers a cap of zero, which is a one-token row rather
+    than an empty one. The graph tests do use this shape, but they compare a
+    replay against an eager run of the same shape -- if both are wrong together
+    they agree, and the test passes.
+
+    So compare against the golden, which models the contract directly: an empty
+    row's token loop runs zero times, so it reads nothing and writes nothing.
+    The second half runs the same live row on its own, which is the arrangement
+    that works in the model, making this a single-operator reproduction of the
+    difference between the two if the first half diverges.
+    """
+    torch.manual_seed(7)
+    dtype = torch.bfloat16
+    num_tokens = 8
+    num_key_heads = 2
+    num_value_heads = 4
+    head_dim = 64
+    state_len = 8
+    num_state_rows = 24
+
+    normalized = lambda: torch.nn.functional.normalize(  # noqa: E731
+        torch.rand(num_tokens, num_key_heads, head_dim), p=2, dim=-1
+    ).to(dtype)
+    query = normalized()
+    key = normalized()
+    value = torch.rand(num_tokens, num_value_heads, head_dim).to(dtype)
+    beta = torch.rand(num_tokens, num_value_heads).to(dtype)
+    g = torch.rand(num_tokens, num_value_heads, dtype=torch.float32)
+    state = torch.rand(num_state_rows, num_value_heads, head_dim, head_dim, dtype=dtype)
+    scale = head_dim**-0.5
+    num_accepted = torch.ones(8, dtype=torch.int32)
+
+    # Row zero owns state rows [8, 16); every empty row points at the null
+    # block, exactly as the builder fills them.
+    live_columns = list(range(state_len, 2 * state_len))
+    null_row = [0] * state_len
+    indices_padded = torch.tensor([live_columns] + [null_row] * 7, dtype=torch.int32)
+    # Cumulative, so rows one through seven are empty.
+    qsl_padded = torch.tensor([0] + [num_tokens] * 8, dtype=torch.int32)
+
+    expected_output, expected_state = _dcut_recurrent_golden(
+        query, key, value, state, beta, scale, qsl_padded, indices_padded, num_accepted, g
+    )
+    padded_output, padded_state = _recurrent_npu(
+        query, key, value, state, beta, scale, qsl_padded, indices_padded, num_accepted, g
+    )
+
+    torch.testing.assert_close(padded_output, expected_output, rtol=3e-2, atol=3e-2)
+    torch.testing.assert_close(padded_state, expected_state, rtol=3e-2, atol=3e-2)
+    # The null block must come back exactly as it went in: seven empty rows
+    # addressed it and none of them may write.
+    torch.testing.assert_close(padded_state[0], state[0], rtol=0, atol=0)
+
+    # The same live row on its own, which is what the model runs when the
+    # descriptor's request count matches the live one.
+    qsl_alone = torch.tensor([0, num_tokens], dtype=torch.int32)
+    indices_alone = torch.tensor([live_columns], dtype=torch.int32)
+    alone_expected_output, alone_expected_state = _dcut_recurrent_golden(
+        query,
+        key,
+        value,
+        state,
+        beta,
+        scale,
+        qsl_alone,
+        indices_alone,
+        num_accepted[:1],
+        g,
+    )
+    alone_output, alone_state = _recurrent_npu(
+        query,
+        key,
+        value,
+        state,
+        beta,
+        scale,
+        qsl_alone,
+        indices_alone,
+        num_accepted[:1],
+        g,
+    )
+    torch.testing.assert_close(alone_output, alone_expected_output, rtol=3e-2, atol=3e-2)
+
+    # And the two arrangements must agree with each other: the empty rows carry
+    # no information, so adding them cannot change what row zero computes.
+    torch.testing.assert_close(padded_output, alone_output, rtol=3e-2, atol=3e-2)
+    torch.testing.assert_close(
+        padded_state[live_columns], alone_state[live_columns], rtol=3e-2, atol=3e-2
+    )
