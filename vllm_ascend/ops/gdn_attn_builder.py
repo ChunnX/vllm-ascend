@@ -1269,28 +1269,24 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
             # copied in come from the shared plan.
             spec_batch_size = m.num_reqs
 
-            # NULL_BLOCK_ID here, not PAD_SLOT_ID, and neither is right.
+            # NULL_BLOCK_ID is the right value for an empty row, even though
+            # the conv operator is told pad_slot_id=PAD_SLOT_ID and so treats
+            # zero as an ordinary cache line rather than a skip. Zero is vLLM's
+            # null block: the block pool pops it at start-up and marks it
+            # is_null, so no request is ever allocated it. Every empty row
+            # therefore addresses a block nobody owns, and the operator working
+            # on it disturbs nothing.
             #
-            # An empty row sharing cache line zero with every other empty row
-            # does corrupt real state: the conv operator is told
-            # pad_slot_id=PAD_SLOT_ID, so zero is just an in-range line to it,
-            # and an operator test measures the live request's conv state moving
-            # when seven empty rows are aimed at line zero.
-            #
-            # But switching these fills to PAD_SLOT_ID made the model markedly
-            # worse rather than better: a single request went from an acceptance
-            # profile that decayed with position to zero acceptance and garbage
-            # output. The operator test that endorsed the switch runs the kernel
-            # eagerly, and the failure is under graph replay -- the one
-            # condition it does not cover. An invalid index is not a general
-            # no-op for these kernels; the safe combination needs the kernel's
-            # skip path to be graph-safe as well, and it is not established that
-            # it is. Since the padded output is not zeroed either, an early
-            # return inside the kernel leaves that buffer holding whatever was
-            # there before.
-            #
-            # So this keeps the value that measures better while the real fix is
-            # found. Both halves of the hazard are recorded in the operator test.
+            # Switching these fills to PAD_SLOT_ID was tried and made the model
+            # markedly worse -- a single request went from an acceptance profile
+            # that decayed with position to zero acceptance and garbage output.
+            # An invalid index is not a general no-op for these kernels, and
+            # with the padded output left unzeroed an early return inside one
+            # leaves that buffer holding whatever it held before. The operator
+            # test that seemed to endorse the switch numbered its state lines so
+            # that line zero belonged to the live request, which is not how the
+            # null block works; it now asserts the invariant that matters
+            # instead, that an empty row disturbs no line outside its own.
             self.spec_state_indices_tensor[spec_batch_size:].fill_(NULL_BLOCK_ID)
             self.spec_state_indices_tensor[:num_spec_decodes].copy_(
                 spec_state_indices_tensor,
