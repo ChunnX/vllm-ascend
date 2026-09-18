@@ -1259,13 +1259,27 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
             # copied in come from the shared plan.
             spec_batch_size = m.num_reqs
 
-            self.spec_state_indices_tensor[spec_batch_size:].fill_(NULL_BLOCK_ID)
+            # An empty row's state index must be PAD_SLOT_ID, not
+            # NULL_BLOCK_ID. Only PAD_SLOT_ID makes the operator skip the row
+            # before it reads any state; NULL_BLOCK_ID is a valid cache line,
+            # so an empty row sharing it with every other empty row reads and
+            # writes real state at line zero. This file already relies on that
+            # distinction: _reset_spec_decode_graph_inputs fills PAD_SLOT_ID
+            # precisely to make a captured speculative branch inert, so capture
+            # and replay were disagreeing on the sentinel.
+            #
+            # It matters most where it was measured least. At full concurrency
+            # the live count fills the request axis and there are no empty rows
+            # at all, which is why a saturated ragged batch replays correctly
+            # while a single request -- seven empty rows, all aliased onto line
+            # zero -- collapses.
+            self.spec_state_indices_tensor[spec_batch_size:].fill_(PAD_SLOT_ID)
             self.spec_state_indices_tensor[:num_spec_decodes].copy_(
                 spec_state_indices_tensor,
                 non_blocking=True,
             )
             spec_state_indices_tensor = self.spec_state_indices_tensor[:spec_batch_size]
-            spec_state_indices_tensor[num_spec_decodes:].fill_(NULL_BLOCK_ID)
+            spec_state_indices_tensor[num_spec_decodes:].fill_(PAD_SLOT_ID)
 
             self.spec_sequence_masks[:num_spec_decodes].copy_(
                 spec_sequence_masks[:num_spec_decodes],

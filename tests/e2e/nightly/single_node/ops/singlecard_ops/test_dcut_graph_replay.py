@@ -415,3 +415,75 @@ def test_conv1d_graph_replays_fewer_tokens_than_it_captured() -> None:
     used = sum(_PARTIAL_TOKENS)
     torch.testing.assert_close(inputs.output.cpu()[:used], expected_output[:used], rtol=1e-2, atol=1e-2)
     torch.testing.assert_close(inputs.state.cpu(), expected_state, rtol=1e-2, atol=1e-2)
+
+
+def test_conv1d_confines_state_writes_to_the_active_request() -> None:
+    """The conv hook's half of the empty-row contract, which had no test.
+
+    The model tells this operator ``pad_slot_id=PAD_SLOT_ID`` and the builder
+    was filling an empty row's ``cache_indices`` with ``NULL_BLOCK_ID`` -- zero,
+    an in-range cache line. The operator is therefore told that -1 means skip
+    and handed 0, so it treats every empty row as real cache line 0.
+
+    Only the recurrent hook had been probed for this, and it came back
+    indifferent, which is what the probe could show: it iterates per token, so a
+    zero-width row does no iterations whatever its state index. The conv hook
+    updates a rolling window per row, so a row it does not skip can still write.
+    That asymmetry is why one measurement was not evidence about the other.
+
+    Assert the contract the model now relies on: with the skip sentinel, an
+    empty row leaves the cache line it would otherwise address untouched. The
+    second half asserts the aimed-at line *does* move when the row is handed a
+    valid line instead -- informative whichever way it lands, since a pass
+    confirms the sentinel was the difference and a failure says the conv hook
+    tolerates line zero too and the single-request collapse is elsewhere.
+    """
+    inputs = _ConvInputs(torch.bfloat16, seed=11)
+    widths = _ONE_WIDE_ROW
+    # Row 0 is the only live request; it owns conv state lines [0, _STATE_LEN).
+    active_lines = slice(0, _STATE_LEN)
+    idle_lines = slice(_STATE_LEN, None)
+
+    inputs.set_widths(widths)
+    inputs.reset_state()
+    inputs.run()
+    torch.npu.synchronize()
+    skipped_state = inputs.state.cpu()
+
+    # With the skip sentinel, nothing outside the live request's own lines moves.
+    torch.testing.assert_close(
+        skipped_state[idle_lines],
+        inputs.pristine_state.cpu()[idle_lines],
+        rtol=0,
+        atol=0,
+    )
+
+    # Now aim all seven empty rows at cache line 0, which the live request owns,
+    # exactly as NULL_BLOCK_ID did.
+    reserved = _state_indices(widths)
+    reserved[1:] = 0
+    inputs.cache_indices.copy_(reserved.npu())
+    inputs.reset_state()
+    inputs.run()
+    torch.npu.synchronize()
+    reserved_state = inputs.state.cpu()
+
+    # Lines nobody addresses stay put either way.
+    torch.testing.assert_close(
+        reserved_state[idle_lines],
+        inputs.pristine_state.cpu()[idle_lines],
+        rtol=0,
+        atol=0,
+    )
+    # The live request's own state must not survive seven empty rows pointed at
+    # it. If this holds, the sentinel is load bearing for the conv hook.
+    assert not torch.allclose(
+        reserved_state[active_lines],
+        skipped_state[active_lines],
+        rtol=3e-3,
+        atol=1e-2,
+    ), (
+        "conv state at cache line 0 was unchanged by seven empty rows aimed at "
+        "it, so this operator tolerates NULL_BLOCK_ID and the single-request "
+        "collapse has another cause"
+    )
