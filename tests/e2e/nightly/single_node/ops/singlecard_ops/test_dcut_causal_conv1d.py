@@ -189,14 +189,26 @@ def test_dcut_causal_conv1d_live_row_is_unaffected_by_empty_request_rows(empty_s
     hands this operator spec_state_indices_tensor, a slot per candidate
     position, not one slot per request.
 
-    Measured: with the empty rows aliased onto the null block, as the builder
-    fills them, the live row's output differs from its solo result in most
-    elements -- and the solo arrangement is the one that produces correct model
-    output, so the aliased arrangement is the wrong one. The three cases here
-    separate what is responsible. If only ``aliased_null`` diverges, seven rows
-    sharing one slot is the cause and the builder can give them distinct ones.
-    If ``distinct_unused`` diverges too, the request count alone changes the
-    computation, which no choice of index can fix.
+    Measured, and the mechanism is in the operator's host tiling. All three
+    index choices diverge, each in roughly seven eighths of the elements, and
+    the per-token difference is zero for token zero and nonzero for tokens one
+    through seven -- so the empty rows are writing over the live row's later
+    tokens, and no choice of index avoids it.
+
+    ChooseUnifiedFnTokenBlockPlan in
+    csrc/moe/causal_conv1d/op_host/causal_conv1d_tiling_planner.h disables
+    variable-length token tiling whenever num_accepted_tokens is present,
+    logging "speculative decode still uses the existing seq mapping". The D-Cut
+    speculative path always passes that argument, so it always gets the legacy
+    per-sequence mapping rather than the token-to-sequence search, and that
+    mapping does not account for a row with no tokens. The two pieces that would
+    handle it correctly -- BuildFnTokenSeqRangePlan and FindVarlenSeqByToken --
+    are both bypassed on this path. The D-Cut operator inherits the restriction
+    by including the stock tiling.
+
+    This is why the model's single-request acceptance profile is 0.64 at
+    position zero and zero from position two on: token zero's convolution output
+    survives and the rest is overwritten.
     """
     torch.manual_seed(11)
     device = "npu"
