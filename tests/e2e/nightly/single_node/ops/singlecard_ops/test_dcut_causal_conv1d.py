@@ -240,7 +240,10 @@ def test_dcut_causal_conv1d_live_row_is_unaffected_by_empty_request_rows(empty_s
 
     def run(query_start_loc, cache_indices, num_accepted_tokens):
         conv_state = initial_conv_state.clone()
-        output = torch.empty_like(x)
+        # Zero-filled rather than torch.empty: a row the operator declines to
+        # write must read as zero, not as whatever the allocator handed back,
+        # or an untouched row is indistinguishable from a wrong one.
+        output = torch.zeros_like(x)
         torch.ops._C_ascend.npu_dcut_causal_conv1d(
             output,
             x,
@@ -259,7 +262,26 @@ def test_dcut_causal_conv1d_live_row_is_unaffected_by_empty_request_rows(empty_s
     alone_output, alone_state = run(qsl_alone, indices_alone, num_accepted_alone)
     padded_output, padded_state = run(qsl_padded, indices_padded, num_accepted_padded)
 
-    torch.testing.assert_close(padded_output, alone_output, rtol=1e-2, atol=1e-2)
+    # Report which token rows moved before asserting. All three index choices
+    # diverge in roughly seven eighths of the elements, which is the fraction a
+    # per-row output offset would explain: if the operator gives every request
+    # row an output token at its own row index, rows one through seven land on
+    # top of the live row's tokens one through seven and leave token zero alone.
+    # Naming the rows that differ settles that in one run, and a diff confined
+    # to tokens one through seven means empty rows are outside this operator's
+    # contract rather than merely mis-indexed.
+    per_token = (padded_output.float() - alone_output.float()).abs().amax(dim=-1)
+    print(
+        f"[D-Cut] conv empty rows ({empty_slots}): per-token max |diff| = "
+        f"{[round(v, 4) for v in per_token.cpu().tolist()]}"
+    )
+    torch.testing.assert_close(
+        padded_output,
+        alone_output,
+        rtol=1e-2,
+        atol=1e-2,
+        msg=lambda default: f"{default}\nper-token max |diff| = {per_token.cpu().tolist()}",
+    )
     torch.testing.assert_close(
         padded_state[live_slots], alone_state[live_slots], rtol=1e-2, atol=1e-2
     )
