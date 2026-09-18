@@ -163,3 +163,89 @@ def test_dcut_causal_conv1d_multi_round_state_carryover() -> None:
             msg=f"round {round_index} state mismatch",
         )
         carried_state = dcut_conv_state
+
+
+def test_dcut_causal_conv1d_live_row_is_unaffected_by_empty_request_rows() -> None:
+    """One wide live row beside empty rows must compute what it computes alone.
+
+    This is the model's shape when a full-graph decode descriptor carries more
+    request rows than there are requests: row zero holds the whole verification
+    window, the rest are empty, and their state index points at the null block
+    the allocator never hands out. A single request in that arrangement replays
+    at roughly a third of the acceptance it reaches when the descriptor's
+    request count matches the live one, with the same live-row inputs either
+    way, so something about the arrangement itself has to differ.
+
+    Asserted as an invariance rather than against a golden. Empty rows carry no
+    tokens, so they cannot inform anything, and the live row's result must be
+    identical with and without them -- a property that needs no commitment to
+    how the operator lays out its window, which the other tests in this file
+    pin by comparing against the stock operator. The recurrent hook has the
+    same check and passes it; this is the other half of the state.
+
+    The two-dimensional index table is the one the model passes: the spec path
+    hands this operator spec_state_indices_tensor, a slot per candidate
+    position, not one slot per request.
+    """
+    torch.manual_seed(11)
+    device = "npu"
+    dtype = torch.bfloat16
+
+    dim = 64
+    width = 4
+    state_len = 8
+    spec_len = 8
+    num_tokens = 8
+    num_cache_slots = 24
+
+    x = torch.randn(num_tokens, dim, dtype=dtype, device=device)
+    weight = torch.randn(width, dim, dtype=dtype, device=device)
+    bias = torch.randn(dim, dtype=dtype, device=device)
+    initial_conv_state = torch.randn(
+        num_cache_slots, state_len, dim, dtype=dtype, device=device
+    )
+    num_accepted_alone = torch.ones(1, dtype=torch.int32, device=device)
+    num_accepted_padded = torch.ones(8, dtype=torch.int32, device=device)
+
+    # Row zero owns slots [8, 16); the empty rows all address the null slot,
+    # exactly as the builder fills them.
+    live_slots = list(range(state_len, 2 * state_len))
+    null_slots = [0] * spec_len
+    indices_alone = torch.tensor([live_slots], dtype=torch.int32, device=device)
+    indices_padded = torch.tensor(
+        [live_slots] + [null_slots] * 7, dtype=torch.int32, device=device
+    )
+    # Cumulative, so rows one through seven are empty.
+    qsl_alone = torch.tensor([0, num_tokens], dtype=torch.int32, device=device)
+    qsl_padded = torch.tensor([0] + [num_tokens] * 8, dtype=torch.int32, device=device)
+
+    def run(query_start_loc, cache_indices, num_accepted_tokens):
+        conv_state = initial_conv_state.clone()
+        output = torch.empty_like(x)
+        torch.ops._C_ascend.npu_dcut_causal_conv1d(
+            output,
+            x,
+            weight,
+            conv_state=conv_state,
+            bias=bias,
+            query_start_loc=query_start_loc,
+            cache_indices=cache_indices,
+            num_accepted_tokens=num_accepted_tokens,
+            activation_mode=1,
+            pad_slot_id=-1,
+        )
+        torch.npu.synchronize()
+        return output, conv_state
+
+    alone_output, alone_state = run(qsl_alone, indices_alone, num_accepted_alone)
+    padded_output, padded_state = run(qsl_padded, indices_padded, num_accepted_padded)
+
+    torch.testing.assert_close(padded_output, alone_output, rtol=1e-2, atol=1e-2)
+    torch.testing.assert_close(
+        padded_state[live_slots], alone_state[live_slots], rtol=1e-2, atol=1e-2
+    )
+    # The null slot must come back exactly as it went in: seven empty rows
+    # addressed it and none of them may write.
+    torch.testing.assert_close(
+        padded_state[0], initial_conv_state[0], rtol=0, atol=0
+    )
