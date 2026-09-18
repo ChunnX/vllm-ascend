@@ -267,6 +267,22 @@ class AscendAttentionMetadataBuilder(AttentionMetadataBuilder[AscendMetadata]):
         self.chunked_prefill_enabled = scheduler_config.enable_chunked_prefill
         self.attn_mask_builder = AttentionMaskBuilder(self.device)
 
+        # FIA's own view of the request axis, one row wider than the service
+        # maximum. A graph padding batch hands FIA one more request than the
+        # descriptor's request capacity -- the row that absorbs the token
+        # padding -- while the shared seq_lens and block-table buffers stop at
+        # max_num_seqs. Owning the extra row here keeps that view at a fixed
+        # address: full_graph_fia_v2 captures the seq_lens tensor itself as
+        # actual_seq_kvlen, so growing it per step with a fresh allocation left
+        # the captured graph pointing at a tensor from an earlier step.
+        #
+        # Private to FIA by design. The shared lengths are what GDN reads to
+        # tell an inactive request apart, so FIA's dummy values must not reach
+        # them; copying into this buffer is what keeps the two views separate.
+        self._fia_capacity = scheduler_config.max_num_seqs + 1
+        self._fia_seq_lens: torch.Tensor | None = None
+        self._fia_block_table: torch.Tensor | None = None
+
     @classmethod
     def get_cudagraph_support(
         cls: type["AscendAttentionMetadataBuilder"],
@@ -308,6 +324,89 @@ class AscendAttentionMetadataBuilder(AttentionMetadataBuilder[AscendMetadata]):
         """
         return {}
 
+    def _fia_request_axis(
+        self,
+        seq_lens: torch.Tensor,
+        block_table: torch.Tensor | None,
+        num_reqs_fia: int,
+    ) -> tuple[torch.Tensor, torch.Tensor | None, list[int], int]:
+        """FIA's own lengths and block rows, at a fixed address.
+
+        Copies the live rows into buffers this builder owns and fills the rest
+        with the dummy values FIA needs, rather than growing the shared buffers
+        per step. Returns views of those buffers, the host-side lengths, and the
+        number of rows given a dummy length, so a captured graph keeps
+        addressing the same memory however the request count moves between
+        replays. The host list comes back from here because deciding which rows
+        are empty needs it, and reading it twice would be a second device sync
+        per build per KV cache group.
+
+        Every KV length FIA must not reject is settled here, in one place: the
+        rows past the shared tensor's own length, and the rows inside it that a
+        variable-length decode descriptor left at zero because no request
+        occupies them. Splitting the two led to the second correction seeing a
+        list the first had already filled.
+
+        Allocated on first use because the block-table width comes from the KV
+        cache group, and asserted thereafter: a width change would move the
+        address, which is the thing this exists to prevent.
+        """
+        assert num_reqs_fia <= self._fia_capacity, (
+            f"FIA needs {num_reqs_fia} request rows but only {self._fia_capacity} "
+            "are reserved; the padding row is the only one beyond max_num_seqs"
+        )
+        if self._fia_seq_lens is None:
+            self._fia_seq_lens = torch.empty(
+                self._fia_capacity, dtype=seq_lens.dtype, device=seq_lens.device
+            )
+        num_shared = min(seq_lens.shape[0], num_reqs_fia)
+        fia_seq_lens = self._fia_seq_lens[:num_reqs_fia]
+        fia_seq_lens[:num_shared].copy_(seq_lens[:num_shared], non_blocking=True)
+        # Any valid positive length works for a row FIA must not skip: its
+        # output is trimmed downstream and reshape_and_cache slices to the
+        # unpadded token count, so the row never reaches the KV cache.
+        fia_seq_lens[num_shared:].fill_(1)
+        num_dummy_rows = num_reqs_fia - num_shared
+
+        # Rows inside the shared range that a variable-length descriptor left
+        # empty. The model runner zeroes the mirror from the live request count
+        # to the padded one, so within that window a zero length means padding
+        # by construction -- and it has to be a trailing run of the range, since
+        # outside it a zero means a live request arrived with no context, which
+        # must surface rather than be laundered into a legal length.
+        seq_lens_list = fia_seq_lens.tolist()
+        zero_rows = [index for index in range(num_shared) if seq_lens_list[index] == 0]
+        if zero_rows:
+            first_zero = zero_rows[0]
+            if zero_rows != list(range(first_zero, num_shared)):
+                raise ValueError(
+                    "FIA graph padding must be a trailing run of requests, but "
+                    f"rows {zero_rows} of {num_shared} have a zero KV length; a "
+                    "live request with no context cannot be padded over"
+                )
+            fia_seq_lens[first_zero:num_shared].fill_(1)
+            for index in range(first_zero, num_shared):
+                seq_lens_list[index] = 1
+            num_dummy_rows += num_shared - first_zero
+
+        if block_table is None:
+            return fia_seq_lens, None, seq_lens_list, num_dummy_rows
+        if self._fia_block_table is None:
+            self._fia_block_table = torch.empty(
+                (self._fia_capacity, block_table.shape[1]),
+                dtype=block_table.dtype,
+                device=block_table.device,
+            )
+        assert self._fia_block_table.shape[1] == block_table.shape[1], (
+            "FIA block-table width changed between builds, which moves the "
+            f"address: {self._fia_block_table.shape[1]} -> {block_table.shape[1]}"
+        )
+        num_shared_rows = min(block_table.shape[0], num_reqs_fia)
+        fia_block_table = self._fia_block_table[:num_reqs_fia]
+        fia_block_table[:num_shared_rows].copy_(block_table[:num_shared_rows], non_blocking=True)
+        fia_block_table[num_shared_rows:].zero_()
+        return fia_seq_lens, fia_block_table, seq_lens_list, num_dummy_rows
+
     def _build_fia_seq_inputs(
         self,
         common_attn_metadata: AscendCommonAttentionMetadata,
@@ -322,92 +421,26 @@ class AscendAttentionMetadataBuilder(AttentionMetadataBuilder[AscendMetadata]):
         lengths can keep them there: see
         ``AscendFIASinkMetadataBuilder._build_fia_seq_inputs``. Returns
         ``(query_start_loc, actual_seq_lengths_q, seq_lens_list, seq_lens,
-        block_table)`` -- the last two because the padding below has to grow
-        them together with the host-side list.
+        block_table)`` -- the last two because FIA reads its own one-row-wider
+        view of the request axis, not the shared buffers.
         """
         # TODO: Yet another unnecessary H2D while we already have a query_start_loc on device
         query_start_loc = query_start_loc_cpu.pin_memory().to(self.device, non_blocking=True)
 
         actual_seq_lengths_q = query_start_loc_cpu[1:].tolist()
-        seq_lens_list = seq_lens.tolist()
-        # Sequence-parallel (or cudagraph) padding makes the model runner insert a
-        # dummy padding request into query_start_loc to satisfy the FIA TND-layout
-        # constraint (sum of q lengths == hidden_states.shape[0]), bumping the
-        # q-derived batchSize by one. The query_start_loc buffer is sized
-        # `max_num_reqs + 2` to hold it, but the seq_lens and block_table buffers
-        # are only `max_num_reqs`, so when the batch is full the padded request
-        # overflows and `[:num_reqs_padded]` silently truncates them. FIA then
-        # fails (error 561002) checking, in order, the `actualSeqLengthsKv` length
-        # and then the block_table row count against batchSize. Pad them to match:
-        # the dummy request points at block 0, and its output is harmless because:
-        #   (1) read side: the attention output for padding tokens is trimmed by
-        #       `hidden_states = hidden_states[:-pad_size, :]` downstream;
-        #   (2) write side: reshape_and_cache slices key/value/slot_mapping to
-        #       `[:num_actual_tokens]` (unpadded count), so the dummy request
-        #       never writes to KV cache.
-        # So any valid positive KV length / zero block row is fine. Pad both
-        # seq_lens_list and the seq_lens tensor: full_graph_fia_v2 passes the
-        # seq_lens tensor (not seq_lens_list) as actual_seq_kvlen during graph
-        # capture, and _get_fia_params derives the PrefillCacheHit batch size from
-        # seq_lens.shape[0], so the tensor has to carry the dummy request too.
+        # FIA derives its batch size from the q axis, so the request count it
+        # sees is whatever query_start_loc carries -- which a graph padding
+        # batch grows by one past the descriptor's request capacity, to hold the
+        # row that absorbs the token padding. The shared seq_lens and block
+        # table stop at max_num_seqs, so FIA gets its own one-row-wider view
+        # with the dummy lengths and block rows it needs. Its output for those
+        # rows is trimmed downstream, and reshape_and_cache slices key, value
+        # and slot_mapping to the unpadded token count, so nothing they carry
+        # reaches the KV cache.
         num_reqs_fia = len(actual_seq_lengths_q)
-        if len(seq_lens_list) < num_reqs_fia:
-            padding_len = num_reqs_fia - len(seq_lens_list)
-            seq_lens_list = seq_lens_list + [1] * padding_len
-            seq_lens = torch.cat([seq_lens, seq_lens.new_ones(padding_len)])
-        if block_table is not None and block_table.shape[0] < num_reqs_fia:
-            block_table = torch.cat(
-                [
-                    block_table,
-                    block_table.new_zeros((num_reqs_fia - block_table.shape[0], block_table.shape[1])),
-                ],
-                dim=0,
-            )
-        # A graph padding row also arrives inside an already full-length list.
-        # A variable-length decode descriptor carries more requests than are
-        # live, so the surplus rows exist with their KV length at zero --
-        # nothing above ever wrote them. The block above only fires when the
-        # list is short, so those rows keep a zero KV length, and FIA validates
-        # actualSeqLengthsKv per row. Give them a positive dummy length: their
-        # output is trimmed downstream and reshape_and_cache slices to the
-        # unpadded token count, so any valid positive length works.
-        #
-        # A zero KV length identifies the row on its own, whatever its query
-        # span. The span is not a second condition: the token axis rounds up to
-        # the captured bucket, and the leftover tokens are spread over the
-        # padding rows, so with a ragged batch those rows routinely carry one or
-        # two query tokens rather than none. Requiring a zero-length query here
-        # left exactly those rows at a zero KV length.
-        #
-        # The correction is confined to a trailing run, because that is what a
-        # graph padding row is: the model runner zeroes the mirror from the live
-        # request count to the padded one, so within that window a zero length
-        # means "padding" by construction, and outside it a zero length means a
-        # live request arrived with no context -- which this must surface rather
-        # than launder into a legal length. Hence the suffix check instead of
-        # correcting every zero wherever it sits.
-        #
-        # Only the host list is corrected. The sequence-length tensor is a
-        # graph-stable input whose address a captured graph holds, and GDN
-        # derives inactive-request identity from the shared sequence lengths, so
-        # neither may be rewritten here for FIA's benefit -- the full-graph
-        # replay path reads this list through update_graph_params.
-        zero_kv_rows = [index for index, kv_len in enumerate(seq_lens_list) if kv_len == 0]
-        inactive_rows: list[int] = []
-        if zero_kv_rows:
-            first_zero = zero_kv_rows[0]
-            if zero_kv_rows == list(range(first_zero, len(seq_lens_list))):
-                inactive_rows = zero_kv_rows
-            else:
-                raise ValueError(
-                    "FIA graph padding must be a trailing run of requests, but "
-                    f"rows {zero_kv_rows} of {len(seq_lens_list)} have a zero KV "
-                    "length; a live request with no context cannot be padded over"
-                )
-        if inactive_rows:
-            seq_lens_list = list(seq_lens_list)
-            for index in inactive_rows:
-                seq_lens_list[index] = 1
+        seq_lens, block_table, seq_lens_list, kv_dummy_rows = self._fia_request_axis(
+            seq_lens, block_table, num_reqs_fia
+        )
         if dcut_graph_debug.enabled("fia"):
             # B_fia, observed rather than derived from the request count: this
             # is the axis GDN's fixed-capacity view must not be confused with,
@@ -433,14 +466,14 @@ class AscendAttentionMetadataBuilder(AttentionMetadataBuilder[AscendMetadata]):
                         num_reqs,
                         int(query_start_loc_cpu[-1]),
                         actual_seq_lengths_q[0] if actual_seq_lengths_q else 0,
-                        bool(inactive_rows),
+                        bool(kv_dummy_rows),
                     ),
                     repeats=3,
                     b_fia=num_reqs_fia,
                     num_reqs=num_reqs,
                     actual_seq_qlen=actual_seq_lengths_q,
                     kv_lens=seq_lens_list,
-                    kv_dummy_rows=len(inactive_rows),
+                    kv_dummy_rows=kv_dummy_rows,
                     block_rows=(None if block_table is None else block_table.shape[0]),
                     block_ptr=(None if block_table is None else f"{block_table.data_ptr():#x}"),
                 )
