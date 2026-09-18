@@ -431,12 +431,21 @@ def test_conv1d_confines_state_writes_to_the_active_request() -> None:
     updates a rolling window per row, so a row it does not skip can still write.
     That asymmetry is why one measurement was not evidence about the other.
 
-    Assert the contract the model now relies on: with the skip sentinel, an
-    empty row leaves the cache line it would otherwise address untouched. The
-    second half asserts the aimed-at line *does* move when the row is handed a
-    valid line instead -- informative whichever way it lands, since a pass
-    confirms the sentinel was the difference and a failure says the conv hook
-    tolerates line zero too and the single-request collapse is elsewhere.
+    What this pins, and what it does not: eagerly, the skip sentinel leaves the
+    cache line an empty row would otherwise address untouched, and a valid line
+    does get written. Both halves are measured here.
+
+    That is not licence to switch the builder's fill to the skip sentinel --
+    that was tried and measured worse on the model, taking a single request from
+    an acceptance profile that decayed with position to zero acceptance and
+    garbage output. This test runs the kernel eagerly, and the model's failure
+    is under graph replay, which it does not cover. So the builder still fills
+    NULL_BLOCK_ID, and this test stands as the record that doing so writes real
+    state: both the hazard and the fact that the obvious remedy is not one.
+
+    The remaining question for the kernel is whether its skip path is graph-safe
+    -- an early return under replay would leave the padded output buffer holding
+    whatever was there before, since it is not zeroed.
     """
     inputs = _ConvInputs(torch.bfloat16, seed=11)
     widths = _ONE_WIDE_ROW

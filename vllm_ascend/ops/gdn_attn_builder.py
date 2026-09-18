@@ -1269,27 +1269,35 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
             # copied in come from the shared plan.
             spec_batch_size = m.num_reqs
 
-            # An empty row's state index must be PAD_SLOT_ID, not
-            # NULL_BLOCK_ID. Only PAD_SLOT_ID makes the operator skip the row
-            # before it reads any state; NULL_BLOCK_ID is a valid cache line,
-            # so an empty row sharing it with every other empty row reads and
-            # writes real state at line zero. This file already relies on that
-            # distinction: _reset_spec_decode_graph_inputs fills PAD_SLOT_ID
-            # precisely to make a captured speculative branch inert, so capture
-            # and replay were disagreeing on the sentinel.
+            # NULL_BLOCK_ID here, not PAD_SLOT_ID, and neither is right.
             #
-            # It matters most where it was measured least. At full concurrency
-            # the live count fills the request axis and there are no empty rows
-            # at all, which is why a saturated ragged batch replays correctly
-            # while a single request -- seven empty rows, all aliased onto line
-            # zero -- collapses.
-            self.spec_state_indices_tensor[spec_batch_size:].fill_(PAD_SLOT_ID)
+            # An empty row sharing cache line zero with every other empty row
+            # does corrupt real state: the conv operator is told
+            # pad_slot_id=PAD_SLOT_ID, so zero is just an in-range line to it,
+            # and an operator test measures the live request's conv state moving
+            # when seven empty rows are aimed at line zero.
+            #
+            # But switching these fills to PAD_SLOT_ID made the model markedly
+            # worse rather than better: a single request went from an acceptance
+            # profile that decayed with position to zero acceptance and garbage
+            # output. The operator test that endorsed the switch runs the kernel
+            # eagerly, and the failure is under graph replay -- the one
+            # condition it does not cover. An invalid index is not a general
+            # no-op for these kernels; the safe combination needs the kernel's
+            # skip path to be graph-safe as well, and it is not established that
+            # it is. Since the padded output is not zeroed either, an early
+            # return inside the kernel leaves that buffer holding whatever was
+            # there before.
+            #
+            # So this keeps the value that measures better while the real fix is
+            # found. Both halves of the hazard are recorded in the operator test.
+            self.spec_state_indices_tensor[spec_batch_size:].fill_(NULL_BLOCK_ID)
             self.spec_state_indices_tensor[:num_spec_decodes].copy_(
                 spec_state_indices_tensor,
                 non_blocking=True,
             )
             spec_state_indices_tensor = self.spec_state_indices_tensor[:spec_batch_size]
-            spec_state_indices_tensor[num_spec_decodes:].fill_(PAD_SLOT_ID)
+            spec_state_indices_tensor[num_spec_decodes:].fill_(NULL_BLOCK_ID)
 
             self.spec_sequence_masks[:num_spec_decodes].copy_(
                 spec_sequence_masks[:num_spec_decodes],
