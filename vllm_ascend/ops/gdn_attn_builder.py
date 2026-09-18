@@ -327,6 +327,13 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
         # base does not chain to AttentionMetadataBuilder.__init__, so it never
         # stores layer_names.
         self._debug_layer: str = layer_names[0] if layer_names else "?"
+        # Which model this builder belongs to, for the axis dump's dedup key.
+        # Every layer of every model shares one allowance per batch shape, so
+        # without this only the first couple of builders ever print and the
+        # draft model never appears at all -- which is how it stayed invisible
+        # through every measurement so far. The prefix before ".layers." is the
+        # model, so target and drafter get an allowance each.
+        self._debug_model: str = self._debug_layer.split(".layers.")[0]
         # Batch compositions already reported by _warn_unpadded_spec_replay.
         self._warned_unpadded_spec: set[tuple[int, int, int]] = set()
         sequence_index_capacity = max(
@@ -1395,6 +1402,7 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
             # the same size would otherwise use up this shape's allowance and
             # hide the graph replay, which is the line worth having.
             (
+                self._debug_model,
                 int(m.num_reqs),
                 int(m.num_actual_tokens),
                 attn_metadata.num_spec_decodes,
@@ -1405,6 +1413,7 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
             # itself; a piecewise capture does not, so keep room for a second
             # line of the same shape and read the occurrence counter.
             repeats=2,
+            model=self._debug_model,
             layer=self._debug_layer,
             b_graph=m.num_reqs,
             q=m.num_actual_tokens,
