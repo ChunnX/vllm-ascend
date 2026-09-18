@@ -1,3 +1,4 @@
+import pytest
 import torch
 import torch_npu
 
@@ -165,7 +166,8 @@ def test_dcut_causal_conv1d_multi_round_state_carryover() -> None:
         carried_state = dcut_conv_state
 
 
-def test_dcut_causal_conv1d_live_row_is_unaffected_by_empty_request_rows() -> None:
+@pytest.mark.parametrize("empty_slots", ["aliased_null", "distinct_unused", "skip_sentinel"])
+def test_dcut_causal_conv1d_live_row_is_unaffected_by_empty_request_rows(empty_slots) -> None:
     """One wide live row beside empty rows must compute what it computes alone.
 
     This is the model's shape when a full-graph decode descriptor carries more
@@ -186,6 +188,15 @@ def test_dcut_causal_conv1d_live_row_is_unaffected_by_empty_request_rows() -> No
     The two-dimensional index table is the one the model passes: the spec path
     hands this operator spec_state_indices_tensor, a slot per candidate
     position, not one slot per request.
+
+    Measured: with the empty rows aliased onto the null block, as the builder
+    fills them, the live row's output differs from its solo result in most
+    elements -- and the solo arrangement is the one that produces correct model
+    output, so the aliased arrangement is the wrong one. The three cases here
+    separate what is responsible. If only ``aliased_null`` diverges, seven rows
+    sharing one slot is the cause and the builder can give them distinct ones.
+    If ``distinct_unused`` diverges too, the request count alone changes the
+    computation, which no choice of index can fix.
     """
     torch.manual_seed(11)
     device = "npu"
@@ -207,13 +218,21 @@ def test_dcut_causal_conv1d_live_row_is_unaffected_by_empty_request_rows() -> No
     num_accepted_alone = torch.ones(1, dtype=torch.int32, device=device)
     num_accepted_padded = torch.ones(8, dtype=torch.int32, device=device)
 
-    # Row zero owns slots [8, 16); the empty rows all address the null slot,
-    # exactly as the builder fills them.
+    # Row zero owns slots [8, 16); slots [16, 24) are free for the empty rows
+    # when they are given distinct ones.
     live_slots = list(range(state_len, 2 * state_len))
-    null_slots = [0] * spec_len
+    if empty_slots == "aliased_null":
+        # What the builder fills: every empty row on the null block.
+        empty_rows = [[0] * spec_len] * 7
+    elif empty_slots == "distinct_unused":
+        # A slot per empty row, none of them shared and none of them live.
+        empty_rows = [[2 * state_len + row] * spec_len for row in range(7)]
+    else:
+        # The sentinel the operator is told means "skip".
+        empty_rows = [[-1] * spec_len] * 7
     indices_alone = torch.tensor([live_slots], dtype=torch.int32, device=device)
     indices_padded = torch.tensor(
-        [live_slots] + [null_slots] * 7, dtype=torch.int32, device=device
+        [live_slots] + empty_rows, dtype=torch.int32, device=device
     )
     # Cumulative, so rows one through seven are empty.
     qsl_alone = torch.tensor([0, num_tokens], dtype=torch.int32, device=device)
@@ -244,8 +263,16 @@ def test_dcut_causal_conv1d_live_row_is_unaffected_by_empty_request_rows() -> No
     torch.testing.assert_close(
         padded_state[live_slots], alone_state[live_slots], rtol=1e-2, atol=1e-2
     )
-    # The null slot must come back exactly as it went in: seven empty rows
-    # addressed it and none of them may write.
-    torch.testing.assert_close(
-        padded_state[0], initial_conv_state[0], rtol=0, atol=0
-    )
+    if empty_slots == "aliased_null":
+        # The null slot must come back exactly as it went in: seven empty rows
+        # addressed it and none of them may write.
+        torch.testing.assert_close(
+            padded_state[0], initial_conv_state[0], rtol=0, atol=0
+        )
+    elif empty_slots == "distinct_unused":
+        torch.testing.assert_close(
+            padded_state[2 * state_len :],
+            initial_conv_state[2 * state_len :],
+            rtol=0,
+            atol=0,
+        )
