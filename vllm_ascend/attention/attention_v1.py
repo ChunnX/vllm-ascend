@@ -379,12 +379,31 @@ class AscendAttentionMetadataBuilder(AttentionMetadataBuilder[AscendMetadata]):
         # two query tokens rather than none. Requiring a zero-length query here
         # left exactly those rows at a zero KV length.
         #
+        # The correction is confined to a trailing run, because that is what a
+        # graph padding row is: the model runner zeroes the mirror from the live
+        # request count to the padded one, so within that window a zero length
+        # means "padding" by construction, and outside it a zero length means a
+        # live request arrived with no context -- which this must surface rather
+        # than launder into a legal length. Hence the suffix check instead of
+        # correcting every zero wherever it sits.
+        #
         # Only the host list is corrected. The sequence-length tensor is a
         # graph-stable input whose address a captured graph holds, and GDN
         # derives inactive-request identity from the shared sequence lengths, so
         # neither may be rewritten here for FIA's benefit -- the full-graph
         # replay path reads this list through update_graph_params.
-        inactive_rows = [index for index, kv_len in enumerate(seq_lens_list) if kv_len == 0]
+        zero_kv_rows = [index for index, kv_len in enumerate(seq_lens_list) if kv_len == 0]
+        inactive_rows: list[int] = []
+        if zero_kv_rows:
+            first_zero = zero_kv_rows[0]
+            if zero_kv_rows == list(range(first_zero, len(seq_lens_list))):
+                inactive_rows = zero_kv_rows
+            else:
+                raise ValueError(
+                    "FIA graph padding must be a trailing run of requests, but "
+                    f"rows {zero_kv_rows} of {len(seq_lens_list)} have a zero KV "
+                    "length; a live request with no context cannot be padded over"
+                )
         if inactive_rows:
             seq_lens_list = list(seq_lens_list)
             for index in inactive_rows:

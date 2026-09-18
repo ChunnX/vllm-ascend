@@ -656,11 +656,20 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
         degrading.
 
         Folding it in costs nothing, by the same equivalence
-        ``unify_spec_decode_graph_path`` already rests on: with num_accepted 1 a
-        one-query speculative row reads and writes ``ssm_state_indices[row, 0]``,
-        which is the slot the ordinary decode path would use. The row keeps its
-        -1 draft count, which is what marks a graph padding row apart from it
-        (padding rows also have a zero sequence length).
+        ``unify_spec_decode_graph_path`` already rests on: a one-query
+        speculative row addresses the same state column the ordinary decode path
+        would. The row keeps its -1 draft count, which is what marks a graph
+        padding row apart from it (padding rows also have a zero sequence
+        length).
+
+        What the row must keep is its accepted count. A request can reach a
+        one-token round having speculated in the previous one -- no drafts
+        scheduled this time, but five accepted last time -- and its history
+        lives in state column four, not column zero. Overwriting the count with
+        one because this round is one token long is the same conflation the
+        whole variable-length contract exists to prevent: the previous round's
+        accepted position selects the starting state, this round's query length
+        decides how many updates run, and neither may stand in for the other.
 
         Only rows that already hold recurrent state are folded. A one-token
         first prompt chunk has none and has to stay on the prefill path.
@@ -682,8 +691,9 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
 
         spec_sequence_masks_cpu = spec_sequence_masks_cpu.clone()
         spec_sequence_masks_cpu[fold_indices] = True
-        num_accepted_tokens = num_accepted_tokens.clone()
-        num_accepted_tokens[fold_indices.to(num_accepted_tokens.device)] = 1
+        # num_accepted_tokens is deliberately untouched: it is the gathered
+        # previous-round accepted count, which is exactly the state selector the
+        # speculative branch needs.
         return spec_sequence_masks_cpu, num_accepted_tokens
 
     def _compute_gdn_local_metadata(

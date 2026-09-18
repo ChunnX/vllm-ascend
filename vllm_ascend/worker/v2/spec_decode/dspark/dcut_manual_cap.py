@@ -75,7 +75,9 @@ def manual_cap_enabled(manual_caps: Sequence[int]) -> bool:
 
 
 def compute_manual_capacities(
-    scheduled_drafts: np.ndarray, manual_caps: Sequence[int]
+    scheduled_drafts: np.ndarray,
+    manual_caps: Sequence[int],
+    max_draft_budget: int | None = None,
 ) -> np.ndarray:
     """Per-request retained draft count under a manual cap pattern.
 
@@ -85,25 +87,64 @@ def compute_manual_capacities(
         manual_caps: The cap pattern. Batch position ``i`` is capped at
             ``manual_caps[i % len(manual_caps)]``; a negative entry retains every
             scheduled draft for that position (the no-trim step-1 regression).
+        max_draft_budget: Ceiling on the total retained across the batch, from
+            the sampler's logits limit. ``None`` leaves the total unbounded.
 
     Returns:
         A fresh int array of retained draft counts, always ``<= scheduled_drafts``
         element-wise (a request can never retain more drafts than it scheduled),
         so the result is a legal capacity for ``reallocate_drafts``. The value
-        depends only on ``scheduled_drafts`` and the pattern -- confidence is
-        structurally absent.
+        depends only on ``scheduled_drafts``, the pattern and the ceiling --
+        confidence is structurally absent.
     """
     num_reqs = scheduled_drafts.shape[0]
     pattern = np.asarray(manual_caps, dtype=np.int64)
     caps = pattern[np.arange(num_reqs) % pattern.shape[0]]
     capped = np.where(caps < 0, scheduled_drafts, np.minimum(scheduled_drafts, caps))
-    return capped.astype(scheduled_drafts.dtype, copy=True)
+    capped = capped.astype(scheduled_drafts.dtype, copy=True)
+
+    # The sampler processes logits in one block up to a fixed limit, and the
+    # upstream policy clamps its budget to that limit for the same reason: past
+    # it the batch takes a chunked path still driven by the CPU cu_num_logits,
+    # which under a nonzero budget can describe the untrimmed upper bound. The
+    # result is mis-segmented logits, not merely a slower step. A pattern makes
+    # this reachable in a way a single cap does not, since the pattern's first
+    # positions can be large.
+    #
+    # Fill to a water level rather than shaving the tail: take the largest
+    # uniform ceiling whose total fits, then give what is left over to the
+    # lowest positions. Shaving from the end would pile the whole budget onto
+    # the first request and flatten the batch to one wide row, which defeats the
+    # only thing this pattern exists to produce. Both the level and the
+    # remainder are functions of the inputs alone, so every rank derives the
+    # same plan.
+    if max_draft_budget is not None and int(capped.sum()) > max_draft_budget:
+        level = 0
+        for candidate in range(1, int(capped.max()) + 1):
+            if int(np.minimum(capped, candidate).sum()) > max_draft_budget:
+                break
+            level = candidate
+        capped = np.minimum(capped, level).astype(capped.dtype, copy=True)
+        # Hand the remainder to the lowest positions that can still take a
+        # draft, one at a time, so the total lands exactly on the ceiling.
+        remainder = max_draft_budget - int(capped.sum())
+        for index in range(num_reqs):
+            if remainder <= 0:
+                break
+            headroom = int(scheduled_drafts[index]) - int(capped[index])
+            if caps[index] >= 0:
+                headroom = min(headroom, int(caps[index]) - int(capped[index]))
+            give = min(remainder, max(0, headroom))
+            capped[index] += give
+            remainder -= give
+    return capped
 
 
 def manual_batch_budget(
     num_drafts_per_req: dict[str, int],
     num_non_draft_tokens_per_req: dict[str, int],
     manual_caps: Sequence[int],
+    max_draft_budget: int | None = None,
 ) -> tuple[tuple[dict[str, int], dict[str, int], int], dict[str, int]]:
     """Build what ``get_num_tokens`` stashes, from a cap pattern.
 
@@ -125,7 +166,9 @@ def manual_batch_budget(
     scheduled_drafts = np.fromiter(
         num_drafts_per_req.values(), dtype=np.int32, count=len(num_drafts_per_req)
     )
-    capacities = compute_manual_capacities(scheduled_drafts, manual_caps)
+    capacities = compute_manual_capacities(
+        scheduled_drafts, manual_caps, max_draft_budget
+    )
     capacity_per_req = {
         req_id: int(capacity)
         for req_id, capacity in zip(num_drafts_per_req, capacities)
@@ -192,8 +235,15 @@ def get_manual_cap_manager_cls():
                 req_id: int(num_tokens_per_req[req_id]) - num_drafts_per_req[req_id]
                 for req_id in req_ids
             }
+            # Same ceiling the upstream policy applies, for the same reason.
+            max_draft_budget = max(
+                0, self._max_total_logits - len(req_ids) * self.num_bonus_tokens
+            )
             self._batch_budget, self._manual_capacities = manual_batch_budget(
-                num_drafts_per_req, num_non_draft_tokens_per_req, self.manual_caps
+                num_drafts_per_req,
+                num_non_draft_tokens_per_req,
+                self.manual_caps,
+                max_draft_budget,
             )
             _, _, draft_budget = self._batch_budget
             return sum(num_non_draft_tokens_per_req.values()) + draft_budget

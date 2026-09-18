@@ -104,6 +104,68 @@ def test_large_cap_matches_no_trim():
     np.testing.assert_array_equal(capacities, scheduled)
 
 
+def test_budget_ceiling_fills_to_a_level_and_keeps_the_batch_ragged():
+    """The sampler's logits limit has to bound the total, as upstream does.
+
+    Past that limit the batch takes a chunked path still driven by the CPU
+    cu_num_logits, which under a nonzero budget can describe the untrimmed upper
+    bound -- mis-segmented logits, not just a slower step. A pattern makes this
+    reachable where a single cap does not, since its leading positions can be
+    large.
+
+    Filling to a level rather than shaving the tail matters: shaving would pile
+    the whole budget onto the first request and flatten the batch to one wide
+    row, which is the opposite of what a pattern is for.
+    """
+    scheduled = np.full(4, 7, dtype=np.int32)
+    # Uncapped the pattern retains 7+1+3+1 = 12; hold it to 6.
+    capacities = compute_manual_capacities(scheduled, (7, 1, 3, 1), max_draft_budget=6)
+    assert int(capacities.sum()) == 6
+    # Level 2 fits exactly: min(cap_i, 2) over [7,1,3,1].
+    np.testing.assert_array_equal(capacities, np.array([2, 1, 2, 1], dtype=np.int32))
+    # Still ragged, which shaving the tail would not have left it.
+    assert len(set(capacities.tolist())) > 1
+    assert np.all(capacities <= scheduled)
+    assert capacities.dtype == scheduled.dtype
+
+
+def test_budget_ceiling_never_exceeds_the_pattern_or_the_scheduled_count():
+    # A remainder may only go to a position that still has headroom under both
+    # its own cap and its scheduled count.
+    scheduled = np.array([7, 1, 7, 1], dtype=np.int32)
+    capacities = compute_manual_capacities(scheduled, (7, 7, 2, 7), max_draft_budget=7)
+    assert int(capacities.sum()) <= 7
+    assert np.all(capacities <= scheduled)
+    # Position 2's own cap is 2, so it can never hold more than that.
+    assert capacities[2] <= 2
+
+
+def test_budget_ceiling_is_inert_when_the_pattern_already_fits():
+    scheduled = np.full(4, 7, dtype=np.int32)
+    unbounded = compute_manual_capacities(scheduled, (7, 1, 3, 1))
+    bounded = compute_manual_capacities(scheduled, (7, 1, 3, 1), max_draft_budget=99)
+    np.testing.assert_array_equal(bounded, unbounded)
+
+
+def test_budget_ceiling_of_zero_keeps_only_anchors():
+    scheduled = np.full(3, 7, dtype=np.int32)
+    capacities = compute_manual_capacities(scheduled, (7, 7, 7), max_draft_budget=0)
+    np.testing.assert_array_equal(capacities, np.zeros(3, dtype=np.int32))
+
+
+def test_budget_ceiling_keeps_the_dict_and_the_sum_consistent():
+    num_drafts_per_req = {"a": 7, "b": 7, "c": 7}
+    num_non_draft_tokens_per_req = dict.fromkeys(num_drafts_per_req, 1)
+    (_, _, draft_budget), capacity_per_req = manual_batch_budget(
+        num_drafts_per_req, num_non_draft_tokens_per_req, (7, 3, 3), max_draft_budget=8
+    )
+    # The ceiling must land in both halves of the stash, or the device layout
+    # disagrees with the batch size already chosen from the budget.
+    assert draft_budget == 8
+    assert sum(capacity_per_req.values()) == draft_budget
+    assert sum(capacity_per_req.values()) == 8
+
+
 def test_parse_accepts_a_single_int_and_a_pattern():
     assert parse_manual_cap_spec("-1") == (-1,)
     assert parse_manual_cap_spec("2") == (2,)
