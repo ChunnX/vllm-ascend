@@ -327,6 +327,8 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
         # base does not chain to AttentionMetadataBuilder.__init__, so it never
         # stores layer_names.
         self._debug_layer: str = layer_names[0] if layer_names else "?"
+        # Batch compositions already reported by _warn_unpadded_spec_replay.
+        self._warned_unpadded_spec: set[tuple[int, int, int]] = set()
         sequence_index_capacity = max(
             self.vllm_config.scheduler_config.max_num_seqs,
             self.decode_cudagraph_max_bs,
@@ -605,6 +607,78 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
         num_accepted_tokens[fold_indices.to(num_accepted_tokens.device)] = self.num_spec + 1
         return spec_sequence_masks_cpu, num_accepted_tokens
 
+    def _warn_unpadded_spec_replay(
+        self, num_spec_decodes: int, num_decodes: int, num_prefills: int
+    ) -> None:
+        """Report, once per batch composition, a full graph left unpadded."""
+        key = (num_spec_decodes, num_decodes, num_prefills)
+        if key in self._warned_unpadded_spec:
+            return
+        self._warned_unpadded_spec.add(key)
+        logger.warning(
+            "[D-Cut] Full decode graph will replay without refreshed speculative "
+            "padding: %d speculative rows alongside %d decode and %d prefill rows, "
+            "yet every query token is speculative. The graph-stable GDN buffers "
+            "keep their previous contents, so this batch's output is wrong. A "
+            "draft-free row that should have folded into the speculative branch "
+            "is the usual cause.",
+            num_spec_decodes,
+            num_decodes,
+            num_prefills,
+        )
+
+    def _fold_stateful_single_token_decodes_into_spec(
+        self,
+        common_attn_metadata: CommonAttentionMetadata,
+        spec_sequence_masks_cpu: torch.Tensor,
+        num_accepted_tokens: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        """Keep a draft-free decode row on the speculative branch.
+
+        A request that has just finished prefilling gets no drafts on its first
+        decode step, so the model state marks it -1 and the speculative mask,
+        which selects non-negative counts, leaves it out. It is then an ordinary
+        one-token decode row, and one such row is enough to lose the whole batch
+        its full-graph speculative padding: a decode row alongside speculative
+        rows is folded into the prefill count, and the padding path requires no
+        prefills and no decodes. The graph still replays -- dispatch decided
+        that from the batch shape alone -- but against metadata built off the
+        unpadded path, which is silently wrong output for every request in the
+        batch. It happens once per request, just after its prefill, which is why
+        it shows up as the odd request repeating itself rather than a whole run
+        degrading.
+
+        Folding it in costs nothing, by the same equivalence
+        ``unify_spec_decode_graph_path`` already rests on: with num_accepted 1 a
+        one-query speculative row reads and writes ``ssm_state_indices[row, 0]``,
+        which is the slot the ordinary decode path would use. The row keeps its
+        -1 draft count, which is what marks a graph padding row apart from it
+        (padding rows also have a zero sequence length).
+
+        Only rows that already hold recurrent state are folded. A one-token
+        first prompt chunk has none and has to stay on the prefill path.
+        """
+        seq_lens_cpu = common_attn_metadata.seq_lens_cpu_upper_bound
+        if seq_lens_cpu is None or num_accepted_tokens is None:
+            return spec_sequence_masks_cpu, num_accepted_tokens
+
+        num_reqs = min(spec_sequence_masks_cpu.numel(), seq_lens_cpu.numel())
+        query_lens_cpu = torch.diff(common_attn_metadata.query_start_loc_cpu)[:num_reqs]
+        fold = (
+            ~spec_sequence_masks_cpu[:num_reqs]
+            & (query_lens_cpu == 1)
+            & (seq_lens_cpu[:num_reqs] > 1)
+        )
+        fold_indices = fold.nonzero(as_tuple=True)[0]
+        if fold_indices.numel() == 0:
+            return spec_sequence_masks_cpu, num_accepted_tokens
+
+        spec_sequence_masks_cpu = spec_sequence_masks_cpu.clone()
+        spec_sequence_masks_cpu[fold_indices] = True
+        num_accepted_tokens = num_accepted_tokens.clone()
+        num_accepted_tokens[fold_indices.to(num_accepted_tokens.device)] = 1
+        return spec_sequence_masks_cpu, num_accepted_tokens
+
     def _compute_gdn_local_metadata(
         self,
         common_attn_metadata: CommonAttentionMetadata,
@@ -735,6 +809,14 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
             # when decode context parallelism is disabled.
             if self.vllm_config.parallel_config.decode_context_parallel_size == 1:
                 spec_sequence_masks_cpu, num_accepted_tokens = self._fold_spec_sized_prefill_chunks_into_spec(
+                    m,
+                    spec_sequence_masks_cpu,
+                    num_accepted_tokens,
+                )
+            if self.unify_spec_decode_graph_path:
+                # One draft-free decode row otherwise costs the whole batch its
+                # full-graph speculative padding; see the method.
+                spec_sequence_masks_cpu, num_accepted_tokens = self._fold_stateful_single_token_decodes_into_spec(
                     m,
                     spec_sequence_masks_cpu,
                     num_accepted_tokens,
@@ -1128,6 +1210,29 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
         assert not (num_decodes > 0 and num_spec_decodes > 0), (
             f"num_decodes: {num_decodes}, num_spec_decodes: {num_spec_decodes}"
         )
+
+        if (
+            self.use_full_cuda_graph
+            and num_spec_decodes > 0
+            and (num_prefills > 0 or num_decodes > 0)
+            and m.is_prefilling is not None
+            and not bool(m.is_prefilling.any())
+        ):
+            # No request here is prefilling, which is the same test the graph
+            # dispatcher applies, so it has matched a decode descriptor and a
+            # full graph is about to replay -- but a nonzero prefill or decode
+            # count has just excluded the block below, the one that refreshes
+            # the graph-stable speculative buffers. Nothing downstream errors:
+            # the replay reads whatever those buffers last held, which is
+            # silently wrong output for every request in the batch. The count
+            # can be nonzero here only because a row was classified outside the
+            # speculative branch, since a prefilling request would have failed
+            # the test above.
+            #
+            # Twice now this has been found by reading acceptance rates, so say
+            # it out loud instead of leaving it to be inferred from an axis dump
+            # that is off by default.
+            self._warn_unpadded_spec_replay(num_spec_decodes, num_decodes, num_prefills)
 
         if (
             self.use_full_cuda_graph

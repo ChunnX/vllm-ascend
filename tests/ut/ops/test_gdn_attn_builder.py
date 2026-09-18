@@ -1457,3 +1457,96 @@ def test_zero_draft_rows_follow_the_unified_spec_path_only_when_enabled(unify_gr
         assert attn_metadata.spec_sequence_masks is None
         assert attn_metadata.num_spec_decodes == 0
         assert attn_metadata.num_decodes == batch_spec.batch_size
+
+
+@pytest.mark.parametrize("unify_graph_path", [True, False])
+def test_draft_free_decode_row_keeps_the_batch_on_the_speculative_branch(unify_graph_path):
+    """A request on its first decode step must not cost the batch its padding.
+
+    A request that has just finished prefilling gets no drafts that step, so the
+    model state marks it -1 and the speculative mask, which selects non-negative
+    counts, leaves it out. It is then an ordinary one-token decode row, and one
+    of those is enough: a decode row alongside speculative rows is folded into
+    the prefill count, and the full-graph speculative padding path requires both
+    counts to be zero. The graph still replays -- dispatch decided that from the
+    batch shape, and no request here is prefilling -- but against metadata built
+    off the unpadded path, which is wrong output for the whole batch. It fires
+    once per request, just after its prefill, so the symptom is the odd request
+    repeating itself rather than a run degrading.
+
+    Under D-Cut that row folds into the speculative branch, which is equivalent:
+    with num_accepted at 1 a one-query speculative row reads and writes
+    ``ssm_state_indices[row, 0]``, the slot the ordinary decode path would use.
+    Without D-Cut the ordinary decode branch is still the right one.
+    """
+    batch_spec = BatchSpec(
+        seq_lens=[64, 64, 64, 64],
+        query_lens=[8, 2, 4, 1],
+        name="ragged_batch_with_one_draft_free_decode",
+    )
+    common_attn_metadata = create_common_attn_metadata(
+        batch_spec=batch_spec,
+        block_size=16,
+        device=torch.device("cpu"),
+    )
+    builder = _make_builder(
+        device=torch.device("cpu"),
+        num_heads=32,
+        num_speculative_tokens=7,
+    )
+    builder.unify_spec_decode_graph_path = unify_graph_path
+
+    # The last row is the one that just left prefill: no drafts this step.
+    attn_metadata = builder.build(
+        0,
+        common_attn_metadata,
+        num_accepted_tokens=torch.ones(batch_spec.batch_size, dtype=torch.int32),
+        num_decode_draft_tokens_cpu=torch.tensor([7, 1, 3, -1], dtype=torch.int32),
+    )
+
+    if unify_graph_path:
+        # All four rows speculative: the padding path stays reachable.
+        assert attn_metadata.num_spec_decodes == batch_spec.batch_size
+        assert attn_metadata.num_decodes == 0
+        assert attn_metadata.num_prefills == 0
+    else:
+        # Upstream behaviour: the draft-free row stays outside the speculative
+        # branch, and a decode row beside speculative rows is counted as a
+        # prefill -- which is exactly what disqualifies the padding path.
+        assert attn_metadata.num_spec_decodes == batch_spec.batch_size - 1
+        assert attn_metadata.num_decodes == 0
+        assert attn_metadata.num_prefills == 1
+
+
+def test_a_first_prompt_chunk_is_not_folded_into_the_speculative_branch():
+    """A one-token row with no recurrent state has to stay on the prefill path.
+
+    The fold above keys on a one-token query, so it must not sweep up a
+    single-token first prompt chunk: that row has no state to advance, and the
+    speculative branch would read a state slot nothing has written.
+    """
+    batch_spec = BatchSpec(
+        seq_lens=[64, 64, 1],
+        query_lens=[8, 2, 1],
+        name="ragged_batch_with_a_one_token_first_chunk",
+    )
+    common_attn_metadata = create_common_attn_metadata(
+        batch_spec=batch_spec,
+        block_size=16,
+        device=torch.device("cpu"),
+    )
+    builder = _make_builder(
+        device=torch.device("cpu"),
+        num_heads=32,
+        num_speculative_tokens=7,
+    )
+    builder.unify_spec_decode_graph_path = True
+
+    attn_metadata = builder.build(
+        0,
+        common_attn_metadata,
+        num_accepted_tokens=torch.ones(batch_spec.batch_size, dtype=torch.int32),
+        num_decode_draft_tokens_cpu=torch.tensor([7, 1, -1], dtype=torch.int32),
+    )
+
+    assert attn_metadata.num_spec_decodes == 2
