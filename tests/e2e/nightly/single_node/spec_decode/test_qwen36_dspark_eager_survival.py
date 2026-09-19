@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Opt-in NPU/model gate; each mode owns a fresh engine process and state cache."""
+"""Opt-in 910B4 TP=4 model gate; each mode owns a fresh engine process and state cache."""
 
 import json
 import os
@@ -15,13 +15,17 @@ def test_greedy_eager_survival_matches_fixed_k(threshold):
     draft = os.getenv("VLLM_TEST_DSPARK_MODEL")
     if not model or not draft:
         pytest.skip("Set VLLM_TEST_QWEN36_MODEL and VLLM_TEST_DSPARK_MODEL to local checkpoints")
+    devices = os.getenv("ASCEND_RT_VISIBLE_DEVICES", "").split(",")
+    assert len(devices) == 4 and all(d.strip() for d in devices) and len(set(devices)) == 4, (
+        "Set ASCEND_RT_VISIBLE_DEVICES to the four allocated development cards before this TP=4 test"
+    )
     program = r"""
 import json,sys
 from vllm import LLM, SamplingParams
 model,draft,adaptive=json.loads(sys.argv[1])
 llm=LLM(model=model, enforce_eager=True, dtype="bfloat16", max_model_len=2048,
         max_num_seqs=4, enable_prefix_caching=False, async_scheduling=False,
-        tensor_parallel_size=1,
+        tensor_parallel_size=4,
         speculative_config={"method":"dspark","model":draft,"num_speculative_tokens":7,
                             "enforce_eager":True,"enable_adaptive_verification":adaptive})
 prompts=["Explain why the sky is blue.", "Calculate 13 times 17, showing the steps.",

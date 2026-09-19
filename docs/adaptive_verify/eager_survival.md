@@ -5,6 +5,7 @@
 - 分支：`dspark_adaptive_eager_b5180b`
 - 起点：`b5180b821fe2c8672d6b6f82e2cd0adcc47c0943`
 - vLLM：v0.28.0，MRV2。
+- 验证服务器：Ascend 910B4，8×32GB；仅使用分配的 4 张开发卡，模型固定 TP=4。
 - 与 `main_dspark_adaptive_verify_dev` 使用不同 worktree；不合并后者的 FULL 实验补丁。
 - 第一版用于 eager 正确性验证，NPU 编译与数值验收尚未完成，不宣称已解决模型精度。
 
@@ -14,11 +15,14 @@
 Qwen3.6 + DSpark 命令，加入以下设置（模型路径使用你实际的 checkpoint）：
 
 ```bash
+# 先将 ASCEND_RT_VISIBLE_DEVICES 设置为实际分配的四张卡的 ID，逗号分隔。
+: "${ASCEND_RT_VISIBLE_DEVICES:?请先指定分配的四张开发卡}"
 export VLLM_USE_V2_MODEL_RUNNER=1
 export VLLM_ASCEND_DSPARK_EAGER_SURVIVAL_THRESHOLD=0.4
 
 vllm serve /path/to/Qwen3.6-27B \
   --enforce-eager \
+  --tensor-parallel-size 4 \
   --dtype bfloat16 \
   --speculative-config '{
     "method": "dspark",
@@ -29,8 +33,9 @@ vllm serve /path/to/Qwen3.6-27B \
   }'
 ```
 
-这里 0.4 是测试示例，不是上游默认值。先用 TP=1、同步调度测试；TP 的
-confidence 以 TP rank 0 广播对齐，仍需后续多卡验收。当前 guard 限制
+这里 0.4 是测试示例，不是上游默认值。模型验证固定 TP=4、同步调度；TP 的
+confidence 以 TP rank 0 广播对齐，四个 rank 必须使用相同的裁剪长度与请求顺序。
+TP=4 是本阶段必测配置，尚未上机验收。当前 guard 限制
 PP=PCP=DCP=1、无 LoRA/DBO、K 在 1..15。模型测试使用 BF16、禁用 prefix cache
 以减少初始变量；prefix cache、异步调度和多卡并非本次已验证能力。
 
@@ -88,10 +93,11 @@ flowchart LR
 ## 编译及验证
 
 在已有匹配 CANN、torch_npu、vLLM 0.28.0 的 Ascend 开发环境中，从**新分支**
-根目录执行源码构建。沿用该机器正确的 SOC_VERSION，例如 910B1：
+根目录执行源码构建。沿用该 910B4 机器已验证的 SOC_VERSION 与 CANN 环境，
+不要直接复制其他芯片的构建配置：
 
 ```bash
-export SOC_VERSION=ascend910b1
+: "${SOC_VERSION:?请设置与本机910B4及CANN匹配的编译目标}"
 COMPILE_CUSTOM_KERNELS=1 pip install -v -e . --no-deps --no-build-isolation
 ```
 
@@ -124,6 +130,9 @@ logger/package/symbolic-meta 检查通过。未运行完整 UT、CANN 构建及 
 
 ### NPU 算子门槛
 
+单算子不加载 27B 模型，仍可用开发卡中的任意一张运行；在单独 shell 中
+将 `ASCEND_RT_VISIBLE_DEVICES` 设置为该卡 ID。模型测试前恢复四卡可见设置。
+
 ```bash
 pytest -sv tests/e2e/nightly/single_node/ops/singlecard_ops/test_eager_gdn_varlen.py
 ```
@@ -135,12 +144,15 @@ pytest -sv tests/e2e/nightly/single_node/ops/singlecard_ops/test_eager_gdn_varle
 ### 模型门槛
 
 ```bash
+# 必须选择实际分配的四张开发卡；测试会检查可见设备配置。
+: "${ASCEND_RT_VISIBLE_DEVICES:?请先指定分配的四张开发卡}"
 export VLLM_TEST_QWEN36_MODEL=/path/to/Qwen3.6-27B
 export VLLM_TEST_DSPARK_MODEL=/path/to/DSpark
 pytest -sv tests/e2e/nightly/single_node/spec_decode/test_qwen36_dspark_eager_survival.py
 ```
 
-四请求 greedy 对比 fixed K 与阈值 0 / 0.4 / 1，各自在独立进程中创建 engine。
+TP=4、四请求 greedy 对比 fixed K 与阈值 0 / 0.4 / 1，各自在独立进程中
+顺序创建 engine，共用同一组四张开发卡。不要用 pytest-xdist 并发运行这些用例。
 输出不同应定位首个层级差异，不能直接降低测试标准。随机采样需要另外做分布
 验证，同 seed 逐 token 一致不作为跨裁剪策略的唯一判据。
 
