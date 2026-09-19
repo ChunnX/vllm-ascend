@@ -82,7 +82,9 @@ class AscendDSparkSpeculator(DSparkSpeculator):
         return model
 
     def init_cudagraph_manager(self, cudagraph_mode: CUDAGraphMode) -> None:
-        if self.speculative_config.enforce_eager:
+        from vllm_ascend.worker.v2.spec_decode.dspark.eager_config import eager_survival_threshold
+
+        if self.speculative_config.enforce_eager or eager_survival_threshold(self.vllm_config) is not None:
             cudagraph_mode = CUDAGraphMode.NONE
         super().init_cudagraph_manager(cudagraph_mode)
         # The Ascend graph manager is patched onto the upstream module and

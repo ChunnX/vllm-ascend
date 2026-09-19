@@ -19,6 +19,7 @@ from dataclasses import dataclass, fields
 import torch
 from vllm.config import VllmConfig
 from vllm.distributed import get_pcp_group
+from vllm.logger import logger
 from vllm.v1.attention.backend import AttentionCGSupport, CommonAttentionMetadata
 from vllm.v1.attention.backends.gdn_attn import (
     GDNAttentionBackend,
@@ -32,7 +33,6 @@ from vllm.v1.attention.backends.utils import (
     mamba_get_block_table_tensor,
     split_decodes_and_prefills,
 )
-from vllm.logger import logger
 from vllm.v1.kv_cache_interface import AttentionSpec
 
 from vllm_ascend.ops.triton.fla.utils import (
@@ -310,6 +310,9 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
         device: torch.device,
     ):
         super().__init__(kv_cache_spec, layer_names, vllm_config, device)
+        from vllm_ascend.worker.v2.spec_decode.dspark.eager_config import eager_survival_threshold
+
+        self.eager_survival_test = eager_survival_threshold(vllm_config) is not None
         sequence_index_capacity = max(
             self.vllm_config.scheduler_config.max_num_seqs,
             self.decode_cudagraph_max_bs,
@@ -588,21 +591,6 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
         num_accepted_tokens[fold_indices.to(num_accepted_tokens.device)] = self.num_spec + 1
         return spec_sequence_masks_cpu, num_accepted_tokens
 
-    def build(  # type: ignore[override]
-        self,
-        common_prefix_len: int,
-        common_attn_metadata: CommonAttentionMetadata,
-        num_accepted_tokens: torch.Tensor | None = None,
-        num_decode_draft_tokens_cpu: torch.Tensor | None = None,
-        fast_build: bool = False,
-    ) -> GDNAttentionMetadata:
-        if self.use_full_cuda_graph and self.use_spec_decode:
-            common_attn_metadata = _remove_spec_graph_padding_queries(
-                common_attn_metadata,
-                num_decode_draft_tokens_cpu,
-            )
-        m = _treat_single_token_prefills_with_state_as_decodes(common_attn_metadata)
-
     def _compute_shared_batch_plan(
         self,
         m: CommonAttentionMetadata,
@@ -630,7 +618,7 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
             num_reqs = num_decode_draft_tokens_cpu.numel()
             spec_sequence_masks_cpu = self.spec_sequence_masks_cpu[:num_reqs]
             runtime_draft_tokens = num_decode_draft_tokens_cpu[num_decode_draft_tokens_cpu >= 0]
-            if runtime_draft_tokens.sum().item() > 0:
+            if runtime_draft_tokens.sum().item() > 0 or getattr(self, "eager_survival_test", False):
                 torch.ge(
                     num_decode_draft_tokens_cpu,
                     0,
@@ -986,9 +974,7 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
         batch_shared_cache: dict | None = None,
     ) -> GDNAttentionMetadata:
         m = common_attn_metadata
-        plan = self._get_shared_batch_plan(
-            m, num_accepted_tokens, num_decode_draft_tokens_cpu, batch_shared_cache
-        )
+        plan = self._get_shared_batch_plan(m, num_accepted_tokens, num_decode_draft_tokens_cpu, batch_shared_cache)
 
         num_prefills = plan.num_prefills
         num_decodes = plan.num_decodes
@@ -1148,6 +1134,7 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
             non_spec_chunked_prefill_metadata,
             non_spec_conv1d_cache_indices,
         )
+        attn_metadata.use_eager_varlen = getattr(self, "eager_survival_test", False)
         attn_metadata = self._attach_spec_decode_metadata(
             attn_metadata,
         )

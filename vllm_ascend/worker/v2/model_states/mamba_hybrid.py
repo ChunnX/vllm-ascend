@@ -75,6 +75,12 @@ class AscendMambaHybridModelState(MambaHybridModelState, AscendModelState):
             if num_draft_tokens_per_req is not None:
                 is_decode = input_batch.num_scheduled_tokens == num_draft_tokens_per_req + 1
                 spec_decode_mask = (num_draft_tokens_per_req > 0) & is_decode
+                from vllm_ascend.worker.v2.spec_decode.dspark.eager_config import eager_survival_threshold
+
+                if eager_survival_threshold(self.vllm_config) is not None:
+                    # A zero-draft decode still needs the previous accepted
+                    # selector. Keep it on the fixed candidate-state-row path.
+                    spec_decode_mask = is_decode & ~input_batch.is_prefilling_np
                 num_decode_draft_tokens_np[: input_batch.num_reqs] = np.where(
                     spec_decode_mask,
                     num_draft_tokens_per_req,

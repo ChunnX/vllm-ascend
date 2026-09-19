@@ -36,6 +36,14 @@ def _strict_binary_env(name: str, default: str = "0") -> bool:
 
 
 env_variables: dict[str, Callable[[], Any]] = {
+    # Explicit diagnostic policy: None preserves upstream AV. [0,1] selects
+    # synchronous survival-prefix trimming, requiring DSpark AV and eager target
+    # and draft. Not sensitive. This path intentionally pays D2H synchronization.
+    "VLLM_ASCEND_DSPARK_EAGER_SURVIVAL_THRESHOLD": lambda: (
+        float(os.environ["VLLM_ASCEND_DSPARK_EAGER_SURVIVAL_THRESHOLD"])
+        if "VLLM_ASCEND_DSPARK_EAGER_SURVIVAL_THRESHOLD" in os.environ
+        else None
+    ),
     # max compile thread number for package building. Usually, it is set to
     # the number of CPU cores. If not set, the default value is None, which
     # means all number of CPU cores will be used.
@@ -91,18 +99,14 @@ env_variables: dict[str, Callable[[], Any]] = {
     # DFlash) draft model's non-causal attention. The sink op takes device-side
     # seq_lens directly and does tiling on AICPU, removing the seq_lens.tolist()
     # host sync in the draft hot path. Disabled by default.
-    "VLLM_ASCEND_ENABLE_DSPARK_FIA_SINK": lambda: bool(
-        int(os.getenv("VLLM_ASCEND_ENABLE_DSPARK_FIA_SINK", "0"))
-    ),
+    "VLLM_ASCEND_ENABLE_DSPARK_FIA_SINK": lambda: bool(int(os.getenv("VLLM_ASCEND_ENABLE_DSPARK_FIA_SINK", "0"))),
     # Minimum KV-cache group width (layers per group). 0 disables the override
     # and keeps upstream grouping exactly. A positive value raises the group
     # width to at least this many layers, so a small heterogeneous draft bucket
     # (DSpark/DFlash) can no longer drag the width down and split a large
     # Mamba/attention bucket into many groups. E.g. set 16 for a DSpark draft
     # with 5 draft + 16 base + 48 mamba layers to collapse 15 groups into 5.
-    "VLLM_ASCEND_KV_GROUP_MIN_SIZE": lambda: int(
-        os.getenv("VLLM_ASCEND_KV_GROUP_MIN_SIZE", "0")
-    ),
+    "VLLM_ASCEND_KV_GROUP_MIN_SIZE": lambda: int(os.getenv("VLLM_ASCEND_KV_GROUP_MIN_SIZE", "0")),
 }
 
 # end-env-vars-definition

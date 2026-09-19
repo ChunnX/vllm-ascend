@@ -183,7 +183,10 @@
  
      if (!qslAbsent && isDecodeMode && inputMode == 2) {
          const int64_t batchFromQsl = qslSize - 1;
-         if (batchFromQsl != batch) {
+         // Explicit boundaries are authoritative even when T == B: a long
+         // request plus empty rows can have the same shape as uniform decode.
+         // Keep runMode=UPDATE; only select the varlen input layout.
+         {
              inputMode = 0;
              cuSeqlen = xShape.GetDim(0);
              batch = batchFromQsl;

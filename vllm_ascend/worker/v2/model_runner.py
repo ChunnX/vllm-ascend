@@ -97,6 +97,7 @@ class NPUModelRunner(GPUModelRunner):
         # Adaptive verification uses this flag to apply FIA-specific query
         # boundary and sequence length padding during FULL graph execution.
         self.use_fia = False
+        self.eager_survival_test = False
         # FusedMoE can be constructed by the parent initializer and reads this
         # capacity while setting up MC2 communication.
         set_potential_max_tokens(vllm_config)
@@ -251,6 +252,9 @@ class NPUModelRunner(GPUModelRunner):
         # vLLM 0.29 already fixes wrapped Mamba block-table sizing upstream.
         if vllm_version_is("0.28.0"):
             kv_cache_config = unwrap_mamba_kv_cache_groups(kv_cache_config)
+        from vllm_ascend.worker.v2.spec_decode.dspark.eager_config import eager_survival_threshold
+
+        self.eager_survival_test = eager_survival_threshold(self.vllm_config) is not None
         with graph_manager_wrapper(self):
             super().initialize_kv_cache(kv_cache_config)
             if self.pcp_manager is not None:
@@ -409,6 +413,8 @@ class NPUModelRunner(GPUModelRunner):
         )
         num_scheduled_tokens_upper_bound = num_scheduled_tokens_np
         if adaptive_verification_active:
+            if getattr(self, "eager_survival_test", False):
+                adaptive_verification_manager.prepare_request_order(req_ids)
             num_scheduled_tokens_np, cu_num_logits_np = adaptive_verification_manager.compact_batch(
                 num_draft_tokens_per_req, num_scheduled_tokens_np, cu_num_logits_np
             )
@@ -444,7 +450,7 @@ class NPUModelRunner(GPUModelRunner):
             total_num_logits = num_reqs * num_bonus_tokens + total_num_draft_tokens
 
             # Non-fia backends skip padding query boundary when using adaptive verification
-            if self.use_fia:
+            if self.use_fia or getattr(self, "eager_survival_test", False):
                 query_start_loc_np[: num_reqs + 1] = query_start_loc[: num_reqs + 1].cpu().numpy()
                 query_start_loc_np[num_reqs + 1 :] = int(query_start_loc_np[num_reqs])
 
@@ -490,7 +496,7 @@ class NPUModelRunner(GPUModelRunner):
             self.input_buffers.seq_lens,
         )
         seq_lens = self.input_buffers.seq_lens[:num_reqs_padded]
-        if adaptive_verification_active and self.use_fia:
+        if adaptive_verification_active and (self.use_fia or getattr(self, "eager_survival_test", False)):
             self.input_buffers.seq_lens_np[:num_reqs] = seq_lens[:num_reqs].cpu().numpy()
 
         # Pad for full CUDA graph mode.
@@ -869,6 +875,11 @@ def graph_manager_wrapper(model_runner):
         lora_capture_cases: list[int] | None = None,
         varlen_decode: bool = False,
     ):
+        if getattr(model_runner, "eager_survival_test", False):
+            # v0.28 unconditionally upgrades AV to FULL_AND_PIECEWISE. The
+            # threshold lane has no graph cost model and must remain eager.
+            cudagraph_mode = CUDAGraphMode.NONE
+            vllm_config.compilation_config.cudagraph_mode = CUDAGraphMode.NONE
         return ModelAclGraphManager(
             vllm_config,
             device,
