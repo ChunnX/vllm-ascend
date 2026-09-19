@@ -1,0 +1,53 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Opt-in NPU/model gate; each mode owns a fresh engine process and state cache."""
+
+import json
+import os
+import subprocess
+import sys
+
+import pytest
+
+
+@pytest.mark.parametrize("threshold", [0.0, 0.4, 1.0])
+def test_greedy_eager_survival_matches_fixed_k(threshold):
+    model = os.getenv("VLLM_TEST_QWEN36_MODEL")
+    draft = os.getenv("VLLM_TEST_DSPARK_MODEL")
+    if not model or not draft:
+        pytest.skip("Set VLLM_TEST_QWEN36_MODEL and VLLM_TEST_DSPARK_MODEL to local checkpoints")
+    program = r"""
+import json,sys
+from vllm import LLM, SamplingParams
+model,draft,adaptive=json.loads(sys.argv[1])
+llm=LLM(model=model, enforce_eager=True, dtype="bfloat16", max_model_len=2048,
+        max_num_seqs=4, enable_prefix_caching=False, async_scheduling=False,
+        tensor_parallel_size=1,
+        speculative_config={"method":"dspark","model":draft,"num_speculative_tokens":7,
+                            "enforce_eager":True,"enable_adaptive_verification":adaptive})
+prompts=["Explain why the sky is blue.", "Calculate 13 times 17, showing the steps.",
+         "Write a short story about a lost key.", "List three properties of prime numbers."]
+outputs=llm.generate(prompts, SamplingParams(temperature=0, max_tokens=48, seed=17))
+print("EAGER_AV_RESULT="+json.dumps([list(o.outputs[0].token_ids) for o in outputs]))
+"""
+
+    def run(adaptive):
+        env = os.environ.copy()
+        env["VLLM_USE_V2_MODEL_RUNNER"] = "1"
+        key = "VLLM_ASCEND_DSPARK_EAGER_SURVIVAL_THRESHOLD"
+        env.pop(key, None)
+        if adaptive:
+            env[key] = str(threshold)
+        result = subprocess.run(
+            [sys.executable, "-c", program, json.dumps([model, draft, adaptive])],
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=1800,
+        )
+        assert result.returncode == 0, result.stdout[-12000:] + result.stderr[-12000:]
+        if adaptive:
+            assert "DSpark eager survival verification active" in result.stdout + result.stderr
+        line = next(line for line in result.stdout.splitlines() if line.startswith("EAGER_AV_RESULT="))
+        return json.loads(line.split("=", 1)[1])
+
+    assert run(True) == run(False)

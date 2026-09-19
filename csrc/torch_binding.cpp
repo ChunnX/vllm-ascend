@@ -52,6 +52,7 @@
 #include "attention/chunk_kda_fwd/chunk_kda_fwd_torch_adpt.h"
 #include "attention/kda_gate_cumsum/kda_gate_cumsum_torch_adpt.h"
 #include "attention/kda_layout_swap12/kda_layout_swap12_torch_adpt.h"
+#include "attention/dcut_recurrent_gated_delta_rule/dcut_recurrent_gated_delta_rule_torch_adpt.h"
 #include "attention/recurrent_gated_delta_rule_v310/recurrent_gated_delta_rule_310_torch_adpt.h"
 #include "attention/k2q_csr/k2q_csr_torch_adpt.h"
 #include "attention/msa_index_score/msa_index_score_torch_adpt.h"
@@ -2951,6 +2952,23 @@ TORCH_LIBRARY_EXPAND(CONCAT(_C, _ascend), ops)
         "              bool activate_left=False, "
         "              int dst_type=36) -> (Tensor y, Tensor mxscale)");
     ops.impl("situ_mx_quant", torch::kPrivateUse1, &vllm_ascend::situ_mx_quant);
+
+    ops.def(
+        "npu_dcut_recurrent_gated_delta_rule(Tensor query, "
+        "                                    Tensor key, "
+        "                                    Tensor value, "
+        "                                    Tensor(a!) state, "
+        "                                    *, "
+        "                                    Tensor? beta=None, "
+        "                                    float? scale=None, "
+        "                                    Tensor? query_start_loc=None, "
+        "                                    Tensor? ssm_state_indices=None, "
+        "                                    Tensor? num_accepted_tokens=None, "
+        "                                    Tensor? g=None, "
+        "                                    Tensor? gk=None, "
+        "                                    bool zero_padded_output=False) -> Tensor");
+    ops.impl("npu_dcut_recurrent_gated_delta_rule", torch::kPrivateUse1,
+             &vllm_ascend::npu_dcut_recurrent_gated_delta_rule);
 
 #ifdef VLLM_ENABLE_ATB_AND_DIRECT_KERNELS
     // Direct kernel custom ops

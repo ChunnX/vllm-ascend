@@ -763,6 +763,24 @@ at::Tensor npu_recurrent_gated_delta_rule_meta(
     return output;
 }
 
+at::Tensor npu_dcut_recurrent_gated_delta_rule_meta(
+    const at::Tensor& query,
+    const at::Tensor& key,
+    const at::Tensor& value,
+    at::Tensor& state,
+    const c10::optional<at::Tensor>& beta,
+    const c10::optional<double> scale,
+    const c10::optional<at::Tensor>& query_start_loc,
+    const c10::optional<at::Tensor>& ssm_state_indices,
+    const c10::optional<at::Tensor>& num_accepted_tokens,
+    const c10::optional<at::Tensor>& g,
+    const c10::optional<at::Tensor>& gk,
+    bool zero_padded_output)
+{
+    auto options = value.options().dtype(at::ScalarType::BFloat16);
+    return at::empty_symint(value.sym_sizes(), options);
+}
+
 at::Tensor recurrent_kda_meta(
     const at::Tensor& query,
     const at::Tensor& key,
@@ -2168,6 +2186,9 @@ TORCH_LIBRARY_IMPL_EXPAND(CONCAT(_C, _ascend), Meta, ops) {
     ops.impl("recurrent_kda", &vllm_ascend::meta::recurrent_kda_meta);
     ops.impl("dequant_situ_quant", &vllm_ascend::meta::dequant_situ_quant_meta);
     ops.impl("situ_mx_quant", &vllm_ascend::meta::situ_mx_quant_meta);
+    // D-Cut recurrent_gated_delta_rule meta implementation
+    ops.impl("npu_dcut_recurrent_gated_delta_rule",
+             &vllm_ascend::meta::npu_dcut_recurrent_gated_delta_rule_meta);
     // Launch host print from device
     ops.impl("device_print", &vllm_ascend::meta::device_print_meta);
     // launch host print from device for tensors

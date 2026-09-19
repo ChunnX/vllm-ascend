@@ -1487,3 +1487,11 @@
 #       Remove this patch once upstream `IndexerKVDType` includes `"int8"` (or once
 #       the indexer kv dtype is pluggable like the fp8 kv-cache-dtype mechanism).
 #
+
+# Eager DSpark survival validation (opt-in):
+#   platform/patch_use_v2_model_runner.py removes only the graph-cost-profile
+#   eager restriction when a validated survival threshold is explicitly set.
+#   worker/patch_v2/patch_adaptive_verification.py selects an eager manager with
+#   exact host/device query boundaries; default AV keeps the upstream factory.
+#   No graph capability is promoted. Remove the diagnostic policy/guards when
+#   upstream supports eager cost initialization for hybrid GDN verification.
