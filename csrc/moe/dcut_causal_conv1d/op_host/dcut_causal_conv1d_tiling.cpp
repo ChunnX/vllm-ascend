@@ -19,4 +19,12 @@
 #define IMPL_OP_OPTILING(op_type) \
   gert::OpImplRegisterV2 VAR_UNUSED DCUT_CAT(op_impl_register_optiling_, op_type) = gert::OpImplRegisterV2(DCUT_STRINGIFY_EXPAND(op_type))
 
+// The torch adapter requires query_start_loc, so this operator always knows
+// the real request boundaries and must never let the host re-derive them from
+// the shapes. Without this the packed varlen batch the D-Cut speculative path
+// passes -- one request holding the whole verification window beside empty
+// rows -- is read as one token per request whenever the token count equals the
+// request count, which the FULL graph's fixed capture shapes make routine.
+#define CAUSAL_CONV1D_QUERY_START_LOC_DEFINES_LAYOUT 1
+
 #include "../../../../csrc/moe/causal_conv1d/op_host/causal_conv1d_tiling.cpp"

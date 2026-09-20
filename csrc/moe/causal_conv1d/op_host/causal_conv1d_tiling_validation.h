@@ -15,6 +15,18 @@
  #include "tiling_base/tiling_util.h"
  #include "causal_conv1d_tiling_utils.h"
  #include "../op_kernel/causal_conv1d_tiling_data.h"
+
+ // A 2D decode input carries no request boundaries of its own, so this host
+ // reads one token per request out of the shapes. That inference is only safe
+ // when the caller has no other way to say otherwise. A caller that always
+ // supplies queryStartLoc does, and for it the boundaries are whatever the qsl
+ // says -- including a request that owns several tokens next to requests that
+ // own none, a shape the token-per-request reading cannot express and, worse,
+ // accepts silently whenever the token count happens to equal the request
+ // count. Such a caller defines this to 1 before including the tiling unit.
+ #ifndef CAUSAL_CONV1D_QUERY_START_LOC_DEFINES_LAYOUT
+ #define CAUSAL_CONV1D_QUERY_START_LOC_DEFINES_LAYOUT 0
+ #endif
  
  namespace optiling::causal_conv1d_host {
  
@@ -183,7 +195,8 @@
  
      if (!qslAbsent && isDecodeMode && inputMode == 2) {
          const int64_t batchFromQsl = qslSize - 1;
-         if (batchFromQsl != batch) {
+         const bool qslDefinesLayout = (CAUSAL_CONV1D_QUERY_START_LOC_DEFINES_LAYOUT != 0);
+         if (qslDefinesLayout || batchFromQsl != batch) {
              inputMode = 0;
              cuSeqlen = xShape.GetDim(0);
              batch = batchFromQsl;
