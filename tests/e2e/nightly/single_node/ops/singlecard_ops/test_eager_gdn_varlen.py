@@ -12,7 +12,9 @@ from vllm_ascend.utils import enable_custom_op
 
 @pytest.fixture(scope="module", autouse=True)
 def initialize_custom_operators():
-    assert enable_custom_op(), "This gate requires the rebuilt Ascend custom operators"
+    assert enable_custom_op(), "This gate requires the installed Ascend custom operators"
+    for name in ("npu_dcut_causal_conv1d", "npu_dcut_recurrent_gated_delta_rule"):
+        assert hasattr(torch.ops._C_ascend, name), f"The loaded extension must register {name}"
     torch.npu.set_compile_mode(jit_compile=False)
 
 
@@ -40,19 +42,17 @@ def test_conv_varlen_matches_cpu_golden(lengths):
     )
     device_state = state.npu()
     output = torch.empty_like(x, device="npu")
-    torch.ops._C_ascend.npu_causal_conv1d_custom(
+    torch.ops._C_ascend.npu_dcut_causal_conv1d(
         output,
         x.npu(),
         weight.npu(),
         conv_state=device_state,
-        bias_opt=bias.npu(),
-        query_start_loc_opt=torch.from_numpy(qsl).npu(),
-        cache_indices_opt=torch.from_numpy(indices).npu(),
-        initial_state_mode_opt=None,
-        num_accepted_tokens_opt=torch.from_numpy(accepted).npu(),
+        bias=bias.npu(),
+        query_start_loc=torch.from_numpy(qsl).npu(),
+        cache_indices=torch.from_numpy(indices).npu(),
+        num_accepted_tokens=torch.from_numpy(accepted).npu(),
         activation_mode=1,
         pad_slot_id=-1,
-        run_mode=1,
     )
     torch.npu.synchronize()
     torch.testing.assert_close(output.cpu().float(), torch.from_numpy(expected).float(), rtol=2e-2, atol=2e-2)

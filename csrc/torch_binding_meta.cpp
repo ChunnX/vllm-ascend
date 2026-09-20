@@ -708,6 +708,21 @@ at::Tensor npu_causal_conv1d_custom_meta(
     return output;
 }
 
+at::Tensor npu_dcut_causal_conv1d_meta(
+    const at::Tensor& output,
+    const at::Tensor& x,
+    const at::Tensor& weight,
+    const at::Tensor& conv_state,
+    const c10::optional<at::Tensor>& bias,
+    const c10::optional<at::Tensor>& query_start_loc,
+    const c10::optional<at::Tensor>& cache_indices,
+    const c10::optional<at::Tensor>& num_accepted_tokens,
+    int64_t activation_mode,
+    int64_t pad_slot_id)
+{
+    return output;
+}
+
 at::Tensor npu_causal_conv1d_310_meta(
     const at::Tensor& x,
     const at::Tensor& weight,
@@ -2242,6 +2257,7 @@ TORCH_LIBRARY_IMPL_EXPAND(CONCAT(_C, _ascend), Meta, ops) {
     ops.impl("npu_copy_and_expand_eagle_inputs", &vllm_ascend::meta::npu_copy_and_expand_eagle_inputs_meta);
     // causal_conv1d_fn
     ops.impl("npu_causal_conv1d_custom", &vllm_ascend::meta::npu_causal_conv1d_custom_meta);
+    ops.impl("npu_dcut_causal_conv1d", &vllm_ascend::meta::npu_dcut_causal_conv1d_meta);
     ops.impl("moe_gating_top_k_hash", &vllm_ascend::meta::moe_gating_top_k_hash_meta);
     ops.impl("compressor", &vllm_ascend::meta::compressor_meta);
     ops.impl("compressor_metadata", &vllm_ascend::meta::compressor_metadata_meta);

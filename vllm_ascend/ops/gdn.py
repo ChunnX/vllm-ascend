@@ -403,20 +403,34 @@ class AscendGatedDeltaNetAttention(GatedDeltaNetAttention):
             spec_causal_conv1d_meta = attn_metadata.spec_decode_metadata.spec_causal_conv1d
             spec_query_start_loc_device = spec_causal_conv1d_meta.query_start_loc
             output_spec = torch.empty_like(mixed_qkv_spec)
-            torch.ops._C_ascend.npu_causal_conv1d_custom(
-                output_spec,
-                mixed_qkv_spec,
-                conv_weights_T,
-                conv_state=self_kv_cache[0],
-                bias_opt=self.conv1d.bias,
-                query_start_loc_opt=spec_query_start_loc_device,
-                cache_indices_opt=spec_causal_conv1d_meta.cache_indices,
-                initial_state_mode_opt=None,
-                num_accepted_tokens_opt=spec_causal_conv1d_meta.num_accepted_tokens,
-                activation_mode=activation_num,
-                pad_slot_id=PAD_SLOT_ID,
-                run_mode=1,
-            )
+            if getattr(attn_metadata, "use_eager_varlen", False):
+                torch.ops._C_ascend.npu_dcut_causal_conv1d(
+                    output_spec,
+                    mixed_qkv_spec,
+                    conv_weights_T,
+                    conv_state=self_kv_cache[0],
+                    bias=self.conv1d.bias,
+                    query_start_loc=spec_query_start_loc_device,
+                    cache_indices=spec_causal_conv1d_meta.cache_indices,
+                    num_accepted_tokens=spec_causal_conv1d_meta.num_accepted_tokens,
+                    activation_mode=activation_num,
+                    pad_slot_id=PAD_SLOT_ID,
+                )
+            else:
+                torch.ops._C_ascend.npu_causal_conv1d_custom(
+                    output_spec,
+                    mixed_qkv_spec,
+                    conv_weights_T,
+                    conv_state=self_kv_cache[0],
+                    bias_opt=self.conv1d.bias,
+                    query_start_loc_opt=spec_query_start_loc_device,
+                    cache_indices_opt=spec_causal_conv1d_meta.cache_indices,
+                    initial_state_mode_opt=None,
+                    num_accepted_tokens_opt=spec_causal_conv1d_meta.num_accepted_tokens,
+                    activation_mode=activation_num,
+                    pad_slot_id=PAD_SLOT_ID,
+                    run_mode=1,
+                )
             mixed_qkv_spec = output_spec
 
         # 1.2: Process the remaining part
