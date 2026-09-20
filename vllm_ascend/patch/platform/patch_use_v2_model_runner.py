@@ -43,9 +43,9 @@ def _patched_get_unsupported_features(self) -> list[str]:
         # The release GPU runner rejects non-MLA PCP. AscendPCPManager owns
         # PCP execution and validates its model, graph and speculator limits.
         unsupported.remove("prefill context parallelism")
-    from vllm_ascend.worker.v2.spec_decode.dspark.eager_config import eager_survival_threshold
+    from vllm_ascend.worker.v2.spec_decode.dspark.eager_config import eager_adaptive_lane_active
 
-    if eager_survival_threshold(self) is not None:
+    if eager_adaptive_lane_active(self):
         # Only the no-cost-table restriction is waived; PP/LoRA/etc. stay gated.
         reason = "adaptive verification with enforce_eager/cudagraph_mode=none"
         if reason in unsupported:

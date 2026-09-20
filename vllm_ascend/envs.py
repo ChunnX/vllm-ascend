@@ -44,6 +44,12 @@ env_variables: dict[str, Callable[[], Any]] = {
         if "VLLM_ASCEND_DSPARK_EAGER_SURVIVAL_THRESHOLD" in os.environ
         else None
     ),
+    # Opt-in eager lane B: run the real upstream AdaptiveVerificationManager
+    # (cost-argmax budget + device survival top-k + async D2H double buffer) with
+    # an injected synthetic cost curve, since eager has no cudagraph profiling to
+    # price a real one. Requires DSpark AV and an eager target/draft. Default 0
+    # (off). Not sensitive. Mutually exclusive with the survival-threshold lane.
+    "VLLM_ASCEND_DSPARK_EAGER_UPSTREAM_AV": lambda: bool(int(os.getenv("VLLM_ASCEND_DSPARK_EAGER_UPSTREAM_AV", "0"))),
     # max compile thread number for package building. Usually, it is set to
     # the number of CPU cores. If not set, the default value is None, which
     # means all number of CPU cores will be used.

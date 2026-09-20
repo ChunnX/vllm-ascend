@@ -261,9 +261,11 @@ class NPUModelRunner(GPUModelRunner):
         # vLLM 0.29 already fixes wrapped Mamba block-table sizing upstream.
         if vllm_version_is("0.28.0"):
             kv_cache_config = unwrap_mamba_kv_cache_groups(kv_cache_config)
-        from vllm_ascend.worker.v2.spec_decode.dspark.eager_config import eager_survival_threshold
+        from vllm_ascend.worker.v2.spec_decode.dspark.eager_config import eager_adaptive_lane_active
 
-        self.eager_survival_test = eager_survival_threshold(self.vllm_config) is not None
+        # True for either eager AV lane (survival-threshold or upstream manager);
+        # both share the ragged-decode plumbing this flag gates.
+        self.eager_survival_test = eager_adaptive_lane_active(self.vllm_config)
         with graph_manager_wrapper(self):
             # vLLM 0.28 GPUModelRunner.initialize_kv_cache does not accept
             # kv_cache_allocation_context. Gate it the same way as other
@@ -446,7 +448,11 @@ class NPUModelRunner(GPUModelRunner):
         )
         num_scheduled_tokens_upper_bound = num_scheduled_tokens_np
         if adaptive_verification_active:
-            if getattr(self, "eager_survival_test", False):
+            # prepare_request_order belongs to the survival-threshold manager only;
+            # the upstream manager (lane B) does not need it.
+            if getattr(self, "eager_survival_test", False) and hasattr(
+                adaptive_verification_manager, "prepare_request_order"
+            ):
                 adaptive_verification_manager.prepare_request_order(req_ids)
             num_scheduled_tokens_np, cu_num_logits_np = adaptive_verification_manager.compact_batch(
                 num_draft_tokens_per_req, num_scheduled_tokens_np, cu_num_logits_np

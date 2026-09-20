@@ -310,9 +310,10 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
         device: torch.device,
     ):
         super().__init__(kv_cache_spec, layer_names, vllm_config, device)
-        from vllm_ascend.worker.v2.spec_decode.dspark.eager_config import eager_survival_threshold
+        from vllm_ascend.worker.v2.spec_decode.dspark.eager_config import eager_adaptive_lane_active
 
-        self.eager_survival_test = eager_survival_threshold(vllm_config) is not None
+        # True for either eager AV lane; gates the ragged-decode GDN metadata path.
+        self.eager_survival_test = eager_adaptive_lane_active(vllm_config)
         sequence_index_capacity = max(
             self.vllm_config.scheduler_config.max_num_seqs,
             self.decode_cudagraph_max_bs,
