@@ -37,6 +37,13 @@ print("EAGER_AV_RESULT="+json.dumps([list(o.outputs[0].token_ids) for o in outpu
     def run(adaptive):
         env = os.environ.copy()
         env["VLLM_USE_V2_MODEL_RUNNER"] = "1"
+        # A TP=4 engine spawns worker processes; the default fork start method
+        # inherits the launcher's torch thread pool and aborts worker init with
+        # "Invalid thread pool!". Spawn each worker fresh, and use the same NPU
+        # allocator and HCCL buffer settings the working four-card model tests do.
+        env["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
+        env.setdefault("PYTORCH_NPU_ALLOC_CONF", "expandable_segments:True")
+        env.setdefault("HCCL_BUFFSIZE", "2048")
         key = "VLLM_ASCEND_DSPARK_EAGER_SURVIVAL_THRESHOLD"
         env.pop(key, None)
         if adaptive:
