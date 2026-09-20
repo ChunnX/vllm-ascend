@@ -1,10 +1,10 @@
 # Qwen3.6 DSpark eager survival 验证分支
 
-服务器按顺序执行的 pytest 命令和已知失败说明见 [910B4 测试清单](server_validation.md)。
+服务器按顺序执行的命令、算子重装步骤和日志读法见 [910B4 验证顺序](server_validation.md)。
 
 ## 版本与范围
 
-- 分支：`dspark_adaptive_eager_b5180b`
+- 分支：`dspark_adaptive_claude`
 - 起点：`b5180b821fe2c8672d6b6f82e2cd0adcc47c0943`
 - vLLM：v0.28.0，MRV2。
 - 验证服务器：Ascend 910B4，8×32GB；仅使用分配的 4 张开发卡，模型固定 TP=4。
@@ -41,11 +41,20 @@ TP=4 是本阶段必测配置，尚未上机验收。当前 guard 限制
 PP=PCP=DCP=1、无 LoRA/DBO、K 在 1..15。模型测试使用 BF16、禁用 prefix cache
 以减少初始变量；prefix cache、异步调度和多卡并非本次已验证能力。
 
-不设置阈值环境变量时，manager factory 原样调用上游逻辑；这**不意味着**
-当前 GDN 已支持上游成本预算/FULL。上游原有 capability 限制仍然存在。
 阈值设置为 0 保留全部可用 drafts（仍受 logits 容量上限约束），适合验证新
 GDN 路径与固定 K 的等价性。阈值设置为 1 通常会大幅裁剪，但 confidence=1
 及缺失 confidence 的保守回退可以保留 drafts。
+
+另有一条 lane B：`VLLM_ASCEND_DSPARK_EAGER_UPSTREAM_AV=1` 跑真正的上游
+`AdaptiveVerificationManager`——cost-argmax 预算加 device 端 survival top-k，
+也就是入图阶段会复用的两条路径。eager 没有图 capture 可以给成本定价，所以
+构造时注入一条合成的凸成本曲线；预算因此是布局信号，不是性能信号。两条 lane
+互斥，同时设置直接报错。两条都共用同一套准入门槛与 ragged decode 管路。
+
+两个环境变量都不设置时，manager factory 原样调用上游逻辑；这**不意味着**
+当前 GDN 已支持上游成本预算/FULL。上游原有 capability 限制仍然存在：GDN 是
+SSM backend，默认 opt out `supports_device_cpu_query_lens_mismatch`，所以
+`enable_adaptive_verification=true` 且未选 lane 时上游 factory 会直接拒绝启动。
 
 ## 数据流与语义
 
@@ -82,16 +91,24 @@ flowchart LR
    `AttentionCGSupport`。Target/Drafter manager 均强制 NONE。
 3. Conv1D 和 recurrent 在本 eager lane 中分别调用
    `npu_dcut_causal_conv1d`、`npu_dcut_recurrent_gated_delta_rule`。固定验证和
-   非 speculative 路径保留 baseline 算子。通用 Conv1D host tiling 已恢复 baseline。
+   非 speculative 路径保留 baseline 算子。
 4. 两个独立算子目录与上游快照 `645e05ac71960cc6bf01faca8aba7037dd752002`
-   一致，不修改 host/kernel 算法。仅适配构建列表、Torch 注册和 Python 调用。
+   一致，不修改 kernel 算法。仅适配构建列表、Torch 注册和 Python 调用。
    recurrent 保留 `[B,K+1]` 状态索引宽度，按 qsl 执行本轮 queries，按
    accepted-1 选择历史状态；没有移植 D-Cut 的裁剪 policy。
-5. D-Cut Conv1D 的 host tiling 引用通用 Conv1D 源码，因此独立算子名称不保证
-   自动解决 `T=B` 的长请求加空行布局。保留 `[8,0,0,0,0,0,0,0]` 的 NPU
-   golden 检查，不跳过、不放宽误差。该边界仍待已安装二进制实测。
-6. baseline GDN builder 有两个同名 build，前一个已被 Python 后定义覆盖；删去
-   这段不可达方法以通过 lint，不把其中 FULL 修复混入当前 eager 范围。
+5. D-Cut Conv1D 的 host tiling 复用通用 Conv1D 源码，而那份推断在 token 数
+   恰好等于 request 数时会忽略 `query_start_loc`，把“一个长请求 + 空行”读成
+   每行一个 token。`CAUSAL_CONV1D_QUERY_START_LOC_DEFINES_LAYOUT` 只在 D-Cut
+   的编译单元里置 1，让 qsl 成为唯一权威；通用算子的推断不变，kernel 无改动。
+   这是算子 host 侧的修复，必须重装算子包才生效，见
+   [910B4 测试清单](server_validation.md) 第 0 步。
+6. `build()` 走 `_get_gdn_local_metadata`，两个前处理
+   （`_remove_spec_graph_padding_queries` 与
+   `_treat_single_token_prefills_with_state_as_decodes`）在那里执行。
+   先前拆分 build 时留下一个同名死方法，删去死方法时把这两个调用一起带走了；
+   后者是无条件的，单 token 有状态 prompt chunk 会被误当 prefill，eager 也受影响。
+   现在按 batch 记忆化一次，各 KV cache group 仍各自持有自己的 block table。
+   `tests/ut/ops/test_gdn_attn_builder.py` 有对应的结构与行为回归测试。
 
 ## 编译及验证
 
@@ -105,9 +122,10 @@ COMPILE_CUSTOM_KERNELS=1 pip install -v -e . --no-deps --no-build-isolation
 ```
 
 `setup.py` 会执行 `csrc/build_aclnn.sh`；两个 D-Cut 算子已加入 A2/A3 构建列表
-（保留移入算子的 950 源码/列表，但该硬件不属于本阶段验收范围）。Conv1D 的
-host tiling 保留 baseline。若服务器已经安装两个匹配的 D-Cut 算子及其 Torch
-注册扩展，可直接复用，不要求重新编译。否则再执行上面的构建。重启 worker，确认加载正确的插件和算子，
+（保留移入算子的 950 源码/列表，但该硬件不属于本阶段验收范围）。
+
+**本次必须重新编译。** D-Cut Conv1D 的 host tiling 有修复（见“实现选择”第 5
+条），已安装的旧算子包不含它。重启 worker，确认加载正确的插件和算子，
 避免旧二进制导致 Python 新、算子旧。不要在现有服务使用的环境中覆盖安装。
 
 ### CPU 合同测试
@@ -126,10 +144,9 @@ state 的 selector 测试提取实际 prepare_attn 方法执行。原先验证�
 独立 NumPy golden 与其手算/跨轮测试复用原工作区未跟踪的 `dcut_reference.py`
 及 `test_dcut_cpu_reference.py` 快照，原文件未修改。
 
-本地验证记录（2026-09-20，macOS，Python 3.12 / CPU PyTorch）：上述 37 项
-测试通过；Ruff 0.14.0 check/format、diff whitespace、shell 语法和仓库的
-logger/package/symbolic-meta 检查通过。未运行完整 UT、CANN 构建及 NPU 测试；
-以下门槛必须在 Ascend 机器上另行执行。
+本地验证记录（2026-09-20，macOS，Python 3.12 / CPU PyTorch）：上述 42 项
+测试通过。未运行完整 UT、CANN 构建及 NPU 测试；以下门槛必须在 Ascend 机器上
+另行执行。
 
 ### NPU 算子门槛
 
@@ -143,6 +160,7 @@ pytest -sv tests/e2e/nightly/single_node/ops/singlecard_ops/test_eager_gdn_varle
 - D-Cut Conv1D：独立数学 golden；T=B、空行、变长、previous accepted > current length。
 - recurrent：独立数学 golden；多轮 8→3/1/4→1/4/0，比较真实输出和完整状态。
 - 算子测试必须先通过，再检查模型接受率；不能只拿同算子 eager 输出作 golden。
+- `[8,0,0,0,0,0,0,0]` 在重装算子包之后应当转为通过。仍失败就停在这一步。
 
 ### 零长度行边界的实际场景
 
@@ -153,24 +171,28 @@ ragged eager batch 若只包含真实请求，每行至少一个 anchor，则 T=
 所有请求都执行一个 token，没有长请求加空行歧义。零 draft 是长度 1，空行才是 0。
 本分支保持 eager；该 padding 测试为后续入图验收保留，不代表 eager 必然产生空行。
 
-### 模型门槛
+### 整网门槛
+
+模型级验证走真实引擎，不用 pytest：
 
 ```bash
-# 必须选择实际分配的四张开发卡；测试会检查可见设备配置。
+# 必须选择实际分配的四张开发卡；脚本会检查可见设备配置。
 : "${ASCEND_RT_VISIBLE_DEVICES:?请先指定分配的四张开发卡}"
 export VLLM_TEST_QWEN36_MODEL=/path/to/Qwen3.6-27B
 export VLLM_TEST_DSPARK_MODEL=/path/to/DSpark
-pytest -sv tests/e2e/nightly/single_node/spec_decode/test_qwen36_dspark_eager_survival.py
+python examples/dspark_eager_adaptive_verify.py
 ```
 
-TP=4、四请求 greedy 对比 fixed K 与阈值 0 / 0.4 / 1，各自在独立进程中
-顺序创建 engine，共用同一组四张开发卡。不要用 pytest-xdist 并发运行这些用例。
-输出不同应定位首个层级差异，不能直接降低测试标准。随机采样需要另外做分布
-验证，同 seed 逐 token 一致不作为跨裁剪策略的唯一判据。
+TP=4、四请求 greedy，依次对比 fixed K 与 `threshold:0/0.4/1`、`upstream`，
+各自在独立进程中顺序创建 engine，共用同一组四张开发卡。lane 未真正生效时
+脚本报错，不会把“baseline 等于自己”算成通过。输出不同应定位首个层级差异，
+不能直接降低判据。随机采样需要另外做分布验证，同 seed 逐 token 一致不作为
+跨裁剪策略的唯一判据。
 
-需要观察 capacities 时设置 `VLLM_LOGGING_LEVEL=DEBUG`，搜索 `DSpark eager AV`。
-保留阈值、每请求 capacity、平均 verification length、accepted length、logits
-及有效 conv/SSM state 的对照。该同步测试实现不用于宣称性能收益。
+裁剪决策以 warning 聚合打印，搜索 `[DSPARK-EAGER-AV`，无需调 DEBUG；
+间隔由 `VLLM_ASCEND_DSPARK_EAGER_AV_LOG_INTERVAL` 控制（默认 50 步）。
+`kept=100%` 表示这一轮没有裁剪，输出相等不能证明变长路径被走到。
+两个 lane 每步各付一次阻塞 D2H，不用于宣称性能收益。
 
 ## 后续阶段
 
