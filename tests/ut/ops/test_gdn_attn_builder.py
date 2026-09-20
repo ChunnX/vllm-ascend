@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
+import ast
 from dataclasses import dataclass
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -1177,9 +1179,7 @@ class TestSharedBatchPlan:
         second = self._make_group_metadatas(1)[0]
         second.num_reqs = 3
 
-        assert builder._shared_batch_plan_key(first, None, None) != builder._shared_batch_plan_key(
-            second, None, None
-        )
+        assert builder._shared_batch_plan_key(first, None, None) != builder._shared_batch_plan_key(second, None, None)
 
     def test_plan_is_computed_once_and_reused(self):
         builder = self._make_plan_builder()
@@ -1309,3 +1309,101 @@ class TestSharedBatchPlan:
 
         with pytest.raises(AssertionError, match="num_decode_tokens"):
             AscendGDNAttentionMetadataBuilder._assert_plan_is_group_independent(make(4), make(5))
+
+
+def test_gdn_builder_defines_build_once_and_routes_through_the_local_view() -> None:
+    """A second ``build`` definition silently shadowed the first one.
+
+    The shadowed definition held the only calls to
+    ``_remove_spec_graph_padding_queries`` and
+    ``_treat_single_token_prefills_with_state_as_decodes``, so both corrections
+    were unreachable while still reading as present. Nothing raises in that
+    state, so guard the structure rather than only the behaviour.
+    """
+    tree = ast.parse(Path(ascend_gdn_attn_builder.__file__).read_text())
+    (class_node,) = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "AscendGDNAttentionMetadataBuilder"
+    ]
+    builds = [node for node in class_node.body if isinstance(node, ast.FunctionDef) and node.name == "build"]
+    assert len(builds) == 1, "a shadowed build() definition is dead code"
+
+    assert "_get_gdn_local_metadata" in {
+        node.func.attr
+        for node in ast.walk(builds[0])
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+
+    (view,) = [
+        node
+        for node in class_node.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_compute_gdn_local_metadata"
+    ]
+    assert {
+        "_remove_spec_graph_padding_queries",
+        "_treat_single_token_prefills_with_state_as_decodes",
+    } <= {node.func.id for node in ast.walk(view) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)}
+
+
+def test_gdn_local_view_zeroes_padding_rows_and_keeps_each_group_block_table() -> None:
+    """Inactive graph rows must be zero-length; the block table must stay local.
+
+    The FIA-padded query boundary gives padding requests a positive length
+    whenever the token count lands inside a graph bucket. Those rows classify
+    as non-speculative, so they fold into ``num_prefills`` and cost the batch
+    its pure-spec persistent graph buffers.
+
+    The correction is computed once per invocation, because it rebuilds
+    ``query_start_loc`` and the plan cache identifies a batch by tensor address.
+    What must NOT be shared is the metadata object around it: it carries the
+    block table this group addresses, and ``build`` derives this group's conv
+    and recurrent state indices from it, so one shared object sends every Mamba
+    group to the first group's state slots.
+    """
+    batch_spec = BatchSpec(
+        seq_lens=[64, 64, 0, 0],
+        query_lens=[8, 8, 1, 1],
+        name="spec_rows_plus_positive_length_padding",
+    )
+    common_attn_metadata = create_common_attn_metadata(
+        batch_spec=batch_spec,
+        block_size=16,
+        device=torch.device("cpu"),
+    )
+    builder = _make_builder(
+        device=torch.device("cpu"),
+        num_heads=32,
+        num_speculative_tokens=7,
+        cudagraph_mode=CUDAGraphMode.FULL_DECODE_ONLY,
+    )
+    num_decode_draft_tokens_cpu = torch.tensor([7, 7, -1, -1], dtype=torch.int32)
+
+    batch_shared_cache: dict = {}
+    # build_attn_metadata varies exactly two fields per KV cache group.
+    group0 = common_attn_metadata
+    group1 = common_attn_metadata.replace(
+        block_table_tensor=common_attn_metadata.block_table_tensor + 1000,
+    )
+
+    view0 = builder._get_gdn_local_metadata(group0, num_decode_draft_tokens_cpu, batch_shared_cache)
+    view1 = builder._get_gdn_local_metadata(group1, num_decode_draft_tokens_cpu, batch_shared_cache)
+
+    # The padding rows keep their slot but lose their tokens.
+    assert torch.equal(view0.query_start_loc_cpu, torch.tensor([0, 8, 16, 16, 16], dtype=torch.int32))
+    assert view0.num_actual_tokens == 16
+    assert view0.num_reqs == batch_spec.batch_size
+
+    # One correction for the whole invocation: the second group presents the
+    # same tensors, so the plan key still identifies a single batch.
+    assert view1.query_start_loc_cpu is view0.query_start_loc_cpu
+    assert view1.query_start_loc is view0.query_start_loc
+    assert view1.num_actual_tokens == view0.num_actual_tokens
+
+    # Each group still addresses its own block table.
+    assert view0.block_table_tensor is group0.block_table_tensor
+    assert view1.block_table_tensor is group1.block_table_tensor
+
+    # Without a cache every caller recomputes, so nothing is shared.
+    uncached = builder._get_gdn_local_metadata(group0, num_decode_draft_tokens_cpu, None)
+    assert uncached.query_start_loc_cpu is not view0.query_start_loc_cpu

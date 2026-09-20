@@ -257,6 +257,11 @@ def _build_non_spec_chunked_prefill_metadata(
 # How ``_derive_group_state_indices`` turns this group's block table into state
 # indices. Recorded on the plan so later groups reproduce the branch the first
 # group took without redoing the batch-shape work that selected it.
+# Namespaces this builder's entry in the batch-scoped cache that
+# ``build_attn_metadata`` threads through, so it cannot collide with the
+# shared batch plan's own entry.
+_GDN_LOCAL_METADATA_CACHE_TAG = "gdn_local_metadata"
+
 _STATE_INDEX_NON_SPEC = "non_spec"
 _STATE_INDEX_SPEC_ONLY = "spec_only"
 _STATE_INDEX_SPEC_MIXED = "spec_mixed"
@@ -591,6 +596,82 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
         num_accepted_tokens = num_accepted_tokens.clone()
         num_accepted_tokens[fold_indices.to(num_accepted_tokens.device)] = self.num_spec + 1
         return spec_sequence_masks_cpu, num_accepted_tokens
+
+    def _compute_gdn_local_metadata(
+        self,
+        common_attn_metadata: CommonAttentionMetadata,
+        num_decode_draft_tokens_cpu: torch.Tensor | None,
+    ) -> CommonAttentionMetadata:
+        """GDN-local query view of the batch, before any plan is derived.
+
+        Two corrections have to land before the batch shape is classified:
+        inactive FIA graph rows must become zero-length for the recurrent state
+        update, and a one-token stateful prompt chunk must look like an ordinary
+        decode so it takes the decode path the state indices are built for.
+        """
+        if self.use_full_cuda_graph and self.use_spec_decode:
+            common_attn_metadata = _remove_spec_graph_padding_queries(
+                common_attn_metadata,
+                num_decode_draft_tokens_cpu,
+            )
+        return _treat_single_token_prefills_with_state_as_decodes(common_attn_metadata)
+
+    def _get_gdn_local_metadata(
+        self,
+        common_attn_metadata: CommonAttentionMetadata,
+        num_decode_draft_tokens_cpu: torch.Tensor | None,
+        batch_shared_cache: dict | None,
+    ) -> CommonAttentionMetadata:
+        """Correct the batch once per invocation, not once per KV cache group.
+
+        Both corrections rebuild ``query_start_loc``, and
+        ``_shared_batch_plan_key`` identifies a batch by tensor address, so
+        running them per group would hand every group a distinct view: the plan
+        cache would miss on each one and each group would refresh its graph
+        buffers from its own copy. Memoize on the same batch-scoped cache the
+        plan uses, keyed off the inputs the corrections actually read.
+
+        Cache the corrected fields, never the corrected metadata. The metadata
+        also carries ``block_table_tensor`` and ``slot_mapping`` -- the only two
+        fields ``build_attn_metadata`` varies per group -- and ``build`` derives
+        this group's conv and recurrent state indices from
+        ``m.block_table_tensor``. Handing back one group's object would point
+        every Mamba group at the first group's block table, so nine of the ten
+        groups in a Qwen3.6 hybrid would read and write the wrong state slots.
+        """
+        if batch_shared_cache is None:
+            return self._compute_gdn_local_metadata(common_attn_metadata, num_decode_draft_tokens_cpu)
+
+        ptr = lambda t: None if t is None else t.data_ptr()  # noqa: E731
+        key = (
+            _GDN_LOCAL_METADATA_CACHE_TAG,
+            common_attn_metadata.num_reqs,
+            common_attn_metadata.num_actual_tokens,
+            ptr(common_attn_metadata.query_start_loc),
+            ptr(common_attn_metadata.query_start_loc_cpu),
+            ptr(common_attn_metadata.seq_lens_cpu_upper_bound),
+            ptr(common_attn_metadata.is_prefilling),
+            ptr(num_decode_draft_tokens_cpu),
+        )
+        corrections = batch_shared_cache.get(key)
+        if corrections is None:
+            m = self._compute_gdn_local_metadata(common_attn_metadata, num_decode_draft_tokens_cpu)
+            corrections = (
+                {}
+                if m is common_attn_metadata
+                else {
+                    "query_start_loc": m.query_start_loc,
+                    "query_start_loc_cpu": m.query_start_loc_cpu,
+                    "num_actual_tokens": m.num_actual_tokens,
+                    "is_prefilling": m.is_prefilling,
+                }
+            )
+            batch_shared_cache[key] = corrections
+        if not corrections:
+            return common_attn_metadata
+        # The values are the cached tensors, so every group still presents the
+        # same addresses to the plan key below and the plan is computed once.
+        return common_attn_metadata.replace(**corrections)
 
     def _compute_shared_batch_plan(
         self,
@@ -974,7 +1055,11 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
         fast_build: bool = False,
         batch_shared_cache: dict | None = None,
     ) -> GDNAttentionMetadata:
-        m = common_attn_metadata
+        m = self._get_gdn_local_metadata(
+            common_attn_metadata,
+            num_decode_draft_tokens_cpu,
+            batch_shared_cache,
+        )
         plan = self._get_shared_batch_plan(m, num_accepted_tokens, num_decode_draft_tokens_cpu, batch_shared_cache)
 
         num_prefills = plan.num_prefills
