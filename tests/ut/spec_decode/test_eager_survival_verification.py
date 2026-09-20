@@ -6,6 +6,7 @@ CPU/device tensor copies execute the production source with real CPU torch.
 """
 
 import importlib.util
+import logging
 import sys
 import types
 from pathlib import Path
@@ -17,6 +18,16 @@ import torch
 
 ROOT = Path(__file__).resolve().parents[3]
 PKG = "vllm_ascend.worker.v2.spec_decode.dspark"
+
+# Every Ascend env the eager lanes read. Keep this complete: a missing name
+# raises AttributeError from the stub rather than being defaulted, which is the
+# point -- adding a lane variable without teaching these tests about it should
+# fail here and not silently skip the guard it gates.
+STUB_ENVS = {
+    "VLLM_ASCEND_DSPARK_EAGER_SURVIVAL_THRESHOLD": 0.4,
+    "VLLM_ASCEND_DSPARK_EAGER_UPSTREAM_AV": False,
+    "VLLM_ASCEND_DSPARK_EAGER_AV_LOG_INTERVAL": 50,
+}
 
 
 def load(monkeypatch, name, relative):
@@ -74,9 +85,15 @@ def manager_class(monkeypatch, policy):
         return module
 
     stub("vllm.distributed", get_tp_group=lambda: SimpleNamespace(broadcast=lambda tensor, src: tensor))
-    stub("vllm.logger", logger=SimpleNamespace(debug=lambda *args: None, info=lambda *args: None))
+    stub("vllm.logger", init_logger=lambda name: logging.getLogger(name))
     stub("vllm.v1.worker.gpu.buffer_utils", async_copy_to_gpu=lambda value, out: out.copy_(torch.from_numpy(value)))
     stub("vllm.v1.worker.gpu.spec_decode.adaptive_verification", AdaptiveVerificationManager=object)
+    # ``import vllm_ascend.envs`` binds through the parent package, so the real
+    # ``vllm_ascend/__init__.py`` -- and with it the platform bootstrap that
+    # needs an installed vLLM -- would execute. Stub both halves.
+    envs_module = stub("vllm_ascend.envs", **STUB_ENVS)
+    stub("vllm_ascend", envs=envs_module)
+    load(monkeypatch, f"{PKG}.eager_av_log", "vllm_ascend/worker/v2/spec_decode/dspark/eager_av_log.py")
     return load(
         monkeypatch, f"{PKG}.eager_verification", "vllm_ascend/worker/v2/spec_decode/dspark/eager_verification.py"
     ).EagerSurvivalVerificationManager
@@ -136,19 +153,66 @@ def test_refuse_reorder_between_compact_and_reallocate(manager_class):
         manager.reallocate_drafts(["b", "a"], torch.tensor([0, 2]))
 
 
-def config_gate(policy, value):
+@pytest.fixture
+def av_logger_class(monkeypatch):
+    module = types.ModuleType("vllm.logger")
+    module.init_logger = lambda name: logging.getLogger(name)
+    monkeypatch.setitem(sys.modules, "vllm.logger", module)
+    return load(
+        monkeypatch, f"{PKG}.eager_av_log", "vllm_ascend/worker/v2/spec_decode/dspark/eager_av_log.py"
+    ).EagerAVLogger
+
+
+def test_av_logger_emits_once_per_interval(av_logger_class, caplog):
+    log = av_logger_class(lane="threshold", interval=3)
+    with caplog.at_level(logging.WARNING):
+        for _ in range(7):
+            log.record(num_reqs=2, scheduled_drafts=8, admitted_drafts=4, verify_tokens=6, capacities=[3, 1])
+    lines = [r.getMessage() for r in caplog.records]
+    assert len(lines) == 2  # steps 3 and 6; step 7 is still accumulating
+    assert "[DSPARK-EAGER-AV/threshold]" in lines[0]
+    assert "kept=50.0%" in lines[0]
+    assert "trimmed_steps=3/3" in lines[0]
+    assert "last_caps=[3, 1]" in lines[0]
+
+
+def test_av_logger_sampling_predicts_the_emitting_step(av_logger_class):
+    # Lane B only copies its device capacities when this says the next recorded
+    # step will print, so a wrong answer either loses the field or adds a sync.
+    log = av_logger_class(lane="upstream", interval=3)
+    seen = []
+    for _ in range(6):
+        seen.append(log.sampling())
+        log.record(num_reqs=1, scheduled_drafts=4, admitted_drafts=4, verify_tokens=5)
+    assert seen == [False, False, True, False, False, True]
+
+
+def test_av_logger_reports_untrimmed_steps_without_dividing_by_zero(av_logger_class, caplog):
+    log = av_logger_class(lane="upstream", interval=1)
+    with caplog.at_level(logging.WARNING):
+        log.record(num_reqs=1, scheduled_drafts=0, admitted_drafts=0, verify_tokens=1)
+    message = caplog.records[-1].getMessage()
+    assert "kept=100.0%" in message
+    assert "trimmed_steps=0/1" in message
+    assert "last_caps=n/a" in message
+
+
+def config_gate(policy, value, upstream=False):
     # Load the real guard without importing the Ascend platform bootstrap.
     import ast
 
     source = ROOT / "vllm_ascend/worker/v2/spec_decode/dspark/eager_config.py"
     module = ast.parse(source.read_text())
     module.body = [node for node in module.body if isinstance(node, ast.FunctionDef)]
+    envs = dict(STUB_ENVS)
+    envs["VLLM_ASCEND_DSPARK_EAGER_SURVIVAL_THRESHOLD"] = value
+    envs["VLLM_ASCEND_DSPARK_EAGER_UPSTREAM_AV"] = upstream
     namespace = {
-        "envs_ascend": SimpleNamespace(VLLM_ASCEND_DSPARK_EAGER_SURVIVAL_THRESHOLD=value),
+        "envs_ascend": SimpleNamespace(**envs),
         "validate_threshold": policy.validate_threshold,
     }
     exec(compile(module, str(source), "exec"), namespace)
-    return namespace["eager_survival_threshold"]
+    return namespace
 
 
 def eager_config():
@@ -165,8 +229,31 @@ def eager_config():
 
 
 def test_config_opt_in_only(policy):
-    assert config_gate(policy, None)(object()) is None
-    assert config_gate(policy, 0.4)(eager_config()) == 0.4
+    assert config_gate(policy, None)["eager_survival_threshold"](object()) is None
+    assert config_gate(policy, 0.4)["eager_survival_threshold"](eager_config()) == 0.4
+
+
+def test_upstream_lane_opt_in_and_mutual_exclusion(policy):
+    off = config_gate(policy, None)
+    assert off["eager_upstream_av_enabled"](object()) is False
+    assert off["eager_adaptive_lane_active"](object()) is False
+
+    on = config_gate(policy, None, upstream=True)
+    assert on["eager_upstream_av_enabled"](eager_config()) is True
+    assert on["eager_adaptive_lane_active"](eager_config()) is True
+
+    # Both lanes trim the same budget, so running them together would silently
+    # let one of the two managers win. Refuse instead of picking.
+    both = config_gate(policy, 0.4, upstream=True)
+    with pytest.raises(ValueError):
+        both["eager_survival_threshold"](eager_config())
+
+
+def test_upstream_lane_shares_the_threshold_lane_preconditions(policy):
+    config = eager_config()
+    config.model_config.enforce_eager = False
+    with pytest.raises(ValueError):
+        config_gate(policy, None, upstream=True)["eager_upstream_av_enabled"](config)
 
 
 @pytest.mark.parametrize(
@@ -187,7 +274,7 @@ def test_config_rejects_unvalidated_modes(policy, section, key, value):
     config = eager_config()
     setattr(getattr(config, section), key, value)
     with pytest.raises(ValueError):
-        config_gate(policy, 0.4)(config)
+        config_gate(policy, 0.4)["eager_survival_threshold"](config)
 
 
 def load_method(relative, class_name, method_name, namespace):
@@ -210,6 +297,7 @@ def load_method(relative, class_name, method_name, namespace):
 def test_zero_draft_decode_preserves_previous_accepted_selector(monkeypatch, policy):
     config_module = types.ModuleType(f"{PKG}.eager_config")
     config_module.eager_survival_threshold = lambda _: 0.4
+    config_module.eager_adaptive_lane_active = lambda _: True
     monkeypatch.setitem(sys.modules, config_module.__name__, config_module)
     method = load_method(
         "vllm_ascend/worker/v2/model_states/mamba_hybrid.py",

@@ -29,6 +29,9 @@ from vllm.v1.worker.gpu.spec_decode.adaptive_verification import (
     build_cost_tables_from_curves,
 )
 
+import vllm_ascend.envs as envs_ascend
+from vllm_ascend.worker.v2.spec_decode.dspark.eager_av_log import EagerAVLogger
+
 logger = init_logger(__name__)
 
 # Synthetic verify curve shape. Convex in the token count so each extra
@@ -72,8 +75,7 @@ class AscendEagerUpstreamAVManager(AdaptiveVerificationManager):
         # recorder only ever writes slot 0, but add_request/get_num_tokens read
         # through self._stale_idx.
         self._stale_confidences = [
-            CpuGpuBuffer(max_num_reqs, self.num_speculative_steps, dtype=torch.float32, device=device)
-            for _ in range(2)
+            CpuGpuBuffer(max_num_reqs, self.num_speculative_steps, dtype=torch.float32, device=device) for _ in range(2)
         ]
         self._pending_resets: list[int] = []
         self._stale_idx = 0
@@ -89,10 +91,14 @@ class AscendEagerUpstreamAVManager(AdaptiveVerificationManager):
         self.cost_tables = build_cost_tables_from_curves(
             draft_curve, verify_curve, max_num_reqs, max_batch_tokens, self._cudagraph_limit
         )
-        logger.info(
-            "DSpark eager upstream AV active: synthetic cost curve, real cost-argmax "
-            "budget and device survival top-k, synchronous confidence (no cudagraph, "
-            "no async D2H)"
+        self._log = EagerAVLogger(
+            lane="upstream",
+            interval=envs_ascend.VLLM_ASCEND_DSPARK_EAGER_AV_LOG_INTERVAL,
+        )
+        logger.warning(
+            "[DSPARK-EAGER-AV/upstream] active: synthetic cost curve, real cost-argmax budget "
+            "and device survival top-k, synchronous confidence (no cudagraph, no async D2H). "
+            "The curve is invented, so the chosen budget is a layout signal, not a performance one."
         )
 
     def add_request(self, req_idx: int) -> None:
@@ -109,7 +115,10 @@ class AscendEagerUpstreamAVManager(AdaptiveVerificationManager):
         capacities identical, including survival ties.
         """
         num_reqs = input_batch.num_reqs
-        current = confidence_probs[:num_reqs].detach().float().contiguous()
+        # clone(): for a float32 confidence head detach/float/contiguous are all
+        # no-ops, so without it this is a view of the speculator's own buffer and
+        # the broadcast below would overwrite that buffer on every rank but 0.
+        current = confidence_probs[:num_reqs].detach().float().clone()
         get_tp_group().broadcast(current, src=0)
         if self._pending_resets:
             self._stale_confidences[self._stale_idx].np[self._pending_resets] = 1.0
@@ -129,18 +138,34 @@ class AscendEagerUpstreamAVManager(AdaptiveVerificationManager):
         # Keep the synthetic table; eager has no valid cudagraph samples to price.
         return None
 
-    def get_num_tokens(self, num_tokens_per_req, draft_tokens):
-        total = super().get_num_tokens(num_tokens_per_req, draft_tokens)
-        if self._batch_budget is not None:
-            _, _, budget = self._batch_budget
-            scheduled = sum(len(draft_tokens.get(r, ())) for r in num_tokens_per_req)
-            # budget < scheduled means the batch is genuinely ragged; budget ==
-            # scheduled means the synthetic curve left it at the full K.
-            logger.debug(
-                "DSpark eager upstream AV: reqs=%d scheduled_drafts=%d budget=%d total_tokens=%d",
-                len(num_tokens_per_req),
-                scheduled,
-                budget,
-                total,
-            )
-        return total
+    def reallocate_drafts(self, req_ids, idx_mapping):
+        """Upstream reallocation, then report the step it just decided.
+
+        This is the only point where a whole step's decision is known: the
+        budget comes from ``get_num_tokens`` earlier in the step, and the
+        per-request split is produced by the device top-k inside the inherited
+        call. Reporting from ``get_num_tokens`` instead would have to carry the
+        previous step's split, so the line would mix two steps.
+
+        The split is only readable by copying it back, so ask ``sampling()``
+        first -- it is true exactly on the steps that print -- and skip the copy
+        on every other step. ``_batch_budget`` is read before the inherited call
+        consumes it.
+        """
+        sampling = self._log.sampling()
+        num_drafts_per_req, num_non_draft_tokens_per_req, draft_budget = self._batch_budget
+        scheduled_drafts = sum(num_drafts_per_req.values())
+        verify_tokens = sum(num_non_draft_tokens_per_req.values()) + draft_budget
+
+        result = super().reallocate_drafts(req_ids, idx_mapping)
+
+        # budget < scheduled means the batch is genuinely ragged; budget ==
+        # scheduled means the synthetic curve left it at the full K.
+        self._log.record(
+            num_reqs=len(req_ids),
+            scheduled_drafts=scheduled_drafts,
+            admitted_drafts=draft_budget,
+            verify_tokens=verify_tokens,
+            capacities=(self._batch_draft_capacity[: len(req_ids)].cpu().tolist() if sampling else None),
+        )
+        return result

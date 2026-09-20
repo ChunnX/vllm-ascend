@@ -4,11 +4,15 @@
 import numpy as np
 import torch
 from vllm.distributed import get_tp_group
-from vllm.logger import logger
+from vllm.logger import init_logger
 from vllm.v1.worker.gpu.buffer_utils import async_copy_to_gpu
 from vllm.v1.worker.gpu.spec_decode.adaptive_verification import AdaptiveVerificationManager
 
+import vllm_ascend.envs as envs_ascend
+from vllm_ascend.worker.v2.spec_decode.dspark.eager_av_log import EagerAVLogger
 from vllm_ascend.worker.v2.spec_decode.dspark.eager_policy import batch_layout, select_capacities, validate_threshold
+
+logger = init_logger(__name__)
 
 
 class EagerSurvivalVerificationManager(AdaptiveVerificationManager):
@@ -33,8 +37,14 @@ class EagerSurvivalVerificationManager(AdaptiveVerificationManager):
         self._capacity_per_req = None
         self._cu_num_logits = torch.empty_like(query_start_loc)
         self._prepared_req_ids = None
-        logger.info(
-            "DSpark eager survival verification active: threshold=%s, synchronous confidence, no cost table",
+        self._log = EagerAVLogger(
+            lane="threshold",
+            interval=envs_ascend.VLLM_ASCEND_DSPARK_EAGER_AV_LOG_INTERVAL,
+        )
+        logger.warning(
+            "[DSPARK-EAGER-AV/threshold] active: threshold=%s, synchronous confidence, no cost "
+            "table. Diagnostic lane for eager correctness; it pays a blocking D2H per step and is "
+            "not a performance configuration.",
             self.threshold,
         )
 
@@ -49,7 +59,10 @@ class EagerSurvivalVerificationManager(AdaptiveVerificationManager):
         pass
 
     def record_confidences(self, confidence_probs, input_batch):
-        current = confidence_probs[: input_batch.num_reqs].detach().float().contiguous()
+        # clone(): for a float32 confidence head detach/float/contiguous are all
+        # no-ops, so without it this is a view of the speculator's own buffer and
+        # the broadcast below would overwrite that buffer on every rank but 0.
+        current = confidence_probs[: input_batch.num_reqs].detach().float().clone()
         # TP ranks must choose exactly the same capacities, including threshold
         # boundary cases. The drafter already samples identical tokens per rank.
         get_tp_group().broadcast(current, src=0)
@@ -77,8 +90,16 @@ class EagerSurvivalVerificationManager(AdaptiveVerificationManager):
             raise ValueError("Scheduled tokens cannot be smaller than scheduled drafts")
         self._batch_budget = (dict(zip(req_ids, scheduled.tolist())), non_drafts, int(caps.sum()))
         self._valid[slots] = False  # A proposal's confidence is consumed at most once.
-        logger.debug("DSpark eager AV: requests=%s capacity=%s threshold=%s", req_ids, caps.tolist(), self.threshold)
-        return sum(non_drafts.values()) + int(caps.sum())
+        num_tokens = sum(non_drafts.values()) + int(caps.sum())
+        # Capacities are already on the host here, so reporting them costs nothing.
+        self._log.record(
+            num_reqs=len(req_ids),
+            scheduled_drafts=int(scheduled.sum()),
+            admitted_drafts=int(caps.sum()),
+            verify_tokens=num_tokens,
+            capacities=caps.tolist(),
+        )
+        return num_tokens
 
     def prepare_request_order(self, req_ids):
         self._prepared_req_ids = tuple(req_ids)

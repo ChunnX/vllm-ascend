@@ -50,6 +50,12 @@ env_variables: dict[str, Callable[[], Any]] = {
     # price a real one. Requires DSpark AV and an eager target/draft. Default 0
     # (off). Not sensitive. Mutually exclusive with the survival-threshold lane.
     "VLLM_ASCEND_DSPARK_EAGER_UPSTREAM_AV": lambda: bool(int(os.getenv("VLLM_ASCEND_DSPARK_EAGER_UPSTREAM_AV", "0"))),
+    # Steps between the eager adaptive-verification lanes' aggregated warn
+    # lines. Warn level so the trimming decisions are visible in an ordinary
+    # serve log; aggregated so a long run stays readable. Not sensitive.
+    "VLLM_ASCEND_DSPARK_EAGER_AV_LOG_INTERVAL": lambda: int(
+        os.getenv("VLLM_ASCEND_DSPARK_EAGER_AV_LOG_INTERVAL", "50")
+    ),
     # max compile thread number for package building. Usually, it is set to
     # the number of CPU cores. If not set, the default value is None, which
     # means all number of CPU cores will be used.
