@@ -10,7 +10,7 @@ import pytest
 
 
 @pytest.mark.parametrize("threshold", [0.0, 0.4, 1.0])
-def test_greedy_eager_survival_matches_fixed_k(threshold):
+def test_greedy_eager_survival_matches_fixed_k(threshold, tmp_path):
     model = os.getenv("VLLM_TEST_QWEN36_MODEL")
     draft = os.getenv("VLLM_TEST_DSPARK_MODEL")
     if not model or not draft:
@@ -41,17 +41,22 @@ print("EAGER_AV_RESULT="+json.dumps([list(o.outputs[0].token_ids) for o in outpu
         env.pop(key, None)
         if adaptive:
             env[key] = str(threshold)
-        result = subprocess.run(
-            [sys.executable, "-c", program, json.dumps([model, draft, adaptive])],
-            env=env,
-            text=True,
-            capture_output=True,
-            timeout=1800,
-        )
-        assert result.returncode == 0, result.stdout[-12000:] + result.stderr[-12000:]
+        log_path = tmp_path / ("adaptive.log" if adaptive else "fixed.log")
+        with log_path.open("w") as stream:
+            result = subprocess.run(
+                [sys.executable, "-c", program, json.dumps([model, draft, adaptive])],
+                env=env,
+                text=True,
+                stdout=stream,
+                stderr=subprocess.STDOUT,
+                timeout=1800,
+            )
+        log = log_path.read_text(errors="replace")
+        print(f"Model process log: {log_path}")
+        assert result.returncode == 0, f"{log_path}\n{log[-12000:]}"
         if adaptive:
-            assert "DSpark eager survival verification active" in result.stdout + result.stderr
-        line = next(line for line in result.stdout.splitlines() if line.startswith("EAGER_AV_RESULT="))
+            assert "DSpark eager survival verification active" in log
+        line = next(line for line in log.splitlines() if line.startswith("EAGER_AV_RESULT="))
         return json.loads(line.split("=", 1)[1])
 
     assert run(True) == run(False)
