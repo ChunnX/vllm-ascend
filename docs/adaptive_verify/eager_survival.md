@@ -54,7 +54,7 @@ flowchart LR
     T --> S[survival 累积乘积]
     S --> B[阈值前缀 capacities B]
     B --> L[准确的 CPU / NPU query 与 logits 边界]
-    L --> V[Target eager Conv1D + 变长 recurrent]
+    L --> V[Target eager D-Cut Conv1D + recurrent]
     V --> R[原 rejection sampler]
     R --> H[保存 previous accepted / 历史状态]
     H --> D
@@ -78,15 +78,16 @@ flowchart LR
    生命周期与 runner 调用；正式成本策略不被替换。
 2. 配置 patch 只移除显式阈值 lane 的“eager 无图成本表”限制，不提升 GDN 的
    `AttentionCGSupport`。Target/Drafter manager 均强制 NONE。
-3. Conv1D 复用 `npu_causal_conv1d_custom`：当前 baseline 的 UPDATE kernel
-   已按 previous accepted 选卷积历史。修正共享 host 的二维布局判断：显式 qsl
-   始终选择 varlen UPDATE，避免 T=B 时将长请求+空行误识别为逐行单 token。
-   普通无 qsl 的 decode 和三维布局保持原判定。
-4. recurrent 使用独立 `npu_dcut_recurrent_gated_delta_rule`，保留 `[B,K+1]`
-   状态索引宽度；按 qsl 执行本轮 ragged queries，按 accepted-1 读历史候选。
-   仅本测试 lane 切换到该算子，固定验证保留 baseline 算子。
-5. recurrent 源码从开发分支 `2e1aaa5bd` 的独立算子目录移入，核对其 fixed-state-row
-   与 qsl 语义后复用；不等同于移植 D-Cut policy，也不表示该二进制已经验收。
+3. Conv1D 和 recurrent 在本 eager lane 中分别调用
+   `npu_dcut_causal_conv1d`、`npu_dcut_recurrent_gated_delta_rule`。固定验证和
+   非 speculative 路径保留 baseline 算子。通用 Conv1D host tiling 已恢复 baseline。
+4. 两个独立算子目录与上游快照 `645e05ac71960cc6bf01faca8aba7037dd752002`
+   一致，不修改 host/kernel 算法。仅适配构建列表、Torch 注册和 Python 调用。
+   recurrent 保留 `[B,K+1]` 状态索引宽度，按 qsl 执行本轮 queries，按
+   accepted-1 选择历史状态；没有移植 D-Cut 的裁剪 policy。
+5. D-Cut Conv1D 的 host tiling 引用通用 Conv1D 源码，因此独立算子名称不保证
+   自动解决 `T=B` 的长请求加空行布局。保留 `[8,0,0,0,0,0,0,0]` 的 NPU
+   golden 检查，不跳过、不放宽误差。该边界仍待已安装二进制实测。
 6. baseline GDN builder 有两个同名 build，前一个已被 Python 后定义覆盖；删去
    这段不可达方法以通过 lint，不把其中 FULL 修复混入当前 eager 范围。
 
@@ -101,9 +102,10 @@ flowchart LR
 COMPILE_CUSTOM_KERNELS=1 pip install -v -e . --no-deps --no-build-isolation
 ```
 
-`setup.py` 会执行 `csrc/build_aclnn.sh`；新 recurrent 已加入 A2/A3 构建列表
+`setup.py` 会执行 `csrc/build_aclnn.sh`；两个 D-Cut 算子已加入 A2/A3 构建列表
 （保留移入算子的 950 源码/列表，但该硬件不属于本阶段验收范围）。Conv1D 的
-host tiling 也必须重新编译安装。重启 worker，确认加载新环境的插件和算子，
+host tiling 保留 baseline。若服务器已经安装两个匹配的 D-Cut 算子及其 Torch
+注册扩展，可直接复用，不要求重新编译。否则再执行上面的构建。重启 worker，确认加载正确的插件和算子，
 避免旧二进制导致 Python 新、算子旧。不要在现有服务使用的环境中覆盖安装。
 
 ### CPU 合同测试
@@ -112,18 +114,17 @@ host tiling 也必须重新编译安装。重启 worker，确认加载新环境�
 uv run --no-project --python 3.12 --with numpy --with torch --with pytest \
   pytest --noconftest -o addopts='' \
   tests/ut/spec_decode/test_eager_survival_verification.py \
-  tests/ut/ops/test_causal_conv1d_varlen_layout.py \
   tests/ut/ops/test_dcut_cpu_reference.py -q
 ```
 
 测试使用真实 CPU torch 执行 manager 方法，mock vLLM 设备基础设施；GDN model
-state 的 selector 测试提取实际 prepare_attn 方法执行。C++ probe 编译当前源码
-的 host 判断和 kernel 窗口函数；没有声称编译完整 CANN 算子。
+state 的 selector 测试提取实际 prepare_attn 方法执行。原先验证通用 Conv1D
+布局修复的 C++ probe 已随该修复撤回；CPU 测试不代表 CANN 算子精度通过。
 
 独立 NumPy golden 与其手算/跨轮测试复用原工作区未跟踪的 `dcut_reference.py`
 及 `test_dcut_cpu_reference.py` 快照，原文件未修改。
 
-本地验证记录（2026-09-19，macOS，Python 3.12 / CPU PyTorch）：上述 38 项
+本地验证记录（2026-09-20，macOS，Python 3.12 / CPU PyTorch）：上述 37 项
 测试通过；Ruff 0.14.0 check/format、diff whitespace、shell 语法和仓库的
 logger/package/symbolic-meta 检查通过。未运行完整 UT、CANN 构建及 NPU 测试；
 以下门槛必须在 Ascend 机器上另行执行。
@@ -137,9 +138,18 @@ logger/package/symbolic-meta 检查通过。未运行完整 UT、CANN 构建及 
 pytest -sv tests/e2e/nightly/single_node/ops/singlecard_ops/test_eager_gdn_varlen.py
 ```
 
-- Conv1D：独立数学 golden；T=B、空行、变长、previous accepted > current length。
+- D-Cut Conv1D：独立数学 golden；T=B、空行、变长、previous accepted > current length。
 - recurrent：独立数学 golden；多轮 8→3/1/4→1/4/0，比较真实输出和完整状态。
 - 算子测试必须先通过，再检查模型接受率；不能只拿同算子 eager 输出作 golden。
+
+### 零长度行边界的实际场景
+
+`lengths=[8,0,0,0,0,0,0,0]` 表示 8 个请求槽位中只有第一个有效，总 token 数
+恰好也是 8。固定请求轴的 FULL/PIECEWISE 图、批次收缩后保留的空槽位，或
+把 GDN spec 子批补齐到固定请求容量时，都可能形成这种布局。普通连续存储的
+ragged eager batch 若只包含真实请求，每行至少一个 anchor，则 T=B 只能是
+所有请求都执行一个 token，没有长请求加空行歧义。零 draft 是长度 1，空行才是 0。
+本分支保持 eager；该 padding 测试为后续入图验收保留，不代表 eager 必然产生空行。
 
 ### 模型门槛
 

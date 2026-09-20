@@ -47,6 +47,7 @@
 #include "attention/fused_sparse_attention_overlap/fused_sparse_attention_overlap_torch_adpt.h"
 #include "attention/lightning_indexer_quant/lightning_indexer_quant_torch_adpt.h"
 #include "moe/causal_conv1d_v310/causal_conv1d_310_torch_adpt.h"
+#include "moe/dcut_causal_conv1d/dcut_causal_conv1d_torch_adpt.h"
 #include "attention/recurrent_gated_delta_rule/recurrent_gated_delta_rule_torch_adpt.h"
 #include "attention/recurrent_kda/recurrent_kda_torch_adpt.h"
 #include "attention/chunk_kda_fwd/chunk_kda_fwd_torch_adpt.h"
@@ -3320,6 +3321,16 @@ TORCH_LIBRARY_EXPAND(CONCAT(_C, _ascend), ops)
         "                         int run_mode"
         ") -> (Tensor output)");
     ops.impl("npu_causal_conv1d_custom", torch::kPrivateUse1, &vllm_ascend::npu_causal_conv1d_custom);
+    ops.def(
+        "npu_dcut_causal_conv1d(Tensor(a!) output, Tensor x, "
+        "                         Tensor weight, Tensor(b!) conv_state, "
+        "                         Tensor? bias=None, "
+        "                         Tensor? query_start_loc=None, "
+        "                         Tensor? cache_indices=None, "
+        "                         Tensor? num_accepted_tokens=None, "
+        "                         int activation_mode=0, "
+        "                         int pad_slot_id=-1) -> Tensor(a!)");
+    ops.impl("npu_dcut_causal_conv1d", torch::kPrivateUse1, &vllm_ascend::npu_dcut_causal_conv1d);
 
     ops.def(
         "moe_gating_top_k_hash("
