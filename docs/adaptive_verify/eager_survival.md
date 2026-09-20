@@ -1,6 +1,6 @@
 # Qwen3.6 DSpark eager survival 验证分支
 
-服务器批量执行、日志回传和已知失败说明见 [910B4 测试清单](server_validation.md)。
+服务器按顺序执行的 pytest 命令和已知失败说明见 [910B4 测试清单](server_validation.md)。
 
 ## 版本与范围
 
