@@ -21,6 +21,13 @@ torch_npu.npu.set_compile_mode(jit_compile=False)
 
 PAD_SLOT_ID = -1
 
+# These two being equal is the one shape the conv operator's host used to read
+# as one token per request, ignoring query_start_loc. Every conv case in this
+# file therefore ran on that reading, and comparing a graph replay against an
+# eager call that took the same wrong branch could not see it -- the file's
+# conv coverage proves graph equals eager, not that either is right. Keep the
+# operator-level golden in test_dcut_causal_conv1d.py as the check that does,
+# and vary these two independently when this file grows shapes.
 _NUM_ROWS = 8  # request axis, fixed at capture
 _NUM_TOKENS = 8  # token axis, fixed at capture
 _STATE_LEN = 8  # candidate state rows per request (num_spec + 1)

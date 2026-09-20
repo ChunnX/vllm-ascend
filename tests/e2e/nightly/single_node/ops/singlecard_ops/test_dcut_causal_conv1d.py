@@ -195,16 +195,23 @@ def test_dcut_causal_conv1d_live_row_is_unaffected_by_empty_request_rows(empty_s
     through seven -- so the empty rows are writing over the live row's later
     tokens, and no choice of index avoids it.
 
-    ChooseUnifiedFnTokenBlockPlan in
-    csrc/moe/causal_conv1d/op_host/causal_conv1d_tiling_planner.h disables
-    variable-length token tiling whenever num_accepted_tokens is present,
-    logging "speculative decode still uses the existing seq mapping". The D-Cut
-    speculative path always passes that argument, so it always gets the legacy
-    per-sequence mapping rather than the token-to-sequence search, and that
-    mapping does not account for a row with no tokens. The two pieces that would
-    handle it correctly -- BuildFnTokenSeqRangePlan and FindVarlenSeqByToken --
-    are both bypassed on this path. The D-Cut operator inherits the restriction
-    by including the stock tiling.
+    The host picks the wrong layout. A 2D input under runMode=1 starts out read
+    as one token per request, and
+    csrc/moe/causal_conv1d/op_host/causal_conv1d_tiling_validation.h only falls
+    back to the variable-length reading when the request count disagrees with
+    the token count. Eight tokens across eight rows agrees, so the qsl saying
+    one request owns all eight and seven own none is never consulted: the
+    kernel's window for row i is {start=i, len=1}. Token zero is row zero's
+    first token either way, which is why it survives; tokens one through seven
+    are handed to the empty rows and computed from their state. The
+    variable-length path would be right -- it gives row i the qsl's own bounds
+    and skips a zero-length row before reaching the cache -- it just does not
+    run. The D-Cut operator inherits the reading by including the stock tiling.
+
+    An earlier version of this docstring blamed ChooseUnifiedFnTokenBlockPlan
+    for disabling token tiling when num_accepted_tokens is present. That gate is
+    real but unreachable here: causal_conv1d_tiling.cpp calls the FN planner
+    only when runMode is 0, and the D-Cut torch adapter pins runMode to 1.
 
     This is why the model's single-request acceptance profile is 0.64 at
     position zero and zero from position two on: token zero's convolution output
