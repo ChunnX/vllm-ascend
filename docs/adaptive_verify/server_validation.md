@@ -8,8 +8,9 @@
 D-Cut Conv1D 的 host tiling 之前会忽略 `query_start_loc`：2D + runMode=1 的输入
 默认按“每 request 一个 token”读形状，只有 token 数与 request 数不一致时才回退到
 变长读法。`[8,0,0,0,0,0,0,0]` 恰好 8 token / 8 request，于是 qsl 被整个忽略，
-token 1..7 被交给空行按它们自己的 state 计算。这是算子 host 侧的问题，不是测试
-或 Python 侧的问题，所以必须改源码并重装算子包：
+第 0 行只拿到 `{start=0,len=1}`，token 1..7 落到 `cache_indices=-1` 的空行上被
+整段跳过（输出留在未初始化状态）。这是算子 host 侧的问题，不是测试或 Python
+侧的问题，所以必须改源码并重装算子包：
 
 ```bash
 : "${SOC_VERSION:?请设置与本机910B4及CANN匹配的编译目标}"
@@ -19,6 +20,15 @@ COMPILE_CUSTOM_KERNELS=1 pip install -v -e . --no-deps --no-build-isolation
 `CAUSAL_CONV1D_QUERY_START_LOC_DEFINES_LAYOUT` 只在 D-Cut 的编译单元里置 1，
 通用 `npu_causal_conv1d_custom` 保持原有推断不变。变长读法本身不是新路径，
 kernel 无改动。**不重装算子包，这个修复在设备上不生效。**
+
+只置这个宏还不够。三个共享 tiling 头把所有 helper（包括被这个宏改动的
+`GetShapeDtypeInfo`）都放在 `namespace optiling::causal_conv1d_host` 里、且全是
+`inline`，而 `#define CausalConv1d DcutCausalConv1d` 只改算子名那个 token——
+命名空间和函数名都没改。于是两个编译单元发出同一个 mangled symbol 而函数体不同，
+`inline` 的 vague linkage 让链接器只留一份、静默丢掉另一份，留下来的通常是
+stock 那份（宏=0）。所以 D-Cut 的编译单元还要 `#define causal_conv1d_host
+dcut_causal_conv1d_host` 把符号隔开。头里加了 `#error` 守卫：开了 layout 策略
+却没隔离命名空间会直接编译失败，不会再静默退回旧行为。
 
 ## 1. CPU UT
 
@@ -41,6 +51,12 @@ ASCEND_RT_VISIBLE_DEVICES=0 python3 -m pytest --noconftest -o addopts='' -sv \
 共 5 项，调用已安装的 D-Cut Conv1D/recurrent，与独立 golden 比较。
 重装算子包之后 `[8,0,0,0,0,0,0,0]` 应当转为通过；仍然失败就先停在这里，
 不要继续跑模型，也不要跳过或放宽误差。
+
+失败时先分清是哪一层，再改东西：`[8]` 和 `[3,1,4]` 的 token 数与 request 数
+不相等，旧逻辑本来就会走变长路径，所以它们一直通过；`[1,1,1]` 是 T==B 但每行
+恰好一个 token，两种读法一致，也一直通过。只有 `[8,0,...]` 会被旧逻辑读错。
+所以「`[8,0,...]` 的 token 0 正确、token 1..7 未被写入」这个特征就等于
+“运行的二进制里 layout 策略没生效”，而不是 kernel 或 golden 的问题。
 
 ## 3. TP=4 整网验证
 

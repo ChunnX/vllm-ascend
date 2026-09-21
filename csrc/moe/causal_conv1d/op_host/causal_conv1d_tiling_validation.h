@@ -27,6 +27,16 @@
  #ifndef CAUSAL_CONV1D_QUERY_START_LOC_DEFINES_LAYOUT
  #define CAUSAL_CONV1D_QUERY_START_LOC_DEFINES_LAYOUT 0
  #endif
+
+ // The policy changes the body of an `inline` function in a namespace shared
+ // with the stock operator's translation unit. Two units emitting the same
+ // mangled symbol with different bodies is an ODR violation the linker resolves
+ // by keeping one copy and dropping the other, without a diagnostic -- so a unit
+ // that turns the policy on must also give these headers a private namespace.
+ // Fail the build rather than let the policy be silently discarded.
+ #if CAUSAL_CONV1D_QUERY_START_LOC_DEFINES_LAYOUT && !defined(CAUSAL_CONV1D_HOST_NAMESPACE_IS_PRIVATE)
+ #error "enabling CAUSAL_CONV1D_QUERY_START_LOC_DEFINES_LAYOUT requires a private causal_conv1d_host namespace in this translation unit"
+ #endif
  
  namespace optiling::causal_conv1d_host {
  

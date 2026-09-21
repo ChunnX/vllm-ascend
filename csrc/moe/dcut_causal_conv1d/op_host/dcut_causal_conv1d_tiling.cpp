@@ -19,6 +19,22 @@
 #define IMPL_OP_OPTILING(op_type) \
   gert::OpImplRegisterV2 VAR_UNUSED DCUT_CAT(op_impl_register_optiling_, op_type) = gert::OpImplRegisterV2(DCUT_STRINGIFY_EXPAND(op_type))
 
+// Give this translation unit its own copy of the shared tiling helpers.
+//
+// The three headers the tiling unit pulls in put every helper -- including
+// GetShapeDtypeInfo, which the policy below changes -- as `inline` functions in
+// namespace optiling::causal_conv1d_host. `#define CausalConv1d
+// DcutCausalConv1d` above renames the OP TYPE token only: the namespace is
+// spelled `causal_conv1d_host` and the function `GetShapeDtypeInfo`, so neither
+// is touched. Both units therefore emit the SAME mangled symbol for a function
+// whose body differs by the policy, and `inline` means vague linkage: the linker
+// keeps exactly one copy and silently drops the other. Whichever it keeps
+// decides the layout for both operators -- correctness resting on whether the
+// compiler chose to inline a ~200-line function. Renaming the namespace here
+// makes the symbols distinct, so this unit keeps the body it compiled.
+#define causal_conv1d_host dcut_causal_conv1d_host
+#define CAUSAL_CONV1D_HOST_NAMESPACE_IS_PRIVATE 1
+
 // The torch adapter requires query_start_loc, so this operator always knows
 // the real request boundaries and must never let the host re-derive them from
 // the shapes. Without this the packed varlen batch the D-Cut speculative path
