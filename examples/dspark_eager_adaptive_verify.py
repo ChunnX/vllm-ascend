@@ -155,7 +155,7 @@ def child_env(lane: str, max_model_len: int) -> dict[str, str]:
         lane = lane[: -len("+graph")]
         env[CPU_UPPER_BOUND_ENV] = "1"
         env[AV_GRAPH_ENV] = "uniform"
-    if lane == "baseline":
+    if lane in ("baseline", "baseline2"):
         pass
     elif lane.startswith("threshold:"):
         env[THRESHOLD_ENV] = lane.split(":", 1)[1]
@@ -190,7 +190,7 @@ def run_lane(lane: str, args: argparse.Namespace, log_dir: Path) -> tuple[list[l
         "--num-prompts",
         str(args.num_prompts or args.max_num_seqs),
     ]
-    if lane != "baseline":
+    if not lane.startswith("baseline"):
         cmd.append("--adaptive")
     if AV_GRAPH_ENV in env_for_lane:
         cmd.append("--graph")
@@ -230,7 +230,7 @@ def run_lane(lane: str, args: argparse.Namespace, log_dir: Path) -> tuple[list[l
     # described as a lane that declined to engage.
     if result.returncode != 0:
         raise RuntimeError(f"lane {lane} exited {result.returncode}; tail of {log_path}:\n{log[-12000:]}")
-    if lane != "baseline" and not data_lines:
+    if not lane.startswith("baseline") and not data_lines:
         # The construction banner also carries LOG_TAG, so requiring only the tag
         # would accept a lane that was built and then never asked for a budget.
         raise RuntimeError(
@@ -254,7 +254,7 @@ def trimming_note(lane: str, data_lines: list[str]) -> str:
     to keep everything -- that is its job as the equivalence check -- but for any
     other lane this is the difference between evidence and a tautology.
     """
-    if lane == "baseline" or not data_lines:
+    if lane.startswith("baseline") or not data_lines:
         return ""
     trimmed = sum(1 for line in data_lines if "kept=100.0%" not in line)
     if trimmed:
@@ -299,7 +299,10 @@ def main() -> int:
             "compose, outermost last: '+ub' leaves the host view inexact (the "
             "contract a captured graph runs under), '+graph' adds the uniform "
             "graph descriptor, '+axis' pins the GDN request axis to max_num_seqs "
-            "-- e.g. 'upstream+graph+axis'."
+            "-- e.g. 'upstream+graph+axis'. The lane 'baseline2' runs the "
+            "baseline a second time and compares it to the first, which checks "
+            "that the comparison itself is reproducible before any mismatch is "
+            "attributed to a lane."
         ),
     )
     parser.add_argument("--tensor-parallel-size", type=int, default=4)
@@ -344,7 +347,8 @@ def main() -> int:
             # threshold:0.0 is supposed to keep everything; for any other lane a
             # match without trimming means the run never exercised the path it
             # was supposed to check.
-            if not trimmed and lane.removesuffix("+axis").removesuffix("+graph").removesuffix("+ub") != "threshold:0.0":
+            bare = lane.removesuffix("+axis").removesuffix("+graph").removesuffix("+ub")
+            if not trimmed and bare not in ("threshold:0.0", "baseline2"):
                 inconclusive.append(lane)
             continue
         # Name the first divergence: the prompt and token index localize which
@@ -356,6 +360,12 @@ def main() -> int:
             pos = next((j for j, (a, b) in enumerate(zip(got, want)) if a != b), min(len(got), len(want)))
             detail = f"prompt {i} first differs at token {pos}: got {got[pos : pos + 4]} want {want[pos : pos + 4]}"
             break
+        if lane == "baseline2":
+            detail = (
+                f"the baseline is not reproducible at this configuration: {detail}. "
+                "Until it is, a mismatch cannot be attributed to any lane, because "
+                "the gate compares one baseline run against one lane run."
+            )
         failures.append(f"{lane}: {detail}")
         print(f"=== lane {lane}: MISMATCH -- {detail}", flush=True)
 

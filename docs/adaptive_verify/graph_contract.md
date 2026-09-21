@@ -348,6 +348,23 @@ seq_lens 镜像的 padding 清理**一起成立的（隔壁分支为此有 `39e4
 所以它改成 opt-in：`VLLM_ASCEND_DSPARK_GDN_FIXED_AXIS`，默认 0（per-bucket 轴，即
 已验证过的形状），阶段 B 再打开。门槛脚本加了 `+axis` 后缀用于二分。
 
+#### A‴ 的第一步：先验 baseline 自己可不可复现
+
+`upstream` 在 eager、不入图、固定轴关闭的情况下也 MISMATCH，所以图和固定轴都被
+排除，问题在高并发本身。
+
+但在继续追之前要先堵一个方法论漏洞：**bs=4 时 4 个 prompt 并发稳定；bs=16 时 16 个
+请求先后结束、批不断收缩。如果有任何东西依赖批组成，baseline 自己跑两次都可能不
+一样。** 而门槛是拿一次 baseline 比一次 lane——那样任何 MISMATCH 都归因不了。
+
+脚本加了 `baseline2` lane：再跑一次 baseline 并与第一次比较。它先于一切 lane 结论：
+
+- **`baseline2` MISMATCH** → 比较本身不可复现，bs≥16 的所有 MISMATCH 结论都无效。
+  要先找出批组成敏感的来源（或改判据，比如逐请求比较而非整批比较）
+- **`baseline2` MATCH** → 比较可靠，`upstream` 的 MISMATCH 是真的，继续二分：
+  `threshold:0.0`（完全不裁）能把「路径」和「裁剪策略」分开——它若也 MISMATCH，
+  裁剪被完全排除，问题在高并发下的 GDN 变长路径本身
+
 #### 判据
 
 - **可达 spread 明显** → 现在这套已经能支撑裁剪决策，B 的增量收益要单独论证
