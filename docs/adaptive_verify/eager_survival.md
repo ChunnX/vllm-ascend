@@ -285,14 +285,19 @@ python examples/dspark_eager_adaptive_verify.py --lanes threshold:0.4 threshold:
 两条都 MATCH 才能往下翻 capability flag。`+ub` 那条不过，失败位置就直接指向真正
 依赖精确 host 边界的地方，范围比通读 35 个调用点小得多。
 
-翻 flag 是后续两步，顺序不能反：
+`+ub` 通过之后**下一步是 PIECEWISE，不是 FULL，也不是先翻 capability flag**。
+理由、六个 batch size 的定义、`B_gdn = B_max`、十条不变量和已登记的踩坑点见
+[入图契约与阶段划分](graph_contract.md)。要点：
 
-1. `AscendGDNAttentionBackend.supports_device_cpu_query_lens_mismatch()` → True
-   （现在继承 `not is_ssm()` = False）
-2. builder 的 `_cudagraph_support` 从 `UNIFORM_BATCH` 改成在 dspark+AV 时报
-   `ALWAYS`，照 `dsa_v1.py` 里 15098 的写法
+- PIECEWISE 第一步不需要 GDN 声明 `ALWAYS`，因为 GDN 仍是图边界；需要的只是不再
+  强制 `CUDAGraphMode.NONE`。两个 capability flag 属于最后一个阶段，是为了让上游
+  factory 直接接纳 GDN，不是入图的前置条件。
+- eager 下真实 cost table 是**平的**（76~84ms 跨 Q=16..512），所以在 PIECEWISE
+  之前不要用真实曲线替换 lane B 的合成曲线，也不要谈收益。
+- 进 ragged FULL 前必须把 `gdn_attn_builder.py` 的 `spec_batch_size = m.num_reqs`
+  改成固定 `B_max`。请求轴跟随实时批是已被推翻的设计。
 
-注意 vLLM 0.28.0 的 factory 比 main 严：`get_query_lens_mismatch_unsupported_backend(attn_groups)`
+vLLM 0.28.0 的 factory 比 main 严：`get_query_lens_mismatch_unsupported_backend(attn_groups)`
 不收 `checked_layer_names`，`min_cg_support` 也是全局的，所以**所有** attention
 group 都要满足，包括 draft 的 FIA sink backend。目标 attention 和 FIA sink 目前
 都已经是 `ALWAYS` + True，GDN 是唯一的阻塞点。
