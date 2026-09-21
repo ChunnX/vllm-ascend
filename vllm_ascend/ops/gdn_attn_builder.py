@@ -35,7 +35,6 @@ from vllm.v1.attention.backends.utils import (
 )
 from vllm.v1.kv_cache_interface import AttentionSpec
 
-import vllm_ascend.envs as envs_ascend
 from vllm_ascend.ops.triton.fla.utils import (
     prepare_chunk_indices,
     prepare_chunk_offsets,
@@ -334,7 +333,9 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
         # inert for GDN and not yet accounted for on those sides. It is also
         # a no-op when max_num_seqs equals the live request count, which is
         # why it looked harmless where it was first exercised.
-        self.ragged_spec_decode = self.ragged_spec_decode and envs_ascend.VLLM_ASCEND_DSPARK_GDN_FIXED_AXIS
+        from vllm_ascend.worker.v2.spec_decode.dspark.eager_config import av_graph_pins_gdn_axis
+
+        self.ragged_spec_decode = self.ragged_spec_decode and av_graph_pins_gdn_axis()
 
         # B_gdn -- the request axis the GDN state operators see. Under the ragged
         # contract it is the service maximum for every graph bucket, never the

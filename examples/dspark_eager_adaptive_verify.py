@@ -143,18 +143,25 @@ def child_env(lane: str, max_model_len: int) -> dict[str, str]:
     if lane.endswith("+ub"):
         lane = lane[: -len("+ub")]
         env[CPU_UPPER_BOUND_ENV] = "1"
-    # "+graph" runs the lane under the uniform graph descriptor. A captured graph
-    # cannot read the trimmed boundaries back each step, so this implies the
-    # inexact host view, and the engine must not be launched with enforce_eager.
-    # "+axis" pins the GDN request axis to max_num_seqs. Suffix order is
-    # outermost-last, so "threshold:0.4+graph+axis" reads as written.
+    # "+graph" runs the lane under the uniform graph descriptor and "+ragged"
+    # under the variable-length one. Either way a captured graph cannot read the
+    # trimmed boundaries back each step, so both imply the inexact host view and
+    # the engine must not be launched with enforce_eager. The difference is which
+    # batches replay: under "+graph" only an untrimmed one does and a trimmed one
+    # falls back to PIECEWISE, under "+ragged" a trimmed one replays too, which
+    # is the whole point and also the part that has never run on device.
+    # "+axis" pins the GDN request axis to max_num_seqs; "+ragged" pins it
+    # anyway, so the suffix is only meaningful on the other modes. Suffix order
+    # is outermost-last, so "threshold:0.4+graph+axis" reads as written.
     if lane.endswith("+axis"):
         lane = lane[: -len("+axis")]
         env[FIXED_AXIS_ENV] = "1"
-    if lane.endswith("+graph"):
-        lane = lane[: -len("+graph")]
-        env[CPU_UPPER_BOUND_ENV] = "1"
-        env[AV_GRAPH_ENV] = "uniform"
+    for suffix, mode in (("+graph", "uniform"), ("+ragged", "ragged")):
+        if lane.endswith(suffix):
+            lane = lane[: -len(suffix)]
+            env[CPU_UPPER_BOUND_ENV] = "1"
+            env[AV_GRAPH_ENV] = mode
+            break
     if lane in ("baseline", "baseline2"):
         pass
     elif lane.startswith("threshold:"):
@@ -259,7 +266,9 @@ def trimming_note(lane: str, data_lines: list[str]) -> str:
     trimmed = sum(1 for line in data_lines if "kept=100.0%" not in line)
     if trimmed:
         return f", trimmed in {trimmed}/{len(data_lines)} reported windows"
-    expected = lane.removesuffix("+axis").removesuffix("+graph").removesuffix("+ub") == "threshold:0.0"
+    expected = (
+        lane.removesuffix("+axis").removesuffix("+graph").removesuffix("+ragged").removesuffix("+ub") == "threshold:0.0"
+    )
     return ", kept every draft" + ("" if expected else " -- THIS MATCH IS NOT EVIDENCE")
 
 
@@ -315,7 +324,7 @@ def main() -> int:
     parser.add_argument(
         "--lanes",
         nargs="+",
-        default=["upstream", "upstream+ub", "upstream+graph"],
+        default=["upstream", "upstream+ub", "upstream+graph", "upstream+ragged"],
         help=(
             "Lanes to compare against the baseline. 'upstream' runs the "
             "upstream manager -- the real cost-argmax budget, device survival "
@@ -325,7 +334,9 @@ def main() -> int:
             "boundaries are the opposite of what a graph needs. Suffixes "
             "compose, outermost last: '+ub' leaves the host view inexact (the "
             "contract a captured graph runs under), '+graph' adds the uniform "
-            "graph descriptor, '+axis' pins the GDN request axis to max_num_seqs "
+            "graph descriptor and '+ragged' the variable-length one, so a "
+            "trimmed batch replays instead of falling back, '+axis' pins the "
+            "GDN request axis to max_num_seqs ('+ragged' pins it anyway) "
             "-- e.g. 'upstream+graph+axis'. The lane 'baseline2' runs the "
             "baseline a second time and compares it to the first, which checks "
             "that the comparison itself is reproducible before any mismatch is "
@@ -383,7 +394,7 @@ def main() -> int:
             failures.append(f"{lane}: {exc}")
             continue
         count, earliest, detail = divergence(tokens, baseline)
-        bare = lane.removesuffix("+axis").removesuffix("+graph").removesuffix("+ub")
+        bare = lane.removesuffix("+axis").removesuffix("+graph").removesuffix("+ragged").removesuffix("+ub")
         no_worse = count <= floor_count and (earliest is None or floor_earliest is None or earliest >= floor_earliest)
         if no_worse:
             print(f"=== lane {lane}: {'MATCH' if count == 0 else f'WITHIN NOISE ({detail})'}", flush=True)

@@ -55,9 +55,11 @@ env_variables: dict[str, Callable[[], Any]] = {
     # contract ragged full graphs need -- a per-bucket axis gives each capture
     # size its own stateful tiling, which fails while concurrency ramps -- but it
     # only holds together with the attention-side axis and the padding cleanup in
-    # the persistent seq_lens mirror, which are not in place yet. Default 0 (the
-    # per-bucket axis) until the whole set is validated on device; 1 opts in for
-    # bisecting. Not sensitive. See docs/adaptive_verify/graph_contract.md.
+    # the persistent seq_lens mirror, both of which the upstream FIA padding path
+    # already provides. VLLM_ASCEND_DSPARK_AV_GRAPH=ragged therefore pins the axis
+    # on its own and this variable is only for pinning it under the other modes,
+    # to bisect the axis apart from the capture geometry. Default 0 (the
+    # per-bucket axis). Not sensitive. See docs/adaptive_verify/graph_contract.md.
     "VLLM_ASCEND_DSPARK_GDN_FIXED_AXIS": lambda: bool(int(os.getenv("VLLM_ASCEND_DSPARK_GDN_FIXED_AXIS", "0"))),
     # Which graph mode the DSpark adaptive-verification lane runs under.
     #   none    -- force CUDAGraphMode.NONE (default; what the eager gate validated)
@@ -73,9 +75,15 @@ env_variables: dict[str, Callable[[], Any]] = {
     #              ever run. A trimmed batch is not uniform and matches no
     #              descriptor, so it falls back instead of replaying the wrong
     #              shape -- correct, with no trimming benefit under graph.
-    #   ragged  -- capture the trimmed geometry itself. Needs B_graph=min(Q,B_max),
-    #              B_fia, fixed-address buffers and descriptor-bound confidence;
-    #              rejected until those land.
+    #   ragged  -- keep the variable-length descriptor, so a trimmed batch replays
+    #              too. The manager then captures one decode graph per size with
+    #              num_reqs=min(Q,B_max) and max_query_len=decode_query_len, and a
+    #              batch with no more requests, no more tokens and no longer a
+    #              query replays it -- which is what a trimmed batch is. Selecting
+    #              this pins the GDN request axis, because the axis is what makes
+    #              replaying a different per-request split safe for the state
+    #              operators. Random sampling is not covered: the sampler's
+    #              probabilities are not yet bound to the graph descriptor.
     # Not sensitive. See docs/adaptive_verify/graph_contract.md.
     "VLLM_ASCEND_DSPARK_AV_GRAPH": lambda: os.getenv("VLLM_ASCEND_DSPARK_AV_GRAPH", "none"),
     # Stop making the host query/seq-length view exact for the eager AV lanes.

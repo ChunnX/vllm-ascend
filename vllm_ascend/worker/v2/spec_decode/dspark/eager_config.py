@@ -26,22 +26,30 @@ _GRAPH_MODES = (GRAPH_MODE_NONE, GRAPH_MODE_UNIFORM, GRAPH_MODE_RAGGED)
 def av_graph_mode() -> str:
     """Validated value of VLLM_ASCEND_DSPARK_AV_GRAPH.
 
-    ``ragged`` is refused rather than accepted-and-broken: capturing the trimmed
-    geometry needs the graph descriptor, the attention request axis, fixed-address
-    buffers and descriptor-bound confidence, and none of those are in place. A
-    mode that starts and then replays a shape captured for a different request
-    layout is worse than one that will not start.
+    ``none`` keeps the lane eager, ``uniform`` captures at the full verify width
+    so an untrimmed batch replays and a trimmed one falls back, and ``ragged``
+    keeps the variable-length descriptor so a trimmed batch replays too. The
+    last one only holds together with the request axes pinned, which is why
+    selecting it pins the GDN axis rather than leaving that to a second switch.
     """
     mode = envs_ascend.VLLM_ASCEND_DSPARK_AV_GRAPH
     if mode not in _GRAPH_MODES:
         raise ValueError(f"VLLM_ASCEND_DSPARK_AV_GRAPH must be one of {_GRAPH_MODES}, got {mode!r}")
-    if mode == GRAPH_MODE_RAGGED:
-        raise ValueError(
-            "VLLM_ASCEND_DSPARK_AV_GRAPH=ragged is not implemented yet: capturing the "
-            "trimmed geometry still needs B_graph=min(Q,B_max), the attention request "
-            "axis, fixed-address buffers and descriptor-bound confidence"
-        )
     return mode
+
+
+def av_graph_pins_gdn_axis() -> bool:
+    """Whether the GDN request axis must be pinned to max_num_seqs.
+
+    The ragged mode replays a trimmed batch against a graph captured over a
+    different per-request split, which only holds if the request axis the state
+    operators see is the same for every bucket. Pinning it is therefore part of
+    that mode rather than an independent switch, and the environment variable
+    stays only so the pinning can be bisected on its own under the other modes.
+    """
+    if av_graph_mode() == GRAPH_MODE_RAGGED:
+        return True
+    return envs_ascend.VLLM_ASCEND_DSPARK_GDN_FIXED_AXIS
 
 
 def _validate_eager_lane(config) -> None:

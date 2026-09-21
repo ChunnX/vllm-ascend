@@ -942,15 +942,17 @@ def graph_manager_wrapper(model_runner):
         if getattr(model_runner, "eager_survival_test", False):
             from vllm_ascend.worker.v2.spec_decode.dspark.eager_config import (
                 GRAPH_MODE_NONE,
+                GRAPH_MODE_UNIFORM,
                 av_graph_mode,
             )
 
-            if av_graph_mode() == GRAPH_MODE_NONE:
+            mode = av_graph_mode()
+            if mode == GRAPH_MODE_NONE:
                 # v0.28 unconditionally upgrades AV to FULL_AND_PIECEWISE. With no
                 # graph mode selected the lane has no graph cost model and stays eager.
                 cudagraph_mode = CUDAGraphMode.NONE
                 vllm_config.compilation_config.cudagraph_mode = CUDAGraphMode.NONE
-            elif varlen_decode:
+            elif mode == GRAPH_MODE_UNIFORM and varlen_decode:
                 # Capture the decode descriptor at the uniform verify width.
                 # Adaptive verification otherwise asks for the variable-length
                 # descriptor, which carries min(num_tokens, max_num_seqs) requests
@@ -970,6 +972,15 @@ def graph_manager_wrapper(model_runner):
                 # is correct and gives up the trimming benefit under graph, which
                 # is what the ragged mode exists to recover.
                 varlen_decode = False
+            # Ragged mode leaves varlen_decode alone, which is the whole change
+            # it needs on this side. The manager then captures a decode graph per
+            # size with num_reqs = min(Q, max_num_seqs) and max_query_len =
+            # decode_query_len, and _is_compatible admits any batch with no more
+            # requests, no more tokens and no longer a query -- "any mix of
+            # 1..decode_query_len tokens per request", which is precisely a
+            # trimmed batch. What made that unsafe before is the geometry the
+            # state operators see, and pinning the GDN request axis is the part
+            # of the contract that addresses it.
         return ModelAclGraphManager(
             vllm_config,
             device,

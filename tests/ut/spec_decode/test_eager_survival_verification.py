@@ -309,7 +309,7 @@ def test_av_logger_names_untrusted_rows_only_when_there_are_any(av_logger_class,
     assert "untrusted_rows=3 (out_of_range=1)" in third
 
 
-def config_gate(policy, value, upstream=False, graph_mode="none"):
+def config_gate(policy, value, upstream=False, graph_mode="none", gdn_fixed_axis=False):
     # Load the real guard without importing the Ascend platform bootstrap.
     import ast
 
@@ -322,6 +322,7 @@ def config_gate(policy, value, upstream=False, graph_mode="none"):
     envs["VLLM_ASCEND_DSPARK_EAGER_SURVIVAL_THRESHOLD"] = value
     envs["VLLM_ASCEND_DSPARK_EAGER_UPSTREAM_AV"] = upstream
     envs["VLLM_ASCEND_DSPARK_AV_GRAPH"] = graph_mode
+    envs["VLLM_ASCEND_DSPARK_GDN_FIXED_AXIS"] = gdn_fixed_axis
     namespace = {
         "envs_ascend": SimpleNamespace(**envs),
         "validate_threshold": policy.validate_threshold,
@@ -350,11 +351,27 @@ def test_a_graph_mode_drops_the_eager_target_requirement(policy):
         gate["eager_survival_threshold"](config)
 
 
-def test_ragged_graph_mode_is_refused_rather_than_half_working(policy):
-    # Starting and then replaying a shape captured for a different request layout
-    # is worse than not starting, so the unimplemented mode is a hard error.
-    with pytest.raises(ValueError, match="not implemented"):
-        config_gate(policy, 0.4, graph_mode="ragged")["av_graph_mode"]()
+def test_ragged_graph_mode_pins_the_gdn_axis_without_a_second_switch(policy):
+    """The axis is part of the mode, not an orthogonal knob.
+
+    Replaying a trimmed batch against a graph captured over a different
+    per-request split is only safe if the request axis the state operators see
+    is the same for every bucket. A ragged run with a per-bucket axis is the
+    combination that is known to fail, so the mode must not be reachable
+    without the pin -- while the pin stays selectable on its own so it can be
+    bisected apart from the capture geometry.
+    """
+    gate = config_gate(policy, 0.4, graph_mode="ragged")
+    assert gate["av_graph_mode"]() == "ragged"
+    assert gate["av_graph_pins_gdn_axis"]() is True
+
+
+@pytest.mark.parametrize("mode", ["none", "uniform"])
+def test_the_other_graph_modes_leave_the_gdn_axis_to_the_variable(policy, mode):
+    gate = config_gate(policy, 0.4, graph_mode=mode)
+    assert gate["av_graph_pins_gdn_axis"]() is False
+    gate = config_gate(policy, 0.4, graph_mode=mode, gdn_fixed_axis=True)
+    assert gate["av_graph_pins_gdn_axis"]() is True
 
 
 @pytest.mark.parametrize("mode", ["", "full", "piecewise", "None", "uniform "])
@@ -494,6 +511,7 @@ def _graph_factory(monkeypatch, mode):
 
     config_module = types.ModuleType(f"{PKG}.eager_config")
     config_module.GRAPH_MODE_NONE = "none"
+    config_module.GRAPH_MODE_UNIFORM = "uniform"
     config_module.av_graph_mode = lambda: mode
     monkeypatch.setitem(sys.modules, config_module.__name__, config_module)
 
@@ -547,6 +565,25 @@ def test_uniform_graph_mode_keeps_the_graph_and_drops_the_varlen_descriptor(monk
         assert config.compilation_config.cudagraph_mode == "full_decode_only"
         # ... and the descriptor is the uniform one.
         assert kwargs["varlen_decode"] is False
+
+
+def test_ragged_graph_mode_keeps_the_varlen_descriptor(monkeypatch):
+    """The whole of item 1 is *not* dropping the variable-length descriptor.
+
+    The manager then captures one decode graph per size at
+    num_reqs=min(Q, max_num_seqs) and max_query_len=decode_query_len, and its
+    compatibility rule admits any batch with no more requests, no more tokens
+    and no longer a query -- which is exactly a trimmed batch. What made that
+    unsafe is the geometry the state operators see, and that is the axis pin,
+    not the descriptor.
+    """
+    wrapper, upstream = _graph_factory(monkeypatch, "ragged")
+    config = SimpleNamespace(compilation_config=SimpleNamespace(cudagraph_mode="full_and_piecewise"))
+    with wrapper(SimpleNamespace(eager_survival_test=True)):
+        args, kwargs = upstream.ModelCudaGraphManager(config, "cpu", "full_and_piecewise", 8, varlen_decode=True)
+        assert args[2] == "full_and_piecewise"
+        assert config.compilation_config.cudagraph_mode == "full_and_piecewise"
+        assert kwargs["varlen_decode"] is True
 
 
 def test_a_graph_mode_leaves_a_non_lane_runner_alone(monkeypatch):

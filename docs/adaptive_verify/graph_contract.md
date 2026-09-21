@@ -482,18 +482,66 @@ lane 自己替换了 factory，所以阶段 A/B 不经过那两道 gate。
 - **ragged FULL** 是让裁剪后的批也能命中图，需要下面六项。它们不是探索性的，来源是
   文章与 `main_dspark_adaptive_verify_dev` 的踩坑记录，逐项都有出处。
 
-| # | 内容 | 出处 |
-| --- | --- | --- |
-| 1 | `B_graph = min(Q, B_max)` 描述符，`Q > B_max` 时按 `64×3 + 32×2` 均分 | 文章 §3.4.2/3.4.3 |
-| 2 | `B_fia = B_live(+1)`，或固定为服务最大值 +1 行 | 文章 §3.4.4；`39e454375` |
-| 3 | `B_gdn = B_max` 固定轴（已实现，opt-in 待配齐后开启） | 文章 §3.4.5；本分支 `5dfe59be8` |
-| 4 | 固定地址 buffer + 批收缩时清理整个 inactive tail | 文章 §4.1；`275c0df09`、`564c7ecd9` |
-| 5 | 概率绑定 graph descriptor，每轮只消费一次 | 文章 §4.2；`f9542068c`、`577480c5b` |
-| 6 | drafter 未使用 KV tail 的 slot mapping 置无效 | 文章 §4.3 |
+| # | 内容 | 出处 | 状态 |
+| --- | --- | --- | --- |
+| 1 | `B_graph = min(Q, B_max)` 描述符，`Q > B_max` 时均分 | 文章 §3.4.2/3.4.3 | 见下，**零新代码** |
+| 2 | `B_fia = B_live(+1)`，或固定为服务最大值 +1 行 | 文章 §3.4.4；`39e454375` | **已在树上（15098）** |
+| 3 | `B_gdn = B_max` 固定轴 | 文章 §3.4.5；本分支 `5dfe59be8` | 已实现，ragged 模式自动开启 |
+| 4 | 固定地址 buffer + 批收缩时清理整个 inactive tail | 文章 §4.1；`275c0df09`、`564c7ecd9` | **已在树上（15098）** |
+| 5 | 概率绑定 graph descriptor，每轮只消费一次 | 文章 §4.2；`f9542068c`、`577480c5b` | 未做，只影响随机采样 |
+| 6 | drafter 未使用 KV tail 的 slot mapping 置无效 | 文章 §4.3 | 未做 |
 
-第 3 项已在树上但默认关闭，因为单独打开它是半个契约（第 2、4 项未配齐）——这已经
-在 bs≥16 上验证过一次：它在 `max_num_seqs == 活跃请求数` 时是空操作，一旦不是就产生
-大量未被其他侧照顾的 padding 行。
+### 第 2、4 项本来就在分支里
+
+清单最初把六项都当成待做，这是错的。逐一对照代码后：
+
+- **第 2 项**就是 `model_runner.py` 的 `_pad_adaptive_query_start_loc_for_fia()`：它把裁剪
+  后的 `query_start_loc` 补到 `batch_desc.num_reqs`，并且把 padding token 在 padding 请求
+  之间**均分**（`np.arange(1, n+1) * pad_tokens // n`），这就是文章 §3.4.3/3.4.4 的写法。
+  触发条件是 `use_fia and adaptive_verification_manager and cg_mode == FULL`。
+- **第 4 项**就是 `self.input_buffers.seq_lens_np[num_reqs_padded:] = 0`。
+
+也就是说 15098 已经把 FIA 侧的请求轴和 padding 生命周期做完了，缺的只有状态算子那一侧。
+
+### 第 1 项不需要新代码：它是一句 `varlen_decode = False` 的移除
+
+`_is_compatible` 的规则是
+
+```python
+(desc.num_reqs is None or desc.num_reqs >= num_reqs)
+and desc.num_tokens >= num_tokens
+and (desc.max_query_len is None or desc.max_query_len >= max_query_len)
+```
+
+而 varlen 捕获出来的描述符是 `num_reqs = min(Q, max_num_reqs)`、`max_query_len =
+decode_query_len`，注释原文就是「takes any mix of 1..decode_query_len tokens per
+request」。**一个裁剪批正好满足这三条**：请求数不多、token 数不多、单请求 query 不长。
+所以 ragged 回放的机制上游已经写好了，`B_graph` 也已经是 `min(Q, B_max)`——
+`patch_cudagraph.py` 在批不 uniform 时走 `num_reqs = min(num_tokens_padded, max_num_seqs)`。
+
+真正关掉它的是阶段 A 自己加的那句 `varlen_decode = False`。所以 ragged 模式在这一侧的
+全部改动，就是不再执行那句；`uniform` 模式保留它。
+
+隔壁分支 `0d6dd7559` 当初关掉 varlen 捕获，原因是状态算子看到的几何与回放几何不一致——
+而文章对这个不一致的答案正是第 3 项（固定 GDN 轴）。所以阶段 B = **第 1 项 + 第 3 项**，
+两者是一件事的两半，`VLLM_ASCEND_DSPARK_AV_GRAPH=ragged` 因此直接把第 3 项打开，不再
+由第二个开关决定：ragged + 按桶轴是已知会坏的那个组合，不应该可达。
+`VLLM_ASCEND_DSPARK_GDN_FIXED_AXIS` 保留下来只为了在别的模式下单独二分固定轴。
+
+### 上设备前唯一没想清楚的一点
+
+`num_reqs_padded` 取自 **dispatcher 的** `batch_desc.num_reqs`，而图是按 **manager 的**
+`BatchExecutionDescriptor.num_reqs` 捕获的，两者不一定相等：未裁剪批 dispatcher 给
+`num_tokens_padded // (K+1)`，manager 捕获的是 `min(num_tokens, max_num_reqs)`（更大）。
+`_is_compatible` 只要求 `>=`，所以能命中；但如果 FIA 的请求轴是**烧进图里**的，那么
+padding 应该补到**捕获轴**而不是派发轴。uniform 模式下两者恰好相等（都是
+`num_tokens // decode_query_len`），所以阶段 A 没暴露这一点。
+
+这是 ragged 第一次上设备要看的第一件事。症状是局部的——FIA/attention 输出异常，而不是
+状态漂移——所以可分辨；真出问题就把 padding 目标改成捕获描述符的 `num_reqs`。
+
+第 5 项只影响随机采样（greedy 没有随机数），所以不阻塞按逐 token 判据的验收，但**上游
+之前必须补**。第 6 项同理独立。
 
 配齐后的验收判据按上面两节：正确性用算子 golden + 噪声底为 0 并发下的端到端相等，
 收益用接受率与吞吐/TPOT。
