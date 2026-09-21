@@ -31,6 +31,7 @@ from vllm.v1.worker.gpu.spec_decode.adaptive_verification import (
 
 import vllm_ascend.envs as envs_ascend
 from vllm_ascend.worker.v2.spec_decode.dspark.eager_av_log import EagerAVLogger
+from vllm_ascend.worker.v2.spec_decode.dspark.eager_config import GRAPH_MODE_NONE, av_graph_mode
 
 logger = init_logger(__name__)
 
@@ -62,6 +63,12 @@ class AscendEagerUpstreamAVManager(AdaptiveVerificationManager):
         self.query_start_loc = query_start_loc
         self._cudagraph_limit = 0
         self._batch_budget = None
+        # With no graph mode there is nothing to time: every step runs eager, and
+        # the measured curve would be flat in Q, which is a cost table that cannot
+        # inform any trimming decision. Under a graph mode the inherited profiling
+        # runs instead and replaces the synthetic curve installed below.
+        self._graph_mode = av_graph_mode()
+        self._profiles_cost = self._graph_mode != GRAPH_MODE_NONE
         # Rows repaired since the last aggregation window closed.
         self._untrusted_rows = 0
 
@@ -102,11 +109,19 @@ class AscendEagerUpstreamAVManager(AdaptiveVerificationManager):
             lane="upstream",
             interval=envs_ascend.VLLM_ASCEND_DSPARK_EAGER_AV_LOG_INTERVAL,
         )
-        logger.warning(
-            "[DSPARK-EAGER-AV/upstream] active: synthetic cost curve, real cost-argmax budget "
-            "and device survival top-k, synchronous confidence (no cudagraph, no async D2H). "
-            "The curve is invented, so the chosen budget is a layout signal, not a performance one."
-        )
+        if self._profiles_cost:
+            logger.warning(
+                "[DSPARK-EAGER-AV/upstream] active: graph mode %s, profiling a real cost table, "
+                "real cost-argmax budget and device survival top-k, synchronous confidence. "
+                "The synthetic curve below is only a fallback if profiling yields nothing.",
+                self._graph_mode,
+            )
+        else:
+            logger.warning(
+                "[DSPARK-EAGER-AV/upstream] active: synthetic cost curve, real cost-argmax budget "
+                "and device survival top-k, synchronous confidence (no cudagraph, no async D2H). "
+                "The curve is invented, so the chosen budget is a layout signal, not a performance one."
+            )
 
     def add_request(self, req_idx: int) -> None:
         self._stale_confidences[self._stale_idx].np[req_idx].fill(1.0)
@@ -164,12 +179,45 @@ class AscendEagerUpstreamAVManager(AdaptiveVerificationManager):
         self._log.note_graph_mode(cg_mode)
 
     def batches_to_profile(self, capture_sizes):
-        # Eager runs no capture; there is nothing to time.
-        return iter(())
+        if not self._profiles_cost:
+            # Eager runs no capture; there is nothing to time.
+            return iter(())
+        # The inherited generator also profiles past the capture limit on purpose:
+        # real steps run there under piecewise, which is exactly where a trimmed
+        # batch lands, and extrapolating from the captured sizes alone badly
+        # underestimates them.
+        return super().batches_to_profile(capture_sizes)
 
     def set_initial_cost_curves(self, samples):
-        # Keep the synthetic table; eager has no valid cudagraph samples to price.
-        return None
+        if not self._profiles_cost:
+            # Keep the synthetic table; eager has no valid cudagraph samples to price.
+            return None
+        super().set_initial_cost_curves(samples)
+        self._report_cost_table(samples)
+
+    def _report_cost_table(self, samples) -> None:
+        """Print the measured verify curve, because it decides what comes next.
+
+        Whether trimming can pay is not a property of the trimming logic: it is
+        whether a smaller Q lands in a cheaper graph. A curve that is flat in Q
+        means no choice of budget changes step time, so the controller has
+        nothing to optimise however good its confidence is. Printing it turns
+        that from an assumption into a number.
+        """
+        _, verify_ms = self.cost_tables
+        measured = sorted({int(s.num_target_tokens) for s in samples})
+        if not measured:
+            logger.warning("[DSPARK-EAGER-AV/upstream] cost table: profiling produced no samples")
+            return
+        points = ", ".join(f"Q={q}:{verify_ms[q]:.2f}ms" for q in measured if q < len(verify_ms))
+        spread = verify_ms[measured[-1]] - verify_ms[measured[0]] if measured[-1] < len(verify_ms) else float("nan")
+        logger.warning(
+            "[DSPARK-EAGER-AV/upstream] cost table (%d samples, graph_limit=%d): %s | spread=%.2fms",
+            len(samples),
+            self._cudagraph_limit,
+            points,
+            spread,
+        )
 
     def reallocate_drafts(self, req_ids, idx_mapping):
         """Upstream reallocation, then report the step it just decided.

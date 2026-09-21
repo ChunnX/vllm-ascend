@@ -181,9 +181,30 @@ KV 长度、FIA replay line 存活于 capture。
 | --- | --- | --- | --- |
 | 1 | eager 下把状态算对 | 算子 golden 5/5；整网四条 lane 逐 token 相等 | 2026-09-21 通过 |
 | 1.5 | 放弃精确 host 视图（`VLLM_ASCEND_DSPARK_AV_CPU_UPPER_BOUND`） | `+ub` lane 仍然 MATCH | 2026-09-21 通过 |
-| **A** | uniform 图：`VLLM_ASCEND_DSPARK_AV_GRAPH=uniform`，按 uniform verify 宽度捕获，裁剪批回退 | `+graph` lane 输出相等**且日志里 `graph=` 显示真的进过图** | 2026-09-21 输出相等；图是否命中待观测 |
-| **B** | ragged 图：`B_graph=min(Q,B_max)`、`B_fia`、固定地址、descriptor 绑定概率、mixed 路由契约 | 输出相等；cost table 相邻 bucket 可区分 | 未开始 |
+| **A** | uniform 图：`VLLM_ASCEND_DSPARK_AV_GRAPH=uniform`，按 uniform verify 宽度捕获 | `+graph` lane 输出相等**且 `graph=` 显示真的进过图** | 2026-09-21 通过 |
+| **A′** | 测量真实 cost table | 曲线随 Q 变化，spread 足够大 | 待上机 |
+| **B** | ragged 图：`B_graph=min(Q,B_max)`、`B_fia`、固定地址、descriptor 绑定概率 | 输出相等；cost table 相邻 bucket 可区分 | 取决于 A′ |
 | C | 翻 capability，让上游 factory 直接接纳 GDN，撤掉自建 manager | 不设 env 也能跑；可上游 | 未开始 |
+
+### 阶段 A 的实测结果：裁剪批落到 PIECEWISE，不是 eager
+
+2026-09-21 第二次跑（带 `graph=` 仪器）：
+
+| lane | `graph=` | `kept` | 实际路径 |
+| --- | --- | --- | --- |
+| `threshold:0.0+graph` | `FULL=5` | 100% | 未裁剪 → **FULL** |
+| `threshold:0.4+graph` | `PIECEWISE=5` | 67.1% | 裁剪后 → **PIECEWISE** |
+
+两条都 MATCH。第一条证明图**真的进去了**，阶段 A 成立。
+
+第二条比预期好，也修正了此前的说法（原以为裁剪批回退到 eager）：上游在 AV 生效时把
+`cudagraph_mode` 设为 `FULL_AND_PIECEWISE`，dispatcher 先试 FULL，批不 uniform 就落到
+PIECEWISE。所以**文章里的阶段 2 已经免费拿到了**——而那正是 cost table 从平变单调的
+那一站。旁证：`0.0+graph` 首个 prompt 是 `1.48s/it, 32.40 toks/s`，eager 同位置是
+`3.80s/it`；总耗时 256s 仍高于 baseline 177s，差值是一次性的 capture 开销。
+
+这改变了 B 的成本收益：问题不再是「能不能入图」，而是**「ragged FULL 比现在这套
+FULL + PIECEWISE 还能多拿多少」**。只有真实 cost table 能回答，所以插入阶段 A′。
 
 ### 「相等」在图模式下同样不是证据
 
@@ -219,12 +240,35 @@ capture 时每个 KV cache group 各自重算 GDN-local 修正视图，而
 那个临时张量。但这正是文章 §4.1「capture 和 replay 必须同一块内存」要盯的形状，阶段 B
 引入更多随批变化的张量时要重新核。
 
-### 为什么跳过通用 PIECEWISE
+### 为什么不需要单独做 PIECEWISE
 
-文章里 PIECEWISE 承担两件事：可调试的中间站，以及让 cost table 不再是平的。
-阶段 A 同时给了这两样——图共存的正确性证明，加上 per-capture-size 的真实计时。
-所以 PIECEWISE 在这里是冗余的。**但不烧桥**：阶段 A 一旦出问题，PIECEWISE 仍然是
-二分的中间站，届时再退回去。
+原因比预想的更直接：**它已经在跑了**。`FULL_AND_PIECEWISE` 让未裁剪批走 FULL、
+裁剪批走 PIECEWISE，两者都在阶段 A 的同一次运行里验证过输出相等。所以文章里
+「先 PIECEWISE 建基线」这一站不需要单独实施。
+
+### 阶段 A′：测量 cost table
+
+lane B 原先把 `batches_to_profile` 和 `set_initial_cost_curves` stub 掉，因为 eager
+没有 capture 可以计时。图模式下改为委托给基类——基类已经把活干完了：
+
+- `batches_to_profile` 产出 capture sizes，**并额外产出超出捕获上限的尾部尺寸**，
+  注释写明"真实步会在那里跑 piecewise/eager，只从捕获尺寸线性外推会严重低估"。
+  正好覆盖我们裁剪批走 PIECEWISE 的现实。
+- `set_initial_cost_curves` 只用 graph-replay 样本给 **draft** 曲线定价（eager target
+  步会抬高 drafter 计时，而请求数不像 token 数那样能区分执行模式），verify 曲线用
+  全部样本。
+
+测完打一行：
+
+```txt
+[DSPARK-EAGER-AV/upstream] cost table (N samples, graph_limit=32): Q=8:...ms, Q=16:...ms, ... | spread=...ms
+```
+
+判据来自文章的对照——eager 是 76~84ms 跨 Q=16..512（平的，controller 无从选择）；
+PIECEWISE 是 33.88→59.06ms；ragged FULL 是 25.87→103.09ms。
+
+- **spread 明显、随 Q 单调** → 现在这套已经能支撑裁剪决策，B 的增量收益要单独论证
+- **仍然趋平** → 图外固定开销还占主导，B（ragged FULL）才是必需的，理由与文章一致
 
 两个 capability flag（`supports_device_cpu_query_lens_mismatch`、`ALWAYS`）属于
 阶段 C，是为了让上游 factory 直接接纳 GDN，**不是入图的前置条件**——本分支的两条
