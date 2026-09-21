@@ -182,8 +182,9 @@ KV 长度、FIA replay line 存活于 capture。
 | 1 | eager 下把状态算对 | 算子 golden 5/5；整网四条 lane 逐 token 相等 | 2026-09-21 通过 |
 | 1.5 | 放弃精确 host 视图（`VLLM_ASCEND_DSPARK_AV_CPU_UPPER_BOUND`） | `+ub` lane 仍然 MATCH | 2026-09-21 通过 |
 | **A** | uniform 图：`VLLM_ASCEND_DSPARK_AV_GRAPH=uniform`，按 uniform verify 宽度捕获 | `+graph` lane 输出相等**且 `graph=` 显示真的进过图** | 2026-09-21 通过 |
-| **A′** | 测量真实 cost table | 曲线随 Q 变化，spread 足够大 | 待上机 |
-| **B** | ragged 图：`B_graph=min(Q,B_max)`、`B_fia`、固定地址、descriptor 绑定概率 | 输出相等；cost table 相邻 bucket 可区分 | 取决于 A′ |
+| **A′** | 测量真实 cost table | 可达范围内 spread 足够大 | 2026-09-21：`max_num_seqs=4` 下 spread=0.00ms |
+| **A″** | 在服务规模并发下重测 | 可达 spread 明显且随 Q 单调 | 待上机 |
+| **B** | ragged 图：`B_graph=min(Q,B_max)`、`B_fia`、固定地址、descriptor 绑定概率 | 输出相等；cost table 相邻 bucket 可区分 | 取决于 A″ |
 | C | 翻 capability，让上游 factory 直接接纳 GDN，撤掉自建 manager | 不设 env 也能跑；可上游 | 未开始 |
 
 ### 阶段 A 的实测结果：裁剪批落到 PIECEWISE，不是 eager
@@ -267,8 +268,42 @@ lane B 原先把 `batches_to_profile` 和 `set_initial_cost_curves` stub 掉，�
 判据来自文章的对照——eager 是 76~84ms 跨 Q=16..512（平的，controller 无从选择）；
 PIECEWISE 是 33.88→59.06ms；ragged FULL 是 25.87→103.09ms。
 
-- **spread 明显、随 Q 单调** → 现在这套已经能支撑裁剪决策，B 的增量收益要单独论证
-- **仍然趋平** → 图外固定开销还占主导，B（ragged FULL）才是必需的，理由与文章一致
+#### 实测结果（2026-09-21，`max_num_seqs=4`，K=7，TP=4，27B）
+
+```txt
+graph_limit=32
+Q=8:116.80  Q=16:116.80  Q=24:116.80  Q=32:116.80      ← 捕获范围
+Q=48:228.20 Q=64:228.20  Q=128:229.28 ... Q=1024:233.65 ← 出图
+Q=2048:293.25  Q=4096:532.68  Q=8192:1017.04
+```
+
+**可达范围内 spread = 0.00ms。** Q 从 32 裁到 8 省下的时间精确为零，所以 controller
+选 `kept=100%`（不裁）是正确决策——裁剪要付概率计算、TP 广播和 ragged metadata 的
+开销，换回零。这不是缺陷。
+
+原因是规模：`max_num_seqs=4`、K=7 → 最大 Q = **32 token**，对 TP=4 的 27B 模型而言
+每步 116.80ms 全被固定开销吃掉。文章的收益数据来自 32/64 并发、Q 到 1536，**token
+量差两三个数量级**。
+
+`Q=32→48` 那个近 2× 的跳变是出图的代价，方向和我们要的相反：它说「无论如何待在图
+里」，不是「裁到更小的图」。把这张表按不同 `max_num_seqs` 重算可达 spread：
+
+| `max_num_seqs` | 可达 Q 上限 | spread |
+| --- | --- | --- |
+| 4 | 32 | **0.00ms** |
+| 32 | 256 | 112.48ms（含出图跳变，非纯图内梯度） |
+
+所以**结论不是「裁剪没用」，而是「这个配置测不出裁剪有没有用」**。
+
+#### 判据
+
+- **可达 spread 明显** → 现在这套已经能支撑裁剪决策，B 的增量收益要单独论证
+- **可达 spread 趋平** → 先换规模再谈 B。在测不出差异的配置上做几何工作，是把
+  精力花在无法验证的地方
+
+> 报告 spread 时只算**可达范围**（`min(max_num_seqs×(K+1), graph_limit)`）。
+> 首版打的是全部 profiled 点的跨度，含这个配置永远不会出现的 Q，把一条平的可达
+> 曲线显示成 900ms 的陡坡。
 
 还有一个不在文章里的信号，读日志时一起看：**真实曲线换掉合成曲线之后
 controller 还愿不愿意裁**。合成曲线是刻意造成凸的，为的是让 argmax 落在中间、

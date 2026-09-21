@@ -41,12 +41,25 @@ THRESHOLD_ENV = "VLLM_ASCEND_DSPARK_EAGER_SURVIVAL_THRESHOLD"
 UPSTREAM_ENV = "VLLM_ASCEND_DSPARK_EAGER_UPSTREAM_AV"
 LANE_ENVS = (THRESHOLD_ENV, UPSTREAM_ENV)
 
-PROMPTS = [
+_BASE_PROMPTS = (
     "Explain why the sky is blue.",
     "Calculate 13 times 17, showing the steps.",
     "Write a short story about a lost key.",
     "List three properties of prime numbers.",
-]
+)
+
+
+def build_prompts(count: int) -> list[str]:
+    """Distinct, deterministic prompts, enough to fill the requested concurrency.
+
+    Concurrency is what puts Q where the cost table stops being flat, and with
+    four prompts the batch never exceeds four requests however high
+    max_num_seqs is set. The index keeps them distinct so they decode as
+    separate sequences rather than sharing a prefix, and deterministic so the
+    baseline and every lane compare on identical input.
+    """
+    return [f"{_BASE_PROMPTS[i % len(_BASE_PROMPTS)]} (variation {i})" for i in range(max(1, count))]
+
 
 RESULT_PREFIX = "EAGER_AV_RESULT="
 LOG_TAG = "[DSPARK-EAGER-AV"
@@ -88,7 +101,7 @@ def run_engine(args: argparse.Namespace) -> int:
         },
     )
     outputs = llm.generate(
-        PROMPTS,
+        build_prompts(args.num_prompts or args.max_num_seqs),
         SamplingParams(temperature=0, max_tokens=args.max_tokens, seed=17),
     )
     print(RESULT_PREFIX + json.dumps([list(o.outputs[0].token_ids) for o in outputs]), flush=True)
@@ -160,6 +173,8 @@ def run_lane(lane: str, args: argparse.Namespace, log_dir: Path) -> tuple[list[l
         str(args.max_num_seqs),
         "--max-tokens",
         str(args.max_tokens),
+        "--num-prompts",
+        str(args.num_prompts or args.max_num_seqs),
     ]
     if lane != "baseline":
         cmd.append("--adaptive")
@@ -276,6 +291,16 @@ def main() -> int:
     parser.add_argument("--num-speculative-tokens", type=int, default=7)
     parser.add_argument("--max-model-len", type=int, default=2048)
     parser.add_argument("--max-num-seqs", type=int, default=4)
+    parser.add_argument(
+        "--num-prompts",
+        type=int,
+        default=0,
+        help=(
+            "How many concurrent requests to submit. 0 (default) follows "
+            "--max-num-seqs, so raising the concurrency raises Q, which is what "
+            "moves the cost table off flat."
+        ),
+    )
     parser.add_argument("--max-tokens", type=int, default=48)
     parser.add_argument("--log-dir", default="")
     args = parser.parse_args()

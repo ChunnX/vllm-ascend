@@ -44,6 +44,11 @@ _VERIFY_COEFF_MS = 0.02
 _VERIFY_EXPONENT = 1.3
 _DRAFT_FLAT_MS = 0.5
 
+# Below this, a difference between two buckets is not worth the control
+# overhead trimming costs: probability handling, the CPU decision, the TP
+# broadcast and ragged metadata all happen whether or not Q shrinks.
+_FLAT_COST_TOLERANCE_MS = 1.0
+
 
 def _synthetic_verify_curve(max_batch_tokens: int) -> list[tuple[int, float]]:
     tokens = np.arange(1, max(2, max_batch_tokens) + 1, dtype=np.int64)
@@ -206,17 +211,50 @@ class AscendEagerUpstreamAVManager(AdaptiveVerificationManager):
         """
         _, verify_ms = self.cost_tables
         measured = sorted({int(s.num_target_tokens) for s in samples})
+        measured = [q for q in measured if q < len(verify_ms)]
         if not measured:
             logger.warning("[DSPARK-EAGER-AV/upstream] cost table: profiling produced no samples")
             return
-        points = ", ".join(f"Q={q}:{verify_ms[q]:.2f}ms" for q in measured if q < len(verify_ms))
-        spread = verify_ms[measured[-1]] - verify_ms[measured[0]] if measured[-1] < len(verify_ms) else float("nan")
+        points = ", ".join(f"Q={q}:{verify_ms[q]:.2f}ms" for q in measured)
+
+        # Only the reachable range can inform a decision. This service can present
+        # at most max_num_seqs * (num_spec + 1) verification tokens, and a Q above
+        # the capture limit leaves the graph entirely -- a step change that says
+        # "stay captured", not "trim to a cheaper bucket". Reporting the spread
+        # over every profiled point, including Q values this configuration will
+        # never see, makes a flat reachable range look like a steep curve.
+        reachable_max = min(
+            self.req_states.max_num_reqs * (self.num_speculative_steps + 1),
+            self._cudagraph_limit or len(verify_ms) - 1,
+        )
+        reachable = [q for q in measured if q <= reachable_max]
+        if len(reachable) < 2:
+            logger.warning(
+                "[DSPARK-EAGER-AV/upstream] cost table (%d samples, graph_limit=%d): %s | "
+                "only %d profiled point(s) at or below the reachable Q=%d, so the curve says "
+                "nothing about trimming here",
+                len(samples),
+                self._cudagraph_limit,
+                points,
+                len(reachable),
+                reachable_max,
+            )
+            return
+        spread = verify_ms[reachable[-1]] - verify_ms[reachable[0]]
+        verdict = (
+            "flat: trimming cannot pay at this scale, and declining to trim is the correct decision"
+            if abs(spread) < _FLAT_COST_TOLERANCE_MS
+            else "varies with Q, so a smaller budget can land in a cheaper bucket"
+        )
         logger.warning(
-            "[DSPARK-EAGER-AV/upstream] cost table (%d samples, graph_limit=%d): %s | spread=%.2fms",
+            "[DSPARK-EAGER-AV/upstream] cost table (%d samples, graph_limit=%d): %s | "
+            "reachable Q<=%d spread=%.2fms (%s)",
             len(samples),
             self._cudagraph_limit,
             points,
+            reachable_max,
             spread,
+            verdict,
         )
 
     def reallocate_drafts(self, req_ids, idx_mapping):
