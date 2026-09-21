@@ -62,6 +62,8 @@ class AscendEagerUpstreamAVManager(AdaptiveVerificationManager):
         self.query_start_loc = query_start_loc
         self._cudagraph_limit = 0
         self._batch_budget = None
+        # Rows repaired since the last aggregation window closed.
+        self._untrusted_rows = 0
 
         device = req_states.device
         max_num_reqs = req_states.max_num_reqs
@@ -124,10 +126,28 @@ class AscendEagerUpstreamAVManager(AdaptiveVerificationManager):
             self._stale_confidences[self._stale_idx].np[self._pending_resets] = 1.0
             self._pending_resets.clear()
         self._confidence_probs[input_batch.idx_mapping] = current
-        # One blocking D2H; validate on the host copy, then publish it as stale.
+        # One blocking D2H; repair on the host copy, then publish it as stale.
         values = self._confidence_probs.cpu().numpy()
-        if not np.isfinite(values).all() or ((values < 0) | (values > 1)).any():
-            raise ValueError("DSpark confidence contains non-finite or out-of-range values")
+        # The confidence head emits non-finite rows during prefill bursts, which
+        # prefix caching and async scheduling make common. Here that is not just
+        # a bad trimming decision: the inherited budget cumprods this table on
+        # the host and _assign_draft_token_budget cumprods and top-ks the device
+        # buffer, so one NaN makes the whole batch's ranking and argmax
+        # meaningless. Substitute the neutral 1.0, which is what upstream's own
+        # add_request uses for a slot it has no information about.
+        #
+        # 1.0 is the top of the ranking, so a repaired row can win budget from a
+        # row with real confidence. That is the accepted trade: this lane's cost
+        # curve is synthetic anyway, so its budget is a layout signal, and
+        # retaining drafts can only cost throughput, never correctness.
+        bad = ~np.isfinite(values) | (values < 0) | (values > 1)
+        repaired_rows = int(bad.any(axis=1).sum())
+        if repaired_rows:
+            values = np.where(bad, 1.0, values)
+            # The device buffer is the one the ranking kernel reads, so repairing
+            # only the host stale table would leave the top-k running on NaN.
+            self._confidence_probs.copy_(torch.from_numpy(values).to(self._confidence_probs.device))
+        self._untrusted_rows += repaired_rows
         self._stale_confidences[self._stale_idx].np[:] = values
 
     def batches_to_profile(self, capture_sizes):
@@ -167,5 +187,7 @@ class AscendEagerUpstreamAVManager(AdaptiveVerificationManager):
             admitted_drafts=draft_budget,
             verify_tokens=verify_tokens,
             capacities=(self._batch_draft_capacity[: len(req_ids)].cpu().tolist() if sampling else None),
+            untrusted_rows=self._untrusted_rows,
         )
+        self._untrusted_rows = 0
         return result

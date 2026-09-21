@@ -74,8 +74,14 @@ flowchart LR
 
 - `survival[r,i] = prod(confidence[r,0:i+1])`，保留满足阈值的连续前缀。
 - 不使用 cost table、stale confidence 或双缓冲；同步 D2H 是有意接受的测试开销。
-- confidence 通过 persistent slot 对齐；slot 新建时失效，只消费一次；缺失时
-  保留可用 drafts，非法值直接报错。请求重排后 capacities 按 req_id 查回。
+- confidence 通过 persistent slot 对齐；slot 新建时失效，只消费一次；缺失或
+  不可信时保留可用 drafts。请求重排后 capacities 按 req_id 查回。
+- confidence head 在 prefill 期间会吐出非有限行（prefix cache 与异步调度会让它
+  变得常见）。这样的行不承载可用概率：按行判定后标记为不可信，回退到"保留可用
+  drafts"这条保守路径，计数并在 warn 行里报出来，不中断推理。有限但越界的值
+  单独计数——那不是 prefill 现象，会是新缺陷，必须单独可见。
+- 裁剪是策略，不是正确性。confidence 错配或全部回退只会降低裁剪质量，
+  rejection sampler 仍然正确，greedy 输出仍由 target 决定。
 - 全局 logits 限制仍生效，超限时用 survival 稳定排序分配预算，保证前缀语义。
 - `query_start_loc`、`cu_num_logits` 的 host/device 视图完全一致。
 - `num_scheduled_tokens` / `num_draft_tokens_per_req` 按上游语义保留 scheduler
@@ -190,9 +196,15 @@ fixed-K baseline 逐 token 相等，且每条裁剪 lane 都确实裁了：
 
 `verify_tokens = admitted + reqs` 在四条里都成立，`scheduled = reqs × K` 也都对得上。
 
-**未验证**，不要当作已支持：prefix caching、异步调度、更高并发、更长上下文、
-chunked prefill 与 spec decode 混合、随机采样（逐 token 相等只是 greedy 下的
-判据，采样需要另做分布验证）、以及任何性能结论（每步三次阻塞 D2H）。
+**未验证**，不要当作已支持：更高并发（`_max_total_logits` 的全局预算上限在
+4 个请求下不会触发）、更长上下文、随机采样（逐 token 相等只是 greedy 下的判据，
+采样需要另做分布验证）、以及任何性能结论（每步三次阻塞 D2H）。
+
+prefix caching 与异步调度：整网门槛是关闭它们跑的，但两者都不被 guard 拦，
+并且已在 serve 下实跑过。已知影响只有一条——它们让 prefill 突发变频繁，因此
+confidence 的非有限行变多，走上面那条"不可信则保留"的回退。异步调度还会让
+confidence 与 drafts 的配对不再严格同步（上游正是为此设计了 stale 双缓冲），
+同样只降低裁剪质量，不影响输出。
 
 ### 整网门槛
 

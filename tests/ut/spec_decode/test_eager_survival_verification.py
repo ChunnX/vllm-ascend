@@ -217,6 +217,69 @@ def test_av_logger_reports_untrimmed_steps_without_dividing_by_zero(av_logger_cl
     assert "last_caps=n/a" in message
 
 
+def test_manager_distrusts_a_bad_confidence_row_instead_of_raising(manager_class):
+    """A non-finite row keeps its drafts; it must not take the engine down.
+
+    The confidence head emits non-finite rows during prefill bursts, which
+    prefix caching and async scheduling make routine. Raising there killed the
+    worker mid-serve. Declining to trim one request for one step is always
+    available, so distrust the row and fall back to the same path a new slot
+    takes -- and never let the value itself reach the survival product.
+    """
+    manager = make_manager(manager_class)
+    manager.record_confidences(
+        torch.tensor([[0.9, 0.8, 0.4, 0.2], [float("nan"), 1, 1, 1]]),
+        SimpleNamespace(num_reqs=2, idx_mapping_np=np.array([2, 0])),
+    )
+    # Slot 2 ("a") keeps its real confidence: threshold 0.4 admits the 0.72
+    # prefix and stops. Slot 0 ("b") is distrusted, so all four drafts survive.
+    assert manager.get_num_tokens({"a": 5, "b": 5}, {"a": [-1] * 4, "b": [-1] * 4}) == 2 + 1 + 4 + 1
+    assert np.isfinite(manager._confidence).all()
+
+
+def test_manager_separates_out_of_range_from_the_prefill_artifact(manager_class):
+    # Finite but not a probability is not the prefill artifact; it would be a new
+    # defect, so it is counted apart while still being distrusted rather than fatal.
+    manager = make_manager(manager_class)
+    manager.record_confidences(
+        torch.tensor([[0.9, 0.8, 0.4, 0.2], [1.5, 1, 1, 1]]),
+        SimpleNamespace(num_reqs=2, idx_mapping_np=np.array([2, 0])),
+    )
+    assert manager._out_of_range_rows == 1
+    assert manager._untrusted_rows == 1
+    assert manager.get_num_tokens({"a": 5, "b": 5}, {"a": [-1] * 4, "b": [-1] * 4}) == 2 + 1 + 4 + 1
+
+
+def test_manager_still_rejects_a_confidence_shape_mismatch(manager_class):
+    # A shape mismatch is the speculator and this manager disagreeing about the
+    # draft geometry, not a property of the data, so it stays fatal.
+    manager = make_manager(manager_class)
+    with pytest.raises(ValueError):
+        manager.record_confidences(
+            torch.tensor([[0.9, 0.8]]),
+            SimpleNamespace(num_reqs=1, idx_mapping_np=np.array([2])),
+        )
+
+
+def test_av_logger_names_untrusted_rows_only_when_there_are_any(av_logger_class, caplog):
+    log = av_logger_class(lane="threshold", interval=1)
+    with caplog.at_level(logging.WARNING):
+        log.record(num_reqs=1, scheduled_drafts=4, admitted_drafts=4, verify_tokens=5)
+        log.record(num_reqs=1, scheduled_drafts=4, admitted_drafts=4, verify_tokens=5, untrusted_rows=2)
+        log.record(
+            num_reqs=1,
+            scheduled_drafts=4,
+            admitted_drafts=4,
+            verify_tokens=5,
+            untrusted_rows=3,
+            out_of_range_rows=1,
+        )
+    first, second, third = (r.getMessage() for r in caplog.records)
+    assert "untrusted_rows" not in first
+    assert "untrusted_rows=2" in second and "out_of_range" not in second
+    assert "untrusted_rows=3 (out_of_range=1)" in third
+
+
 def config_gate(policy, value, upstream=False):
     # Load the real guard without importing the Ascend platform bootstrap.
     import ast

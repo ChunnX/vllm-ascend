@@ -32,6 +32,8 @@ class EagerAVLogger:
         self._verify_tokens = 0
         self._trimmed_steps = 0
         self._capacities: tuple[int, ...] | None = None
+        self._untrusted = 0
+        self._out_of_range = 0
         self._emitted = False
 
     def sampling(self) -> bool:
@@ -51,6 +53,8 @@ class EagerAVLogger:
         admitted_drafts: int,
         verify_tokens: int,
         capacities: Sequence[int] | None = None,
+        untrusted_rows: int = 0,
+        out_of_range_rows: int = 0,
     ) -> None:
         self._steps += 1
         self._reqs += num_reqs
@@ -59,6 +63,8 @@ class EagerAVLogger:
         self._verify_tokens += verify_tokens
         if admitted_drafts < scheduled_drafts:
             self._trimmed_steps += 1
+        self._untrusted += untrusted_rows
+        self._out_of_range += out_of_range_rows
         if capacities is not None:
             self._capacities = tuple(int(c) for c in capacities)
         # Always emit for the very first recorded step. A run shorter than one
@@ -72,9 +78,17 @@ class EagerAVLogger:
 
         steps = self._steps
         keep = 100.0 * self._admitted / self._scheduled if self._scheduled else 100.0
+        # Untrusted rows are expected during prefill bursts and only mean those
+        # requests kept their drafts. An out_of_range count is different: finite
+        # but not a probability is not the prefill artifact, so name it apart.
+        suffix = ""
+        if self._untrusted:
+            suffix = f" | untrusted_rows={self._untrusted}"
+            if self._out_of_range:
+                suffix += f" (out_of_range={self._out_of_range})"
         logger.warning(
             "[DSPARK-EAGER-AV/%s] %d steps | mean reqs=%.2f scheduled_drafts=%.2f "
-            "admitted=%.2f verify_tokens=%.2f | kept=%.1f%% | trimmed_steps=%d/%d | last_caps=%s",
+            "admitted=%.2f verify_tokens=%.2f | kept=%.1f%% | trimmed_steps=%d/%d | last_caps=%s%s",
             self.lane,
             steps,
             self._reqs / steps,
@@ -85,6 +99,7 @@ class EagerAVLogger:
             self._trimmed_steps,
             steps,
             "n/a" if self._capacities is None else list(self._capacities),
+            suffix,
         )
         self._steps = 0
         self._reqs = 0
@@ -92,3 +107,5 @@ class EagerAVLogger:
         self._admitted = 0
         self._verify_tokens = 0
         self._trimmed_steps = 0
+        self._untrusted = 0
+        self._out_of_range = 0

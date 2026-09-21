@@ -37,6 +37,10 @@ class EagerSurvivalVerificationManager(AdaptiveVerificationManager):
         self._capacity_per_req = None
         self._cu_num_logits = torch.empty_like(query_start_loc)
         self._prepared_req_ids = None
+        # Rows whose confidence this step declined to trust, reported once per
+        # aggregation window and then reset.
+        self._untrusted_rows = 0
+        self._out_of_range_rows = 0
         self._log = EagerAVLogger(
             lane="threshold",
             interval=envs_ascend.VLLM_ASCEND_DSPARK_EAGER_AV_LOG_INTERVAL,
@@ -67,14 +71,31 @@ class EagerSurvivalVerificationManager(AdaptiveVerificationManager):
         # boundary cases. The drafter already samples identical tokens per rank.
         get_tp_group().broadcast(current, src=0)
         values = current.cpu().numpy()  # Intentional single blocking D2H for correctness testing.
+        # A shape mismatch stays fatal: that is the speculator and this manager
+        # disagreeing about the draft geometry, not a property of the data.
         if values.shape != (input_batch.num_reqs, self.num_speculative_steps):
             raise ValueError("DSpark confidence shape does not match the proposed draft rows")
-        if not np.isfinite(values).all() or np.any((values < 0) | (values > 1)):
-            raise ValueError("DSpark confidence contains non-finite or out-of-range values")
+        # The confidence head emits non-finite rows during prefill bursts, which
+        # prefix caching and async scheduling make common. Such a row carries no
+        # usable probability, so distrust it and fall back to retaining its
+        # available drafts -- the same conservative path a new or missing slot
+        # takes. Never trim on the strength of a value we do not believe, and
+        # never take the engine down for one: declining to trim one request for
+        # one step is always available and always safe.
+        nonfinite = ~np.isfinite(values)
+        # Kept separate because the cause is different: out-of-range but finite
+        # is not the prefill artifact, it would be a new defect, so it has to
+        # stay visible instead of blending into the same counter.
+        out_of_range = ~nonfinite & ((values < 0) | (values > 1))
+        untrusted = (nonfinite | out_of_range).any(axis=1)
         self._valid.fill(False)  # Never reuse a proposal from a batch older than the latest one.
         slots = input_batch.idx_mapping_np
-        self._confidence[slots] = values
-        self._valid[slots] = True
+        # Store the neutral value rather than the rejected one, so no NaN can
+        # reach the survival product even if a later change reads a stale slot.
+        self._confidence[slots] = np.where(nonfinite | out_of_range, 1.0, values)
+        self._valid[slots] = ~untrusted
+        self._untrusted_rows = int(untrusted.sum())
+        self._out_of_range_rows = int(out_of_range.any(axis=1).sum())
 
     def get_num_tokens(self, num_tokens_per_req, draft_tokens):
         req_ids = list(num_tokens_per_req)
@@ -98,7 +119,10 @@ class EagerSurvivalVerificationManager(AdaptiveVerificationManager):
             admitted_drafts=int(caps.sum()),
             verify_tokens=num_tokens,
             capacities=caps.tolist(),
+            untrusted_rows=self._untrusted_rows,
+            out_of_range_rows=self._out_of_range_rows,
         )
+        self._untrusted_rows = self._out_of_range_rows = 0
         return num_tokens
 
     def prepare_request_order(self, req_ids):
