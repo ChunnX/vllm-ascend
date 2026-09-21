@@ -1418,11 +1418,21 @@ def test_gdn_local_view_zeroes_padding_rows_and_keeps_each_group_block_table() -
     assert uncached.query_start_loc_cpu is not view0.query_start_loc_cpu
 
 
+_SPEC_AXIS_NUM_SPEC = 7
+
+
 def _full_graph_spec_metadata(*, max_num_seqs: int, live_reqs: int, adaptive: bool, **builder_kwargs):
-    """Build pure-speculative FULL-graph metadata for a partly filled batch."""
+    """Build pure-speculative FULL-graph metadata for a partly filled batch.
+
+    Every request queries num_spec + 1 tokens, which is what makes the batch
+    pure speculative decode, and the block table is given exactly num_spec + 1
+    columns because the speculative state indices select that many candidate
+    state rows per request.
+    """
+    width = _SPEC_AXIS_NUM_SPEC + 1
     batch_spec = BatchSpec(
-        seq_lens=[64] * live_reqs,
-        query_lens=[8] * live_reqs,
+        seq_lens=[width] * live_reqs,
+        query_lens=[width] * live_reqs,
         name=f"spec_{live_reqs}of{max_num_seqs}",
     )
     common_attn_metadata = create_common_attn_metadata(
@@ -1430,10 +1440,13 @@ def _full_graph_spec_metadata(*, max_num_seqs: int, live_reqs: int, adaptive: bo
         block_size=16,
         device=torch.device("cpu"),
     )
+    common_attn_metadata.block_table_tensor = torch.arange(10, 10 + live_reqs * width, dtype=torch.int32).view(
+        live_reqs, width
+    )
     builder = _make_builder(
         device=torch.device("cpu"),
         num_heads=32,
-        num_speculative_tokens=7,
+        num_speculative_tokens=_SPEC_AXIS_NUM_SPEC,
         cudagraph_mode=CUDAGraphMode.FULL_DECODE_ONLY,
         max_num_seqs=max_num_seqs,
         enable_adaptive_verification=adaptive,
@@ -1443,7 +1456,7 @@ def _full_graph_spec_metadata(*, max_num_seqs: int, live_reqs: int, adaptive: bo
         common_prefix_len=0,
         common_attn_metadata=common_attn_metadata,
         num_accepted_tokens=torch.ones(live_reqs, dtype=torch.int32),
-        num_decode_draft_tokens_cpu=torch.full((live_reqs,), 7, dtype=torch.int32),
+        num_decode_draft_tokens_cpu=torch.full((live_reqs,), _SPEC_AXIS_NUM_SPEC, dtype=torch.int32),
     )
     return builder, metadata
 
@@ -1494,16 +1507,16 @@ def test_ragged_spec_decode_refuses_full_graph_when_the_axis_cannot_fit() -> Non
     Falling back to a per-bucket axis there would reintroduce exactly the shape
     this pins down, so the full-graph metadata path is declined instead.
     """
-    # One live request of eight tokens, so the pre-existing width gates
+    # One live request of num_spec + 1 tokens, so the pre-existing width gates
     # (num_spec_decodes and num_spec_decode_tokens against decode_cudagraph_max_bs)
     # both pass and the refusal can only come from the axis not fitting.
     builder, metadata = _full_graph_spec_metadata(
         max_num_seqs=16,
         live_reqs=1,
         adaptive=True,
-        max_cudagraph_capture_size=8,
+        max_cudagraph_capture_size=_SPEC_AXIS_NUM_SPEC + 1,
     )
-    assert builder.decode_cudagraph_max_bs == 8
+    assert builder.decode_cudagraph_max_bs == _SPEC_AXIS_NUM_SPEC + 1
     assert builder.gdn_request_axis == 16
     assert builder.gdn_request_axis_fits_graph is False
     # Declined: the metadata keeps the live width instead of a fixed axis.

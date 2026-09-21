@@ -72,13 +72,17 @@ PD 分离联调时暴露：每轮测试开始、并发从小到大爬升时，�
 `spec_batch_size` 之外还加了 `num_spec_decodes <= spec_batch_size` 的断言：按固定
 宽度切片时，批更宽会静默丢掉活跃行，那是这个改动唯一能损坏状态的方式。
 
-> **未在设备上验证。** 这段代码在 eager 下不可达（FULL 分支 gate 在
-> `use_full_cuda_graph` 上，而两条 eager lane 强制 `CUDAGraphMode.NONE`）。三个
-> 对应的 UT 在 `tests/ut/ops/test_gdn_attn_builder.py`，需要装了插件的环境才能跑：
+> 这段代码在 eager 下不可达（FULL 分支 gate 在 `use_full_cuda_graph` 上，而两条
+> eager lane 强制 `CUDAGraphMode.NONE`），所以整网门槛不会碰到它。三个 UT 在
+> `tests/ut/ops/test_gdn_attn_builder.py`，需要装了插件的环境：
 >
 > ```bash
 > pytest -sv tests/ut/ops/test_gdn_attn_builder.py -k "gdn_request_axis or per_bucket_request_axis"
 > ```
+>
+> 构造 pure-spec 批时 block table 必须显式给 `num_spec + 1` 列——speculative 状态
+> 索引按 `block_table[:, :num_spec+1]` 选每请求的候选状态行，列数不足会在
+> `copy_` 处报 shape 不匹配，而且固定 K 那条路径同样会报，与本改动无关。
 
 ## 长期正确性的十条不变量
 
