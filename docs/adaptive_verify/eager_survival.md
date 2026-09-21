@@ -9,8 +9,8 @@
 - vLLM：v0.28.0，MRV2。
 - 验证服务器：Ascend 910B4，8×32GB；仅使用分配的 4 张开发卡，模型固定 TP=4。
 - 与 `main_dspark_adaptive_verify_dev` 使用不同 worktree；不合并后者的 FULL 实验补丁。
-- 第一版用于 eager 正确性验证。算子数值门槛已在 910B4 通过（2026-09-21，5/5）；
-  TP=4 整网对照尚未执行，因此不宣称已解决模型精度。
+- 第一版用于 eager 正确性验证。算子数值门槛与 TP=4 整网对照均已在 910B4 通过
+  （2026-09-21）。覆盖范围见下方“已验证与未验证”，不要外推。
 
 ## 使用方式
 
@@ -38,7 +38,7 @@ vllm serve /path/to/Qwen3.6-27B \
 
 这里 0.4 是测试示例，不是上游默认值。模型验证固定 TP=4、同步调度；TP 的
 confidence 以 TP rank 0 广播对齐，四个 rank 必须使用相同的裁剪长度与请求顺序。
-TP=4 是本阶段必测配置，整网对照尚未上机验收。当前 guard 限制
+TP=4 是本阶段必测配置，整网对照已上机通过。当前 guard 限制
 PP=PCP=DCP=1、无 LoRA/DBO、K 在 1..15。模型测试使用 BF16、禁用 prefix cache
 以减少初始变量；prefix cache、异步调度和多卡并非本次已验证能力。
 
@@ -174,6 +174,25 @@ pytest -sv tests/e2e/nightly/single_node/ops/singlecard_ops/test_eager_gdn_varle
 ragged eager batch 若只包含真实请求，每行至少一个 anchor，则 T=B 只能是
 所有请求都执行一个 token，没有长请求加空行歧义。零 draft 是长度 1，空行才是 0。
 本分支保持 eager；该 padding 测试为后续入图验收保留，不代表 eager 必然产生空行。
+
+### 已验证与未验证
+
+2026-09-21，910B4 四卡，Qwen3.6-27B + DSpark，K=7，BF16，TP=4，greedy，
+`max_num_seqs=4`，48 token，关闭 prefix cache 与异步调度。四条 lane 全部与
+fixed-K baseline 逐 token 相等，且每条裁剪 lane 都确实裁了：
+
+| lane | kept | last_caps | 覆盖的路径 |
+| --- | --- | --- | --- |
+| `threshold:0.0` | 100% | `[7,7,7]` | 新 GDN 变长路径与 fixed-K 的等价性 |
+| `threshold:0.4` | 69.3% | `[2,7,7,3]` | CPU 策略下的 ragged 批 |
+| `threshold:1.0` | 0% | `[0,0,0,0]` | 全裁光，零 draft decode 仍走 spec 路径 |
+| `upstream` | 52.1% | `[1,6,5,3]` | 上游 cost-argmax 预算 + device 端 survival top-k |
+
+`verify_tokens = admitted + reqs` 在四条里都成立，`scheduled = reqs × K` 也都对得上。
+
+**未验证**，不要当作已支持：prefix caching、异步调度、更高并发、更长上下文、
+chunked prefill 与 spec decode 混合、随机采样（逐 token 相等只是 greedy 下的
+判据，采样需要另做分布验证）、以及任何性能结论（每步三次阻塞 D2H）。
 
 ### 整网门槛
 

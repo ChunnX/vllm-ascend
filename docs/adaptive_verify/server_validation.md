@@ -82,6 +82,11 @@ python examples/dspark_eager_adaptive_verify.py --lanes threshold:0.4 upstream
 （query 边界、GDN state 选择、logits 摆放），不是采样噪声。脚本会打印首个
 分歧的 prompt 与 token 下标，据此定位。
 
+2026-09-21 记录：四条 lane 全部 MATCH，`kept` 依次为 100% / 69.3% / 0% /
+52.1%，`last_caps` 依次为 `[7,7,7]` / `[2,7,7,3]` / `[0,0,0,0]` / `[1,6,5,3]`。
+中间两条是真正的 ragged 批；`threshold:1.0` 把 draft 全裁光，退化成每请求一个
+token，覆盖零 draft decode 仍走 spec 路径这一条。
+
 `threshold:0.0` 保留全部 draft，是把“新 GDN 路径”与“任何裁剪”分离开的等价性
 检查，应当先过。每个 lane 的完整子进程日志保留在脚本打印的目录里。
 
