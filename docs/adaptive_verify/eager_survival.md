@@ -237,9 +237,13 @@ TP=4、四请求 greedy，依次对比 fixed K 与 `threshold:0/0.4/1`、`upstre
 `kept=100%` 表示这一轮没有裁剪，输出相等不能证明变长路径被走到。
 两个 lane 每步各付一次阻塞 D2H，不用于宣称性能收益。
 
-## Rebase 到 v0.29 main 后的已知缺口
+## Rebase 后的已知缺口
 
-2026-09-21 rebase 到 `origin/main`（已升至 vLLM v0.29.0）时，main 把
+**vLLM 仍固定在 0.28.0。** main 的依赖声明升到了 v0.29.0，但它保留了 106 处
+`vllm_version_is("0.28.0")` 兼容分支，0.28 仍是受支持的目标，本分支不跟着升。
+`initialize_kv_cache` 等覆写在 rebase 后用的是 main 的签名与版本门控。
+
+2026-09-21 rebase 到 `origin/main` 时，main 把
 `attention_v1.py` 里约 395 行的逐步 graph-update 路径整段删掉，换成
 `raise NotImplementedError("FIA and PA should be use UpdatableGraph.")`。
 FIA sink 作为独立 backend（`attention/fia_sink_v1.py`）完整保留，但它对那条旧
@@ -249,8 +253,10 @@ capture、replay 时重读自己的 device 输入。eager 不走这条路，所�
 **入图阶段必须对着 `UpdatableGraph` 重新接上**，否则 FULL 图下 draft 层会被
 按普通 FIA 层逐步更新。
 
-同时，eager 的全部验证（算子 5/5、整网四条 lane）是在 **vLLM 0.28.0** 上做的。
-rebase 后的 vLLM 版本不同，这些结论需要在新环境重跑一遍才继续有效。
+eager 的全部验证（算子 5/5、整网四条 lane）在 rebase 前做的。vLLM 没变，但
+vllm-ascend 前进了 120 个 commit，其中 `gdn.py` 换成了 main 缓存的 packed
+conv1d 权重（布局与原先手写的转置一致）。所以这些结论需要重跑一遍确认没有
+回归——算子源码未改动，不必重装算子包。
 
 ## 后续阶段
 
