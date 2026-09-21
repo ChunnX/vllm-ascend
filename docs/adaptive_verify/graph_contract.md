@@ -138,6 +138,31 @@ Q，或让 controller 选中的 Q 与真正回放的图不一致。
 所以不能用「裁掉多少 token」估算收益。接受率很高、controller 经常选完整 Q 时，
 新增开销可能抵消节省。
 
+## 从 main_dspark_adaptive_verify_dev 复用了什么
+
+那条分支直接冲 FULL，代价记录在它自己的历史里：2 次 revert、约 10 个纯
+instrumentation commit、以及一次**撤回的结论**——一个 `max_num_seqs=1` 的实验
+"否证"了几何假设，但那次运行带着 block-table 缺陷，所以「任何配置都是错的，这个
+实验不可能否证任何东西」，同一轮的其他排除也建立在同样被污染的运行上。它最终到达
+的是 **uniform FULL**（`cap=99`，不裁剪）；ragged FULL 被显式推迟，padding 行的
+场景从当期验收里退出。
+
+**已经独立有了的，不用再拿：**
+
+| 那边的修复 | 本分支的对应 |
+| --- | --- |
+| 重复 `build()` 让两个前处理成死代码 | `a32e38e87`，独立发现同一缺陷 |
+| 零 draft 行塌回普通 decode，把非投机算子烤进图 | `mamba_hybrid.py` 的 `spec_decode_mask = is_decode & ~is_prefilling`；且 `threshold:1.0`（`kept=0%`）在 eager 下端到端验过 |
+| batch memo 把第一个 group 的 block table 发给所有 Mamba group | `_derive_group_state_indices` + per-group block table |
+| — | conv host tiling 的 qsl 推断、`inline` 跨编译单元的 ODR |
+| — | `B_gdn = B_max`（那边退回 uniform 而非固定轴） |
+
+**已复用：** uniform decode 描述符（阶段 A 的核心）。
+
+**尚未复用，阶段 B 需要：** 概率烤进/代理进捕获的 FULL draft 图、`B_fia` 固定为
+服务最大值 +1 行、清持久 seq_lens 镜像里的 padding 行、padding 行在列表满时的正
+KV 长度、FIA replay line 存活于 capture。
+
 ## DSpark 与 DFlash 的差异
 
 - **probability 来源不同，对我们有利。** DFlash 原本只需 argmax，D-Cut 额外要算
@@ -152,15 +177,21 @@ Q，或让 controller 选中的 Q 与真正回放的图不一致。
 
 ## 修正后的阶段划分
 
-| 阶段 | 内容 | 判据 |
-| --- | --- | --- |
-| 1（已完成） | eager 下把状态算对 | 算子 golden 5/5；整网四条 lane 逐 token 相等 |
-| 1.5 | 放弃精确 host 视图（`VLLM_ASCEND_DSPARK_AV_CPU_UPPER_BOUND`） | `+ub` lane 仍然 MATCH |
-| 2a | PIECEWISE：稳定区域入图，GDN 与部分 attention 保留为图边界 | 输出相等；**真实 cost table 随 Q 单调** |
-| 2b | dcut GDN 算子也进 PIECEWISE | 输出相等；cost 进一步下降 |
-| 3 | ragged FULL：`B_gdn=B_max`、`B_graph=min(Q,B_max)`、`B_fia=B_live(+1)`、固定地址、descriptor 绑定概率、mixed 路由契约 | 输出相等；cost table 相邻 bucket 可区分 |
-| 4 | 翻 capability，让上游 factory 直接接纳 GDN，撤掉自建 manager | 不设 env 也能跑；可上游 |
+| 阶段 | 内容 | 判据 | 状态 |
+| --- | --- | --- | --- |
+| 1 | eager 下把状态算对 | 算子 golden 5/5；整网四条 lane 逐 token 相等 | 2026-09-21 通过 |
+| 1.5 | 放弃精确 host 视图（`VLLM_ASCEND_DSPARK_AV_CPU_UPPER_BOUND`） | `+ub` lane 仍然 MATCH | 2026-09-21 通过 |
+| **A** | uniform 图：`VLLM_ASCEND_DSPARK_AV_GRAPH=uniform`，按 uniform verify 宽度捕获，裁剪批回退 | `+graph` lane 输出相等；真实 cost table 随 Q 变化 | 待上机 |
+| **B** | ragged 图：`B_graph=min(Q,B_max)`、`B_fia`、固定地址、descriptor 绑定概率、mixed 路由契约 | 输出相等；cost table 相邻 bucket 可区分 | 未开始 |
+| C | 翻 capability，让上游 factory 直接接纳 GDN，撤掉自建 manager | 不设 env 也能跑；可上游 | 未开始 |
 
-阶段 2a 有一个重要简化：**PIECEWISE 第一步不需要 GDN 声明 `ALWAYS`**，因为 GDN 仍
-是图边界。需要的只是不再强制 `CUDAGraphMode.NONE`。两个 capability flag 是阶段 4
-为了让上游 factory 接纳 GDN 才需要的，不是入图的前置条件。
+### 为什么跳过通用 PIECEWISE
+
+文章里 PIECEWISE 承担两件事：可调试的中间站，以及让 cost table 不再是平的。
+阶段 A 同时给了这两样——图共存的正确性证明，加上 per-capture-size 的真实计时。
+所以 PIECEWISE 在这里是冗余的。**但不烧桥**：阶段 A 一旦出问题，PIECEWISE 仍然是
+二分的中间站，届时再退回去。
+
+两个 capability flag（`supports_device_cpu_query_lens_mismatch`、`ALWAYS`）属于
+阶段 C，是为了让上游 factory 直接接纳 GDN，**不是入图的前置条件**——本分支的两条
+lane 自己替换了 factory，所以阶段 A/B 不经过那两道 gate。

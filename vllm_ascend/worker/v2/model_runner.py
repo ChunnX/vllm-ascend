@@ -934,10 +934,36 @@ def graph_manager_wrapper(model_runner):
         varlen_decode: bool = False,
     ):
         if getattr(model_runner, "eager_survival_test", False):
-            # v0.28 unconditionally upgrades AV to FULL_AND_PIECEWISE. The
-            # threshold lane has no graph cost model and must remain eager.
-            cudagraph_mode = CUDAGraphMode.NONE
-            vllm_config.compilation_config.cudagraph_mode = CUDAGraphMode.NONE
+            from vllm_ascend.worker.v2.spec_decode.dspark.eager_config import (
+                GRAPH_MODE_NONE,
+                av_graph_mode,
+            )
+
+            if av_graph_mode() == GRAPH_MODE_NONE:
+                # v0.28 unconditionally upgrades AV to FULL_AND_PIECEWISE. With no
+                # graph mode selected the lane has no graph cost model and stays eager.
+                cudagraph_mode = CUDAGraphMode.NONE
+                vllm_config.compilation_config.cudagraph_mode = CUDAGraphMode.NONE
+            elif varlen_decode:
+                # Capture the decode descriptor at the uniform verify width.
+                # Adaptive verification otherwise asks for the variable-length
+                # descriptor, which carries min(num_tokens, max_num_seqs) requests
+                # with the dummy tokens spread evenly: every bucket at or below
+                # max_num_seqs is captured as one token per request, while a real
+                # speculative batch replays one request per verify width. Full
+                # attention tolerates that -- it re-issues its kernel with
+                # refreshed host lengths every replay -- but the GDN layers get no
+                # replay-time update, so the geometry captured into the recurrent
+                # and conv tasks is the only geometry they ever run.
+                #
+                # The uniform width is the shape a real speculative batch
+                # presents, and the one that already replays correctly without
+                # adaptive verification. A trimmed batch is not uniform, so it
+                # matches no full-graph descriptor and falls back rather than
+                # replaying a shape captured for a different request layout. That
+                # is correct and gives up the trimming benefit under graph, which
+                # is what the ragged mode exists to recover.
+                varlen_decode = False
         return ModelAclGraphManager(
             vllm_config,
             device,

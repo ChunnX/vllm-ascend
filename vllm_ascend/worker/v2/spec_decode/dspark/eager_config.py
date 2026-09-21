@@ -17,14 +17,45 @@ adaptations on, so both lanes share the same ragged-decode plumbing.
 import vllm_ascend.envs as envs_ascend
 from vllm_ascend.worker.v2.spec_decode.dspark.eager_policy import validate_threshold
 
+GRAPH_MODE_NONE = "none"
+GRAPH_MODE_UNIFORM = "uniform"
+GRAPH_MODE_RAGGED = "ragged"
+_GRAPH_MODES = (GRAPH_MODE_NONE, GRAPH_MODE_UNIFORM, GRAPH_MODE_RAGGED)
+
+
+def av_graph_mode() -> str:
+    """Validated value of VLLM_ASCEND_DSPARK_AV_GRAPH.
+
+    ``ragged`` is refused rather than accepted-and-broken: capturing the trimmed
+    geometry needs the graph descriptor, the attention request axis, fixed-address
+    buffers and descriptor-bound confidence, and none of those are in place. A
+    mode that starts and then replays a shape captured for a different request
+    layout is worse than one that will not start.
+    """
+    mode = envs_ascend.VLLM_ASCEND_DSPARK_AV_GRAPH
+    if mode not in _GRAPH_MODES:
+        raise ValueError(f"VLLM_ASCEND_DSPARK_AV_GRAPH must be one of {_GRAPH_MODES}, got {mode!r}")
+    if mode == GRAPH_MODE_RAGGED:
+        raise ValueError(
+            "VLLM_ASCEND_DSPARK_AV_GRAPH=ragged is not implemented yet: capturing the "
+            "trimmed geometry still needs B_graph=min(Q,B_max), the attention request "
+            "axis, fixed-address buffers and descriptor-bound confidence"
+        )
+    return mode
+
 
 def _validate_eager_lane(config) -> None:
-    """Preconditions shared by both eager adaptive-verification lanes."""
+    """Preconditions shared by both adaptive-verification lanes."""
     spec = config.speculative_config
     if spec is None or spec.method != "dspark" or not spec.enable_adaptive_verification:
-        raise ValueError("Eager adaptive verification requires DSpark and enable_adaptive_verification=true")
-    if not config.model_config.enforce_eager or spec.enforce_eager is False:
-        raise ValueError("Eager adaptive verification requires --enforce-eager and an eager drafter")
+        raise ValueError("Adaptive verification lane requires DSpark and enable_adaptive_verification=true")
+    if av_graph_mode() == GRAPH_MODE_NONE:
+        # The eager gate validated this lane with both target and draft eager.
+        if not config.model_config.enforce_eager or spec.enforce_eager is False:
+            raise ValueError(
+                "The adaptive verification lane requires --enforce-eager and an eager drafter "
+                "unless VLLM_ASCEND_DSPARK_AV_GRAPH selects a graph mode"
+            )
     parallel = config.parallel_config
     if any(
         getattr(parallel, key, 1) != 1

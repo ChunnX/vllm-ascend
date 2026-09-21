@@ -56,6 +56,7 @@ LOG_TAG = "[DSPARK-EAGER-AV"
 DATA_LINE_MARK = " steps | "
 LOG_INTERVAL_ENV = "VLLM_ASCEND_DSPARK_EAGER_AV_LOG_INTERVAL"
 CPU_UPPER_BOUND_ENV = "VLLM_ASCEND_DSPARK_AV_CPU_UPPER_BOUND"
+AV_GRAPH_ENV = "VLLM_ASCEND_DSPARK_AV_GRAPH"
 # Long enough for a 27B load plus generation on a cold page cache.
 CHILD_TIMEOUT_S = 1800
 
@@ -66,7 +67,7 @@ def run_engine(args: argparse.Namespace) -> int:
 
     llm = LLM(
         model=args.model,
-        enforce_eager=True,
+        enforce_eager=not args.graph,
         dtype="bfloat16",
         max_model_len=args.max_model_len,
         max_num_seqs=args.max_num_seqs,
@@ -77,7 +78,7 @@ def run_engine(args: argparse.Namespace) -> int:
             "method": "dspark",
             "model": args.draft,
             "num_speculative_tokens": args.num_speculative_tokens,
-            "enforce_eager": True,
+            "enforce_eager": not args.graph,
             # Off for the baseline. With it on and no lane selected the upstream
             # factory refuses to start at all: GDN is an SSM backend, so it opts
             # out of the device/CPU query-length mismatch adaptive verification
@@ -112,6 +113,7 @@ def child_env(lane: str) -> dict[str, str]:
     for key in LANE_ENVS:
         env.pop(key, None)
     env.pop(CPU_UPPER_BOUND_ENV, None)
+    env.pop(AV_GRAPH_ENV, None)
     # "+ub" asks the lane to stop copying the trimmed boundaries back to host,
     # so only the device view is exact. That is the contract a captured graph
     # runs under, and matching the baseline under it is what lets GDN claim
@@ -119,6 +121,13 @@ def child_env(lane: str) -> dict[str, str]:
     if lane.endswith("+ub"):
         lane = lane[: -len("+ub")]
         env[CPU_UPPER_BOUND_ENV] = "1"
+    # "+graph" runs the lane under the uniform graph descriptor. A captured graph
+    # cannot read the trimmed boundaries back each step, so this implies the
+    # inexact host view, and the engine must not be launched with enforce_eager.
+    if lane.endswith("+graph"):
+        lane = lane[: -len("+graph")]
+        env[CPU_UPPER_BOUND_ENV] = "1"
+        env[AV_GRAPH_ENV] = "uniform"
     if lane == "baseline":
         pass
     elif lane.startswith("threshold:"):
@@ -132,6 +141,7 @@ def child_env(lane: str) -> dict[str, str]:
 
 def run_lane(lane: str, args: argparse.Namespace, log_dir: Path) -> tuple[list[list[int]], bool]:
     log_path = log_dir / f"{lane.replace(':', '-')}.log"
+    env_for_lane = child_env(lane)
     cmd = [
         sys.executable,
         os.path.abspath(__file__),
@@ -153,12 +163,14 @@ def run_lane(lane: str, args: argparse.Namespace, log_dir: Path) -> tuple[list[l
     ]
     if lane != "baseline":
         cmd.append("--adaptive")
+    if AV_GRAPH_ENV in env_for_lane:
+        cmd.append("--graph")
     print(f"\n=== lane {lane}: starting, log -> {log_path}", flush=True)
     started = time.monotonic()
     with log_path.open("w") as stream:
         result = subprocess.run(
             cmd,
-            env=child_env(lane),
+            env=env_for_lane,
             text=True,
             stdout=stream,
             stderr=subprocess.STDOUT,
@@ -206,7 +218,7 @@ def trimming_note(lane: str, data_lines: list[str]) -> str:
     trimmed = sum(1 for line in data_lines if "kept=100.0%" not in line)
     if trimmed:
         return f", trimmed in {trimmed}/{len(data_lines)} reported windows"
-    expected = lane.removesuffix("+ub") == "threshold:0.0"
+    expected = lane.removesuffix("+ub").removesuffix("+graph") == "threshold:0.0"
     return ", kept every draft" + ("" if expected else " -- THIS MATCH IS NOT EVIDENCE")
 
 
@@ -224,6 +236,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--engine-child", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--adaptive", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--graph", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--model", default=os.getenv("VLLM_TEST_QWEN36_MODEL"))
     parser.add_argument("--draft", default=os.getenv("VLLM_TEST_DSPARK_MODEL"))
     parser.add_argument(
@@ -243,7 +256,8 @@ def main() -> int:
             "lane. threshold:0.0 keeps every draft, so it is the equivalence "
             "check that isolates the new GDN path from any trimming. Append "
             "'+ub' to run a lane with the host view left inexact (the contract "
-            "a captured graph runs under), e.g. 'threshold:0.4+ub'."
+            "a captured graph runs under), or '+graph' to also run it under the "
+            "uniform graph descriptor, e.g. 'threshold:0.4+graph'."
         ),
     )
     parser.add_argument("--tensor-parallel-size", type=int, default=4)
@@ -278,7 +292,7 @@ def main() -> int:
             # threshold:0.0 is supposed to keep everything; for any other lane a
             # match without trimming means the run never exercised the path it
             # was supposed to check.
-            if not trimmed and lane.removesuffix("+ub") != "threshold:0.0":
+            if not trimmed and lane.removesuffix("+ub").removesuffix("+graph") != "threshold:0.0":
                 inconclusive.append(lane)
             continue
         # Name the first divergence: the prompt and token index localize which

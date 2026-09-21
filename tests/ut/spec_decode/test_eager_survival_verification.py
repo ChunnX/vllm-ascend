@@ -27,6 +27,8 @@ STUB_ENVS = {
     "VLLM_ASCEND_DSPARK_EAGER_SURVIVAL_THRESHOLD": 0.4,
     "VLLM_ASCEND_DSPARK_EAGER_UPSTREAM_AV": False,
     "VLLM_ASCEND_DSPARK_EAGER_AV_LOG_INTERVAL": 50,
+    "VLLM_ASCEND_DSPARK_AV_CPU_UPPER_BOUND": False,
+    "VLLM_ASCEND_DSPARK_AV_GRAPH": "none",
 }
 
 
@@ -280,22 +282,58 @@ def test_av_logger_names_untrusted_rows_only_when_there_are_any(av_logger_class,
     assert "untrusted_rows=3 (out_of_range=1)" in third
 
 
-def config_gate(policy, value, upstream=False):
+def config_gate(policy, value, upstream=False, graph_mode="none"):
     # Load the real guard without importing the Ascend platform bootstrap.
     import ast
 
     source = ROOT / "vllm_ascend/worker/v2/spec_decode/dspark/eager_config.py"
     module = ast.parse(source.read_text())
-    module.body = [node for node in module.body if isinstance(node, ast.FunctionDef)]
+    # Keep the module-level constants alongside the functions: the guard reads
+    # the graph-mode names, so dropping assignments leaves it with a NameError.
+    module.body = [node for node in module.body if isinstance(node, ast.FunctionDef | ast.Assign)]
     envs = dict(STUB_ENVS)
     envs["VLLM_ASCEND_DSPARK_EAGER_SURVIVAL_THRESHOLD"] = value
     envs["VLLM_ASCEND_DSPARK_EAGER_UPSTREAM_AV"] = upstream
+    envs["VLLM_ASCEND_DSPARK_AV_GRAPH"] = graph_mode
     namespace = {
         "envs_ascend": SimpleNamespace(**envs),
         "validate_threshold": policy.validate_threshold,
     }
     exec(compile(module, str(source), "exec"), namespace)
     return namespace
+
+
+def test_graph_mode_none_still_demands_an_eager_target(policy):
+    config = eager_config()
+    config.model_config.enforce_eager = False
+    with pytest.raises(ValueError):
+        config_gate(policy, 0.4, graph_mode="none")["eager_survival_threshold"](config)
+
+
+def test_a_graph_mode_drops_the_eager_target_requirement(policy):
+    # Capturing a graph is the whole point of the uniform mode, so the lane must
+    # stop insisting on --enforce-eager once one is selected. Every other
+    # precondition still applies.
+    config = eager_config()
+    config.model_config.enforce_eager = False
+    gate = config_gate(policy, 0.4, graph_mode="uniform")
+    assert gate["eager_survival_threshold"](config) == 0.4
+    config.parallel_config.pipeline_parallel_size = 2
+    with pytest.raises(ValueError):
+        gate["eager_survival_threshold"](config)
+
+
+def test_ragged_graph_mode_is_refused_rather_than_half_working(policy):
+    # Starting and then replaying a shape captured for a different request layout
+    # is worse than not starting, so the unimplemented mode is a hard error.
+    with pytest.raises(ValueError, match="not implemented"):
+        config_gate(policy, 0.4, graph_mode="ragged")["av_graph_mode"]()
+
+
+@pytest.mark.parametrize("mode", ["", "full", "piecewise", "None", "uniform "])
+def test_an_unknown_graph_mode_is_rejected(policy, mode):
+    with pytest.raises(ValueError, match="must be one of"):
+        config_gate(policy, 0.4, graph_mode=mode)["av_graph_mode"]()
 
 
 def eager_config():
@@ -422,9 +460,15 @@ def test_zero_draft_decode_preserves_previous_accepted_selector(monkeypatch, pol
     np.testing.assert_array_equal(metadata.num_decode_draft_tokens_cpu.numpy(), [0, 1, -1])
 
 
-def test_target_graph_factory_cannot_upgrade_eager_lane():
+def _graph_factory(monkeypatch, mode):
+    """Extract graph_manager_wrapper and run it against a stubbed graph mode."""
     import ast
     from contextlib import contextmanager
+
+    config_module = types.ModuleType(f"{PKG}.eager_config")
+    config_module.GRAPH_MODE_NONE = "none"
+    config_module.av_graph_mode = lambda: mode
+    monkeypatch.setitem(sys.modules, config_module.__name__, config_module)
 
     path = ROOT / "vllm_ascend/worker/v2/model_runner.py"
     tree = ast.parse(path.read_text())
@@ -434,8 +478,7 @@ def test_target_graph_factory_cannot_upgrade_eager_lane():
         type_ignores=[],
     )
     ast.fix_missing_locations(code)
-    original = object()
-    upstream = SimpleNamespace(ModelCudaGraphManager=original)
+    upstream = SimpleNamespace(ModelCudaGraphManager=object())
     namespace = {
         "contextmanager": contextmanager,
         "vllm_model_runner": upstream,
@@ -443,9 +486,47 @@ def test_target_graph_factory_cannot_upgrade_eager_lane():
         "ModelAclGraphManager": lambda *args, **kwargs: (args, kwargs),
     }
     exec(compile(code, str(path), "exec"), namespace)
+    return namespace["graph_manager_wrapper"], upstream
+
+
+def test_target_graph_factory_keeps_the_lane_eager_when_no_graph_mode_is_set(monkeypatch):
+    wrapper, upstream = _graph_factory(monkeypatch, "none")
+    original = upstream.ModelCudaGraphManager
     config = SimpleNamespace(compilation_config=SimpleNamespace(cudagraph_mode="full_and_piecewise"))
-    with namespace["graph_manager_wrapper"](SimpleNamespace(eager_survival_test=True)):
+    with wrapper(SimpleNamespace(eager_survival_test=True)):
         args, _ = upstream.ModelCudaGraphManager(config, "cpu", "full_and_piecewise", 8, varlen_decode=True)
         assert args[2] == "none"
         assert config.compilation_config.cudagraph_mode == "none"
     assert upstream.ModelCudaGraphManager is original
+
+
+def test_uniform_graph_mode_keeps_the_graph_and_drops_the_varlen_descriptor(monkeypatch):
+    """The captured geometry has to be the one a real batch replays.
+
+    Adaptive verification asks for the variable-length decode descriptor, which
+    spreads the dummy tokens evenly and so captures one token per request for
+    every bucket at or below max_num_seqs -- while a speculative batch replays
+    one request per verify width. Full attention re-issues its kernel with
+    refreshed host lengths each replay and survives; the GDN layers get no such
+    update, so whatever geometry was captured into the recurrent and conv tasks
+    is the only one they ever run.
+    """
+    wrapper, upstream = _graph_factory(monkeypatch, "uniform")
+    config = SimpleNamespace(compilation_config=SimpleNamespace(cudagraph_mode="full_decode_only"))
+    with wrapper(SimpleNamespace(eager_survival_test=True)):
+        args, kwargs = upstream.ModelCudaGraphManager(config, "cpu", "full_decode_only", 8, varlen_decode=True)
+        # The graph mode survives ...
+        assert args[2] == "full_decode_only"
+        assert config.compilation_config.cudagraph_mode == "full_decode_only"
+        # ... and the descriptor is the uniform one.
+        assert kwargs["varlen_decode"] is False
+
+
+def test_a_graph_mode_leaves_a_non_lane_runner_alone(monkeypatch):
+    # The wrapper must not touch a run that is not using an adaptive lane.
+    wrapper, upstream = _graph_factory(monkeypatch, "uniform")
+    config = SimpleNamespace(compilation_config=SimpleNamespace(cudagraph_mode="full_decode_only"))
+    with wrapper(SimpleNamespace(eager_survival_test=False)):
+        args, kwargs = upstream.ModelCudaGraphManager(config, "cpu", "full_decode_only", 8, varlen_decode=True)
+        assert args[2] == "full_decode_only"
+        assert kwargs["varlen_decode"] is True

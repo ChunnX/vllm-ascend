@@ -50,6 +50,25 @@ env_variables: dict[str, Callable[[], Any]] = {
     # price a real one. Requires DSpark AV and an eager target/draft. Default 0
     # (off). Not sensitive. Mutually exclusive with the survival-threshold lane.
     "VLLM_ASCEND_DSPARK_EAGER_UPSTREAM_AV": lambda: bool(int(os.getenv("VLLM_ASCEND_DSPARK_EAGER_UPSTREAM_AV", "0"))),
+    # Which graph mode the DSpark adaptive-verification lane runs under.
+    #   none    -- force CUDAGraphMode.NONE (default; what the eager gate validated)
+    #   uniform -- allow graphs, but capture the decode descriptor at the uniform
+    #              verify width. Adaptive verification otherwise switches the
+    #              descriptor to min(num_tokens, max_num_seqs) requests with the
+    #              dummy tokens spread evenly, so every bucket at or below
+    #              max_num_seqs captures one token per request while a real
+    #              speculative batch replays one request per verify width. Full
+    #              attention survives that by re-issuing its kernel with refreshed
+    #              host lengths; the GDN layers get no replay-time update, so the
+    #              captured recurrent and conv geometry is the only geometry they
+    #              ever run. A trimmed batch is not uniform and matches no
+    #              descriptor, so it falls back instead of replaying the wrong
+    #              shape -- correct, with no trimming benefit under graph.
+    #   ragged  -- capture the trimmed geometry itself. Needs B_graph=min(Q,B_max),
+    #              B_fia, fixed-address buffers and descriptor-bound confidence;
+    #              rejected until those land.
+    # Not sensitive. See docs/adaptive_verify/graph_contract.md.
+    "VLLM_ASCEND_DSPARK_AV_GRAPH": lambda: os.getenv("VLLM_ASCEND_DSPARK_AV_GRAPH", "none"),
     # Stop making the host query/seq-length view exact for the eager AV lanes.
     # Both lanes currently read the trimmed boundaries back from device each
     # step, which a captured graph cannot do. With this set the host keeps the
