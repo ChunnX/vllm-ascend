@@ -136,12 +136,15 @@ def _make_vllm_config(
     num_speculative_tokens: int = 0,
     mamba_cache_mode: str = "none",
     cudagraph_mode: CUDAGraphMode = CUDAGraphMode.NONE,
+    enable_adaptive_verification: bool = False,
+    max_cudagraph_capture_size: int | None = None,
 ):
     speculative_config = None
     if num_speculative_tokens > 0:
         speculative_config = SimpleNamespace(
             num_speculative_tokens=num_speculative_tokens,
             parallel_drafting=False,
+            enable_adaptive_verification=enable_adaptive_verification,
         )
 
     model_config = SimpleNamespace(max_model_len=max_model_len)
@@ -151,7 +154,7 @@ def _make_vllm_config(
         cache_config=SimpleNamespace(mamba_cache_mode=mamba_cache_mode),
         compilation_config=SimpleNamespace(
             cudagraph_mode=cudagraph_mode,
-            max_cudagraph_capture_size=None,
+            max_cudagraph_capture_size=max_cudagraph_capture_size,
         ),
         speculative_config=speculative_config,
         scheduler_config=SimpleNamespace(
@@ -177,12 +180,18 @@ def _make_builder(
     block_size: int = 16,
     num_speculative_blocks: int = 0,
     cudagraph_mode: CUDAGraphMode = CUDAGraphMode.NONE,
+    max_num_seqs: int = 16,
+    enable_adaptive_verification: bool = False,
+    max_cudagraph_capture_size: int | None = None,
 ):
     vllm_config = _make_vllm_config(
         num_heads=num_heads,
+        max_num_seqs=max_num_seqs,
         num_speculative_tokens=num_speculative_tokens,
         mamba_cache_mode=mamba_cache_mode,
         cudagraph_mode=cudagraph_mode,
+        enable_adaptive_verification=enable_adaptive_verification,
+        max_cudagraph_capture_size=max_cudagraph_capture_size,
     )
     spec = MambaSpec(
         block_size=block_size,
@@ -1407,3 +1416,95 @@ def test_gdn_local_view_zeroes_padding_rows_and_keeps_each_group_block_table() -
     # Without a cache every caller recomputes, so nothing is shared.
     uncached = builder._get_gdn_local_metadata(group0, num_decode_draft_tokens_cpu, None)
     assert uncached.query_start_loc_cpu is not view0.query_start_loc_cpu
+
+
+def _full_graph_spec_metadata(*, max_num_seqs: int, live_reqs: int, adaptive: bool, **builder_kwargs):
+    """Build pure-speculative FULL-graph metadata for a partly filled batch."""
+    batch_spec = BatchSpec(
+        seq_lens=[64] * live_reqs,
+        query_lens=[8] * live_reqs,
+        name=f"spec_{live_reqs}of{max_num_seqs}",
+    )
+    common_attn_metadata = create_common_attn_metadata(
+        batch_spec=batch_spec,
+        block_size=16,
+        device=torch.device("cpu"),
+    )
+    builder = _make_builder(
+        device=torch.device("cpu"),
+        num_heads=32,
+        num_speculative_tokens=7,
+        cudagraph_mode=CUDAGraphMode.FULL_DECODE_ONLY,
+        max_num_seqs=max_num_seqs,
+        enable_adaptive_verification=adaptive,
+        **builder_kwargs,
+    )
+    metadata = builder.build(
+        common_prefix_len=0,
+        common_attn_metadata=common_attn_metadata,
+        num_accepted_tokens=torch.ones(live_reqs, dtype=torch.int32),
+        num_decode_draft_tokens_cpu=torch.full((live_reqs,), 7, dtype=torch.int32),
+    )
+    return builder, metadata
+
+
+def test_ragged_spec_decode_pins_the_gdn_request_axis_to_max_num_seqs() -> None:
+    """A ragged bucket must present the service-maximum request axis, not its own.
+
+    With the axis following the bucket, each capture size carries its own
+    stateful tiling and request axis. That survives steady concurrency and fails
+    while concurrency ramps, because a shape change is only a speed question for
+    a stateless operator -- for a stateful one it changes the state read/write
+    contract. So every bucket is given B_max rows, and the rows past the live
+    ones have to be inert: zero length and an invalid state index, or an empty
+    row reads and writes state that now belongs to another request.
+    """
+    max_num_seqs, live = 16, 4
+    builder, metadata = _full_graph_spec_metadata(max_num_seqs=max_num_seqs, live_reqs=live, adaptive=True)
+
+    assert builder.ragged_spec_decode is True
+    assert builder.gdn_request_axis == max_num_seqs
+    assert metadata.spec_state_indices_tensor.shape[0] == max_num_seqs
+    assert metadata.spec_sequence_masks.shape[0] == max_num_seqs
+    assert metadata.num_accepted_tokens.shape[0] == max_num_seqs
+    assert metadata.spec_query_start_loc.shape[0] == max_num_seqs + 1
+
+    # The padded rows carry no tokens ...
+    query_lens = torch.diff(metadata.spec_query_start_loc)
+    assert torch.all(query_lens[live:] == 0)
+    # ... and address no state.
+    assert torch.all(metadata.spec_state_indices_tensor[live:] == NULL_BLOCK_ID)
+    assert not metadata.spec_sequence_masks[live:].any()
+
+
+def test_fixed_k_spec_decode_keeps_the_per_bucket_request_axis() -> None:
+    # Without adaptive verification the batch is not ragged: Q and the request
+    # count move together, so the per-bucket axis carries no ambiguity and is
+    # left alone rather than paying B_max metadata clearing for every bucket.
+    max_num_seqs, live = 16, 4
+    builder, metadata = _full_graph_spec_metadata(max_num_seqs=max_num_seqs, live_reqs=live, adaptive=False)
+
+    assert builder.ragged_spec_decode is False
+    assert metadata.spec_state_indices_tensor.shape[0] == live
+
+
+def test_ragged_spec_decode_refuses_full_graph_when_the_axis_cannot_fit() -> None:
+    """A capture cap below max_num_seqs leaves the graph buffers too narrow.
+
+    Falling back to a per-bucket axis there would reintroduce exactly the shape
+    this pins down, so the full-graph metadata path is declined instead.
+    """
+    # One live request of eight tokens, so the pre-existing width gates
+    # (num_spec_decodes and num_spec_decode_tokens against decode_cudagraph_max_bs)
+    # both pass and the refusal can only come from the axis not fitting.
+    builder, metadata = _full_graph_spec_metadata(
+        max_num_seqs=16,
+        live_reqs=1,
+        adaptive=True,
+        max_cudagraph_capture_size=8,
+    )
+    assert builder.decode_cudagraph_max_bs == 8
+    assert builder.gdn_request_axis == 16
+    assert builder.gdn_request_axis_fits_graph is False
+    # Declined: the metadata keeps the live width instead of a fixed axis.
+    assert metadata.spec_state_indices_tensor.shape[0] == 1

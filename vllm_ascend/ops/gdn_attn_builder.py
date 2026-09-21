@@ -319,6 +319,34 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
 
         # True for either eager AV lane; gates the ragged-decode GDN metadata path.
         self.eager_survival_test = eager_adaptive_lane_active(vllm_config)
+
+        # Adaptive verification gives each request its own verification length,
+        # so its batches are ragged. That is a different contract from the
+        # untrimmed fixed-K one and it is what fixes the GDN request axis below,
+        # independently of whether this run is eager or captured.
+        spec = vllm_config.speculative_config
+        self.ragged_spec_decode = bool(spec is not None and getattr(spec, "enable_adaptive_verification", False))
+
+        # B_gdn -- the request axis the GDN state operators see. Under the ragged
+        # contract it is the service maximum for every graph bucket, never the
+        # bucket's own request count.
+        #
+        # Letting it follow the bucket (32 rows at Q=32, 64 at Q=64, B_max above)
+        # reads as the natural choice and holds up on a single node at steady
+        # concurrency. It fails while concurrency ramps: each bucket then carries
+        # its own stateful tiling and request axis, and the first requests of a
+        # ramp come out short or garbled until the shape settles. Shrinking a
+        # shape costs a stateless operator only speed; for a stateful one it
+        # changes the state read/write contract. So every bucket is given the
+        # same axis, with the rows past the live ones held at zero length and an
+        # invalid state index.
+        self.gdn_request_axis = self.vllm_config.scheduler_config.max_num_seqs
+        # The inherited graph buffers are sized by decode_cudagraph_max_bs --
+        # max_num_seqs * (num_spec + 1), capped by the largest capture size. A cap
+        # below max_num_seqs would leave them too narrow for the fixed axis, so
+        # the full-graph path is refused rather than quietly reverting to a
+        # per-bucket axis, which is the shape this is here to prevent.
+        self.gdn_request_axis_fits_graph = self.gdn_request_axis <= self.decode_cudagraph_max_bs
         sequence_index_capacity = max(
             self.vllm_config.scheduler_config.max_num_seqs,
             self.decode_cudagraph_max_bs,
@@ -1116,6 +1144,7 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
             and num_decodes == 0
             and num_spec_decodes <= self.decode_cudagraph_max_bs
             and num_spec_decode_tokens <= self.decode_cudagraph_max_bs
+            and (not self.ragged_spec_decode or self.gdn_request_axis_fits_graph)
         ):
             assert spec_sequence_masks is not None
             # Spec decode has multiple tokens per request. Keep the metadata
@@ -1126,7 +1155,16 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
             # These buffers belong to this builder, so each KV cache group
             # keeps its own graph-stable addresses even though the values
             # copied in come from the shared plan.
-            spec_batch_size = m.num_reqs
+            # Ragged batches pin the axis at B_gdn; the untrimmed fixed-K path
+            # keeps following the graph's own request count, because there Q and
+            # the request count move together and the per-bucket axis carries no
+            # ambiguity. See self.gdn_request_axis.
+            spec_batch_size = self.gdn_request_axis if self.ragged_spec_decode else m.num_reqs
+            # Slicing to a fixed width would silently drop live rows if the batch
+            # were wider, which is the one way this can corrupt state.
+            assert num_spec_decodes <= spec_batch_size, (
+                f"num_spec_decodes {num_spec_decodes} exceeds the GDN request axis {spec_batch_size}"
+            )
 
             self.spec_state_indices_tensor[spec_batch_size:].fill_(NULL_BLOCK_ID)
             self.spec_state_indices_tensor[:num_spec_decodes].copy_(

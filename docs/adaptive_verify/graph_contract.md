@@ -56,8 +56,29 @@ PD 分离联调时暴露：每轮测试开始、并发从小到大爬升时，�
 > 对无状态算子，缩小 shape 往往只是性能问题；**对有状态算子，shape 变化还会改变
 > 状态读写契约。**
 
-**本分支现状：`gdn_attn_builder.py` 里 `spec_batch_size = m.num_reqs`，即请求轴
-跟随实时批。这正是上面被推翻的设计，进 ragged FULL 前必须改成 `B_max`。**
+**本分支现状：已改。** `gdn_attn_builder.py` 的 FULL speculative 分支在
+`self.ragged_spec_decode`（即 `enable_adaptive_verification`）为真时用
+`self.gdn_request_axis = max_num_seqs`，否则保持原来的 `m.num_reqs`。
+
+范围是有意收窄的：固定轴是 **ragged 契约**的属性。未裁剪的固定 K 批里 Q 和请求数
+同步变化，per-bucket 轴没有歧义，没必要让它为每个 bucket 多付 `B_max` 的 metadata
+清理；文章 §4.5 也把 ragged FULL 和 uniform FULL 分开路由。
+
+另有一条拒绝路径：基类的图 buffer 按 `decode_cudagraph_max_bs = max_num_seqs ×
+(num_spec+1)` 再被 `max_cudagraph_capture_size` 截断分配。如果这个上限低于
+`max_num_seqs`，buffer 装不下固定轴——此时**拒绝进 FULL metadata 路径**，而不是
+悄悄退回 per-bucket 轴，因为那正是这条规则要消除的形状。
+
+`spec_batch_size` 之外还加了 `num_spec_decodes <= spec_batch_size` 的断言：按固定
+宽度切片时，批更宽会静默丢掉活跃行，那是这个改动唯一能损坏状态的方式。
+
+> **未在设备上验证。** 这段代码在 eager 下不可达（FULL 分支 gate 在
+> `use_full_cuda_graph` 上，而两条 eager lane 强制 `CUDAGraphMode.NONE`）。三个
+> 对应的 UT 在 `tests/ut/ops/test_gdn_attn_builder.py`，需要装了插件的环境才能跑：
+>
+> ```bash
+> pytest -sv tests/ut/ops/test_gdn_attn_builder.py -k "gdn_request_axis or per_bucket_request_axis"
+> ```
 
 ## 长期正确性的十条不变量
 
