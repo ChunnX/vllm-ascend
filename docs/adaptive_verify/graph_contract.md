@@ -183,7 +183,7 @@ KV 长度、FIA replay line 存活于 capture。
 | 1.5 | 放弃精确 host 视图（`VLLM_ASCEND_DSPARK_AV_CPU_UPPER_BOUND`） | `+ub` lane 仍然 MATCH | 2026-09-21 通过 |
 | **A** | uniform 图：`VLLM_ASCEND_DSPARK_AV_GRAPH=uniform`，按 uniform verify 宽度捕获 | `+graph` lane 输出相等**且 `graph=` 显示真的进过图** | 2026-09-21 通过 |
 | **A′** | 测量真实 cost table | 可达范围内 spread 足够大 | 2026-09-21：`max_num_seqs=4` 下 spread=0.00ms |
-| **A″** | 在服务规模并发下重测 | 可达 spread 明显且随 Q 单调 | 待上机 |
+| **A″** | 在硬件上限并发下重测（4×910B4 32G → 约 16 并发，Q 上限 128） | 图内可达 spread 明显且随 Q 单调 | 待上机 |
 | **B** | ragged 图：`B_graph=min(Q,B_max)`、`B_fia`、固定地址、descriptor 绑定概率 | 输出相等；cost table 相邻 bucket 可区分 | 取决于 A″ |
 | C | 翻 capability，让上游 factory 直接接纳 GDN，撤掉自建 manager | 不设 env 也能跑；可上游 | 未开始 |
 
@@ -294,6 +294,28 @@ Q=2048:293.25  Q=4096:532.68  Q=8192:1017.04
 | 32 | 256 | 112.48ms（含出图跳变，非纯图内梯度） |
 
 所以**结论不是「裁剪没用」，而是「这个配置测不出裁剪有没有用」**。
+
+#### 平的原因不是 PIECEWISE
+
+一个自然的猜测是「现在没收益是因为裁剪批走了 PIECEWISE，直接入 FULL 会好」。表本身
+否掉了这一点：`Q=8..32` 那四个 116.80ms 是 `captured_token_counts()` 里的尺寸，也就是
+**在 FULL 图里测的**；Q≥48 才是出图后的 piecewise/eager。所以平的那一段是 FULL 对
+FULL，PIECEWISE 不是它平的原因。
+
+旁证：`threshold:0.0+graph`（全程 FULL）256s，`threshold:0.4+graph`（全程 PIECEWISE）
+250s——**PIECEWISE 那条反而略快**。若出图有 2× 的稳态惩罚，总耗时会明显拉开。
+`Q=32→48` 的跳变更像 shape/padding 特性，而非「piecewise 慢一倍」。`_PROFILE_REPLAYS=5`
+且取中位数，所以它也不是 JIT 预热污染。
+
+因此 ragged FULL 的价值是**让裁剪后的批不掉出图，即消除一个惩罚，而不是创造一个
+梯度**。在这个规模下那个惩罚本身也很小。
+
+#### 一个会系统性压平曲线的偏差
+
+`VLLM_ADAPTIVE_VERIFICATION_PROFILE_CONTEXT_LEN` 上游默认 **8192**，而门槛跑的是
+`max_model_len=2048`。attention 成本随 context 增长，所以「长 context 计时、短
+context 服务」会抬高每次测量里的固定部分，把 Q 的梯度按比例压小。门槛脚本现在把它
+默认对齐到 `--max-model-len`（显式 export 仍然优先）。
 
 #### 判据
 

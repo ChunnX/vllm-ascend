@@ -70,6 +70,7 @@ DATA_LINE_MARK = " steps | "
 LOG_INTERVAL_ENV = "VLLM_ASCEND_DSPARK_EAGER_AV_LOG_INTERVAL"
 CPU_UPPER_BOUND_ENV = "VLLM_ASCEND_DSPARK_AV_CPU_UPPER_BOUND"
 AV_GRAPH_ENV = "VLLM_ASCEND_DSPARK_AV_GRAPH"
+PROFILE_CONTEXT_ENV = "VLLM_ADAPTIVE_VERIFICATION_PROFILE_CONTEXT_LEN"
 # Long enough for a 27B load plus generation on a cold page cache.
 CHILD_TIMEOUT_S = 1800
 
@@ -108,8 +109,14 @@ def run_engine(args: argparse.Namespace) -> int:
     return 0
 
 
-def child_env(lane: str) -> dict[str, str]:
+def child_env(lane: str, max_model_len: int) -> dict[str, str]:
     env = os.environ.copy()
+    # Price the cost table at the context this run actually uses. The upstream
+    # default profiles at 8192 tokens of context, and attention cost grows with
+    # it, so profiling long while serving short inflates the fixed part of every
+    # measurement and flattens whatever gradient Q has. A flat curve is exactly
+    # the thing we are trying to tell apart from a real one.
+    env.setdefault(PROFILE_CONTEXT_ENV, str(max_model_len))
     env["VLLM_USE_V2_MODEL_RUNNER"] = "1"
     # A TP=4 engine spawns worker processes; the default fork start method
     # inherits the launcher's torch thread pool and aborts worker init with
@@ -154,7 +161,7 @@ def child_env(lane: str) -> dict[str, str]:
 
 def run_lane(lane: str, args: argparse.Namespace, log_dir: Path) -> tuple[list[list[int]], bool]:
     log_path = log_dir / f"{lane.replace(':', '-')}.log"
-    env_for_lane = child_env(lane)
+    env_for_lane = child_env(lane, args.max_model_len)
     cmd = [
         sys.executable,
         os.path.abspath(__file__),
