@@ -50,6 +50,15 @@ env_variables: dict[str, Callable[[], Any]] = {
     # price a real one. Requires DSpark AV and an eager target/draft. Default 0
     # (off). Not sensitive. Mutually exclusive with the survival-threshold lane.
     "VLLM_ASCEND_DSPARK_EAGER_UPSTREAM_AV": lambda: bool(int(os.getenv("VLLM_ASCEND_DSPARK_EAGER_UPSTREAM_AV", "0"))),
+    # Pin the GDN speculative request axis to max_num_seqs for every graph
+    # bucket, instead of letting it follow the batch. The fixed axis is the
+    # contract ragged full graphs need -- a per-bucket axis gives each capture
+    # size its own stateful tiling, which fails while concurrency ramps -- but it
+    # only holds together with the attention-side axis and the padding cleanup in
+    # the persistent seq_lens mirror, which are not in place yet. Default 0 (the
+    # per-bucket axis) until the whole set is validated on device; 1 opts in for
+    # bisecting. Not sensitive. See docs/adaptive_verify/graph_contract.md.
+    "VLLM_ASCEND_DSPARK_GDN_FIXED_AXIS": lambda: bool(int(os.getenv("VLLM_ASCEND_DSPARK_GDN_FIXED_AXIS", "0"))),
     # Which graph mode the DSpark adaptive-verification lane runs under.
     #   none    -- force CUDAGraphMode.NONE (default; what the eager gate validated)
     #   uniform -- allow graphs, but capture the decode descriptor at the uniform

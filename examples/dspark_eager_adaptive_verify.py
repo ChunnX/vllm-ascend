@@ -71,6 +71,7 @@ LOG_INTERVAL_ENV = "VLLM_ASCEND_DSPARK_EAGER_AV_LOG_INTERVAL"
 CPU_UPPER_BOUND_ENV = "VLLM_ASCEND_DSPARK_AV_CPU_UPPER_BOUND"
 AV_GRAPH_ENV = "VLLM_ASCEND_DSPARK_AV_GRAPH"
 PROFILE_CONTEXT_ENV = "VLLM_ADAPTIVE_VERIFICATION_PROFILE_CONTEXT_LEN"
+FIXED_AXIS_ENV = "VLLM_ASCEND_DSPARK_GDN_FIXED_AXIS"
 # Long enough for a 27B load plus generation on a cold page cache.
 CHILD_TIMEOUT_S = 1800
 
@@ -134,6 +135,7 @@ def child_env(lane: str, max_model_len: int) -> dict[str, str]:
         env.pop(key, None)
     env.pop(CPU_UPPER_BOUND_ENV, None)
     env.pop(AV_GRAPH_ENV, None)
+    env.pop(FIXED_AXIS_ENV, None)
     # "+ub" asks the lane to stop copying the trimmed boundaries back to host,
     # so only the device view is exact. That is the contract a captured graph
     # runs under, and matching the baseline under it is what lets GDN claim
@@ -144,6 +146,11 @@ def child_env(lane: str, max_model_len: int) -> dict[str, str]:
     # "+graph" runs the lane under the uniform graph descriptor. A captured graph
     # cannot read the trimmed boundaries back each step, so this implies the
     # inexact host view, and the engine must not be launched with enforce_eager.
+    # "+axis" pins the GDN request axis to max_num_seqs. Suffix order is
+    # outermost-last, so "threshold:0.4+graph+axis" reads as written.
+    if lane.endswith("+axis"):
+        lane = lane[: -len("+axis")]
+        env[FIXED_AXIS_ENV] = "1"
     if lane.endswith("+graph"):
         lane = lane[: -len("+graph")]
         env[CPU_UPPER_BOUND_ENV] = "1"
@@ -252,7 +259,7 @@ def trimming_note(lane: str, data_lines: list[str]) -> str:
     trimmed = sum(1 for line in data_lines if "kept=100.0%" not in line)
     if trimmed:
         return f", trimmed in {trimmed}/{len(data_lines)} reported windows"
-    expected = lane.removesuffix("+ub").removesuffix("+graph") == "threshold:0.0"
+    expected = lane.removesuffix("+axis").removesuffix("+graph").removesuffix("+ub") == "threshold:0.0"
     return ", kept every draft" + ("" if expected else " -- THIS MATCH IS NOT EVIDENCE")
 
 
@@ -288,10 +295,11 @@ def main() -> int:
             "Lanes to compare against the baseline. 'threshold:<x>' runs the "
             "survival-threshold lane at x; 'upstream' runs the upstream-manager "
             "lane. threshold:0.0 keeps every draft, so it is the equivalence "
-            "check that isolates the new GDN path from any trimming. Append "
-            "'+ub' to run a lane with the host view left inexact (the contract "
-            "a captured graph runs under), or '+graph' to also run it under the "
-            "uniform graph descriptor, e.g. 'threshold:0.4+graph'."
+            "check that isolates the new GDN path from any trimming. Suffixes "
+            "compose, outermost last: '+ub' leaves the host view inexact (the "
+            "contract a captured graph runs under), '+graph' adds the uniform "
+            "graph descriptor, '+axis' pins the GDN request axis to max_num_seqs "
+            "-- e.g. 'upstream+graph+axis'."
         ),
     )
     parser.add_argument("--tensor-parallel-size", type=int, default=4)
@@ -336,7 +344,7 @@ def main() -> int:
             # threshold:0.0 is supposed to keep everything; for any other lane a
             # match without trimming means the run never exercised the path it
             # was supposed to check.
-            if not trimmed and lane.removesuffix("+ub").removesuffix("+graph") != "threshold:0.0":
+            if not trimmed and lane.removesuffix("+axis").removesuffix("+graph").removesuffix("+ub") != "threshold:0.0":
                 inconclusive.append(lane)
             continue
         # Name the first divergence: the prompt and token index localize which

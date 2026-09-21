@@ -183,7 +183,8 @@ KV 长度、FIA replay line 存活于 capture。
 | 1.5 | 放弃精确 host 视图（`VLLM_ASCEND_DSPARK_AV_CPU_UPPER_BOUND`） | `+ub` lane 仍然 MATCH | 2026-09-21 通过 |
 | **A** | uniform 图：`VLLM_ASCEND_DSPARK_AV_GRAPH=uniform`，按 uniform verify 宽度捕获 | `+graph` lane 输出相等**且 `graph=` 显示真的进过图** | 2026-09-21 通过 |
 | **A′** | 测量真实 cost table | 可达范围内 spread 足够大 | 2026-09-21：`max_num_seqs=4` 下 spread=0.00ms |
-| **A″** | 在硬件上限并发下重测（4×910B4 32G → 约 16 并发，Q 上限 128） | 图内可达 spread 明显且随 Q 单调 | 待上机 |
+| **A″** | 在服务规模并发下重测 | 图内可达 spread 明显 | 2026-09-21 通过：bs=16 spread=144ms，bs=32 spread=263ms |
+| **A‴** | 定位 bs≥16 的 MISMATCH | 高并发下仍逐 token 相等 | **当前阻塞** |
 | **B** | ragged 图：`B_graph=min(Q,B_max)`、`B_fia`、固定地址、descriptor 绑定概率 | 输出相等；cost table 相邻 bucket 可区分 | 取决于 A″ |
 | C | 翻 capability，让上游 factory 直接接纳 GDN，撤掉自建 manager | 不设 env 也能跑；可上游 | 未开始 |
 
@@ -316,6 +317,36 @@ FULL，PIECEWISE 不是它平的原因。
 `max_model_len=2048`。attention 成本随 context 增长，所以「长 context 计时、短
 context 服务」会抬高每次测量里的固定部分，把 Q 的梯度按比例压小。门槛脚本现在把它
 默认对齐到 `--max-model-len`（显式 export 仍然优先）。
+
+#### A″ 实测：服务规模下曲线确实有梯度
+
+```txt
+bs=16, graph_limit=128, reachable spread=144.26ms
+Q=8:74.09  Q=16:75.10  Q=24..56:130.48  Q=64:136.84  Q=72..128:218.34
+
+bs=32, graph_limit=256, reachable spread=263.00ms
+Q=8:72.97  Q=16..32:85.87  Q=40:134.05  Q=56:160.27  Q=64:204.73  Q=72..152:246.43  Q=160..256:335.98
+```
+
+`Q=64:136.84 → Q=72:218.34`：多 8 个 token 贵 81ms。**裁剪确实能落进更便宜的
+bucket**，所以阶段 B 的收益论证成立，不再靠类比。
+
+#### A‴：bs≥16 出现 MISMATCH，先于 B
+
+| bs | `graph=` | `mean reqs` | 结果 |
+| --- | --- | --- | --- |
+| 4 | `FULL=5`（纯） | 3.80 | MATCH |
+| 16 | `FULL=2,PIECEWISE=3` | 2.60 | **MISMATCH**（prompt 6 / token 7） |
+| 32 | `FULL=3,PIECEWISE=2` | 4.00 | **MISMATCH**（prompt 3 / token 61） |
+
+**首要嫌疑是本分支自己的 `B_gdn = B_max`。** 它在 `max_num_seqs == 活跃请求数` 时是
+空操作——bs=4 恰好如此，所以当初看不出问题；bs=16/32 时活跃行只有 2~4 而轴被钉到
+16/32，第一次真正产生大量 padding 行。而文章里这条契约是和 **`B_fia`** 以及**持久
+seq_lens 镜像的 padding 清理**一起成立的（隔壁分支为此有 `39e454375`、`275c0df09`、
+`564c7ecd9` 三个独立修复）。**只搬一半不是更安全，而是半成品。**
+
+所以它改成 opt-in：`VLLM_ASCEND_DSPARK_GDN_FIXED_AXIS`，默认 0（per-bucket 轴，即
+已验证过的形状），阶段 B 再打开。门槛脚本加了 `+axis` 后缀用于二分。
 
 #### 判据
 

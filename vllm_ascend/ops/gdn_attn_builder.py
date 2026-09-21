@@ -35,6 +35,7 @@ from vllm.v1.attention.backends.utils import (
 )
 from vllm.v1.kv_cache_interface import AttentionSpec
 
+import vllm_ascend.envs as envs_ascend
 from vllm_ascend.ops.triton.fla.utils import (
     prepare_chunk_indices,
     prepare_chunk_offsets,
@@ -326,6 +327,14 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
         # independently of whether this run is eager or captured.
         spec = vllm_config.speculative_config
         self.ragged_spec_decode = bool(spec is not None and getattr(spec, "enable_adaptive_verification", False))
+        # Opt-in until the rest of the fixed-axis contract lands. Pinning the
+        # GDN axis alone leaves the attention request axis and the persistent
+        # seq_lens mirror still following the batch, so it is a half-applied
+        # contract rather than a safer one: the padding rows it creates are
+        # inert for GDN and not yet accounted for on those sides. It is also
+        # a no-op when max_num_seqs equals the live request count, which is
+        # why it looked harmless where it was first exercised.
+        self.ragged_spec_decode = self.ragged_spec_decode and envs_ascend.VLLM_ASCEND_DSPARK_GDN_FIXED_AXIS
 
         # B_gdn -- the request axis the GDN state operators see. Under the ragged
         # contract it is the service maximum for every graph bucket, never the

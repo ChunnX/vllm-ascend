@@ -1421,7 +1421,9 @@ def test_gdn_local_view_zeroes_padding_rows_and_keeps_each_group_block_table() -
 _SPEC_AXIS_NUM_SPEC = 7
 
 
-def _full_graph_spec_metadata(*, max_num_seqs: int, live_reqs: int, adaptive: bool, **builder_kwargs):
+def _full_graph_spec_metadata(
+    *, max_num_seqs: int, live_reqs: int, adaptive: bool, fixed_axis: bool = True, **builder_kwargs
+):
     """Build pure-speculative FULL-graph metadata for a partly filled batch.
 
     Every request queries num_spec + 1 tokens, which is what makes the batch
@@ -1443,15 +1445,16 @@ def _full_graph_spec_metadata(*, max_num_seqs: int, live_reqs: int, adaptive: bo
     common_attn_metadata.block_table_tensor = torch.arange(10, 10 + live_reqs * width, dtype=torch.int32).view(
         live_reqs, width
     )
-    builder = _make_builder(
-        device=torch.device("cpu"),
-        num_heads=32,
-        num_speculative_tokens=_SPEC_AXIS_NUM_SPEC,
-        cudagraph_mode=CUDAGraphMode.FULL_DECODE_ONLY,
-        max_num_seqs=max_num_seqs,
-        enable_adaptive_verification=adaptive,
-        **builder_kwargs,
-    )
+    with patch.object(ascend_gdn_attn_builder.envs_ascend, "VLLM_ASCEND_DSPARK_GDN_FIXED_AXIS", fixed_axis):
+        builder = _make_builder(
+            device=torch.device("cpu"),
+            num_heads=32,
+            num_speculative_tokens=_SPEC_AXIS_NUM_SPEC,
+            cudagraph_mode=CUDAGraphMode.FULL_DECODE_ONLY,
+            max_num_seqs=max_num_seqs,
+            enable_adaptive_verification=adaptive,
+            **builder_kwargs,
+        )
     metadata = builder.build(
         common_prefix_len=0,
         common_attn_metadata=common_attn_metadata,
@@ -1521,3 +1524,17 @@ def test_ragged_spec_decode_refuses_full_graph_when_the_axis_cannot_fit() -> Non
     assert builder.gdn_request_axis_fits_graph is False
     # Declined: the metadata keeps the live width instead of a fixed axis.
     assert metadata.spec_state_indices_tensor.shape[0] == 1
+
+
+def test_the_fixed_gdn_axis_is_opt_in() -> None:
+    """Off by default, because only half the fixed-axis contract is in place.
+
+    Pinning the GDN axis creates padding rows that GDN itself treats as inert,
+    while the attention request axis and the persistent seq_lens mirror still
+    follow the batch. It is also a no-op wherever max_num_seqs equals the live
+    request count, which is why it looked harmless where it was introduced -- so
+    the default has to be the shape that has actually been validated.
+    """
+    builder, metadata = _full_graph_spec_metadata(max_num_seqs=16, live_reqs=4, adaptive=True, fixed_axis=False)
+    assert builder.ragged_spec_decode is False
+    assert metadata.spec_state_indices_tensor.shape[0] == 4
