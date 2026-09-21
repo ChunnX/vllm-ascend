@@ -9,7 +9,8 @@
 - vLLM：v0.28.0，MRV2。
 - 验证服务器：Ascend 910B4，8×32GB；仅使用分配的 4 张开发卡，模型固定 TP=4。
 - 与 `main_dspark_adaptive_verify_dev` 使用不同 worktree；不合并后者的 FULL 实验补丁。
-- 第一版用于 eager 正确性验证，NPU 编译与数值验收尚未完成，不宣称已解决模型精度。
+- 第一版用于 eager 正确性验证。算子数值门槛已在 910B4 通过（2026-09-21，5/5）；
+  TP=4 整网对照尚未执行，因此不宣称已解决模型精度。
 
 ## 使用方式
 
@@ -37,7 +38,7 @@ vllm serve /path/to/Qwen3.6-27B \
 
 这里 0.4 是测试示例，不是上游默认值。模型验证固定 TP=4、同步调度；TP 的
 confidence 以 TP rank 0 广播对齐，四个 rank 必须使用相同的裁剪长度与请求顺序。
-TP=4 是本阶段必测配置，尚未上机验收。当前 guard 限制
+TP=4 是本阶段必测配置，整网对照尚未上机验收。当前 guard 限制
 PP=PCP=DCP=1、无 LoRA/DBO、K 在 1..15。模型测试使用 BF16、禁用 prefix cache
 以减少初始变量；prefix cache、异步调度和多卡并非本次已验证能力。
 
@@ -145,8 +146,11 @@ state 的 selector 测试提取实际 prepare_attn 方法执行。原先验证�
 及 `test_dcut_cpu_reference.py` 快照，原文件未修改。
 
 本地验证记录（2026-09-20，macOS，Python 3.12 / CPU PyTorch）：上述 42 项
-测试通过。未运行完整 UT、CANN 构建及 NPU 测试；以下门槛必须在 Ascend 机器上
-另行执行。
+测试通过。未运行完整仓库 UT。
+
+算子门槛记录（2026-09-21，910B4 单卡）：`test_eager_gdn_varlen.py` 5/5 通过，
+含 `[8,0,0,0,0,0,0,0]` 的空行布局与 recurrent 的多轮变长状态。前提是按下面
+“编译”一节重装了算子包；旧二进制不含 host tiling 的 layout 修复。
 
 ### NPU 算子门槛
 
@@ -160,7 +164,7 @@ pytest -sv tests/e2e/nightly/single_node/ops/singlecard_ops/test_eager_gdn_varle
 - D-Cut Conv1D：独立数学 golden；T=B、空行、变长、previous accepted > current length。
 - recurrent：独立数学 golden；多轮 8→3/1/4→1/4/0，比较真实输出和完整状态。
 - 算子测试必须先通过，再检查模型接受率；不能只拿同算子 eager 输出作 golden。
-- `[8,0,0,0,0,0,0,0]` 在重装算子包之后应当转为通过。仍失败就停在这一步。
+- `[8,0,0,0,0,0,0,0]` 需要重装算子包后才通过；已于 2026-09-21 在 910B4 验证。
 
 ### 零长度行边界的实际场景
 
