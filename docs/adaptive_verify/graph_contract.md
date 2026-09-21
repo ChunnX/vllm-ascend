@@ -184,7 +184,7 @@ KV 长度、FIA replay line 存活于 capture。
 | **A** | uniform 图：`VLLM_ASCEND_DSPARK_AV_GRAPH=uniform`，按 uniform verify 宽度捕获 | `+graph` lane 输出相等**且 `graph=` 显示真的进过图** | 2026-09-21 通过 |
 | **A′** | 测量真实 cost table | 可达范围内 spread 足够大 | 2026-09-21：`max_num_seqs=4` 下 spread=0.00ms |
 | **A″** | 在服务规模并发下重测 | 图内可达 spread 明显 | 2026-09-21 通过：bs=16 spread=144ms，bs=32 spread=263ms |
-| **A‴** | 定位 bs≥16 的 MISMATCH | 高并发下仍逐 token 相等 | **当前阻塞** |
+| **A‴** | 弄清 bs≥16 的 MISMATCH | 相对 baseline 自身噪声不更差 | 2026-09-21：判据本身失效，已改用噪声底 |
 | **B** | ragged 图：`B_graph=min(Q,B_max)`、`B_fia`、固定地址、descriptor 绑定概率 | 输出相等；cost table 相邻 bucket 可区分 | 取决于 A″ |
 | C | 翻 capability，让上游 factory 直接接纳 GDN，撤掉自建 manager | 不设 env 也能跑；可上游 | 未开始 |
 
@@ -197,7 +197,8 @@ KV 长度、FIA replay line 存活于 capture。
 | `threshold:0.0+graph` | `FULL=5` | 100% | 未裁剪 → **FULL** |
 | `threshold:0.4+graph` | `PIECEWISE=5` | 67.1% | 裁剪后 → **PIECEWISE** |
 
-两条都 MATCH。第一条证明图**真的进去了**，阶段 A 成立。
+两条都 MATCH。第一条证明图**真的进去了**，阶段 A 成立——范围是 bs=4，即噪声底为 0
+的并发（见下）。
 
 第二条比预期好，也修正了此前的说法（原以为裁剪批回退到 eager）：上游在 AV 生效时把
 `cudagraph_mode` 设为 `FULL_AND_PIECEWISE`，dispatcher 先试 FULL，批不 uniform 就落到
@@ -359,11 +360,25 @@ seq_lens 镜像的 padding 清理**一起成立的（隔壁分支为此有 `39e4
 
 脚本加了 `baseline2` lane：再跑一次 baseline 并与第一次比较。它先于一切 lane 结论：
 
-- **`baseline2` MISMATCH** → 比较本身不可复现，bs≥16 的所有 MISMATCH 结论都无效。
-  要先找出批组成敏感的来源（或改判据，比如逐请求比较而非整批比较）
-- **`baseline2` MATCH** → 比较可靠，`upstream` 的 MISMATCH 是真的，继续二分：
-  `threshold:0.0`（完全不裁）能把「路径」和「裁剪策略」分开——它若也 MISMATCH，
-  裁剪被完全排除，问题在高并发下的 GDN 变长路径本身
+**实测：`baseline2` MISMATCH。** 所以 bs≥16 的三次 MISMATCH（`upstream`、
+`upstream+graph` 在 bs=16 与 bs=32）**全部作废**，归因不到任何 lane。
+
+根因不是缺陷，是判据用错了地方。bs=16 下请求先后结束、批不断收缩并被
+`sort_batch_req_ids` 重排；TP=4 的 all-reduce 顺序与不同批形状下 kernel 选的 tiling
+都会变，末位 rounding 随之变，greedy 的 argmax 在接近平手处就翻。**这是数值不确定
+性，不是可修的 bug。**
+
+所以逐 token 相等只在 baseline 确定的并发下是有效判据。改法是**用 baseline 自己当
+噪声底**：门槛现在每次都跑一遍 `baseline2`，量出 `(发散的 prompt 数, 最早发散的 token
+下标)`，一条 lane 只有在**发散更多的 prompt 或更早发散**时才判失败。
+
+| 噪声底 | 判据强度 |
+| --- | --- |
+| 0（如 bs=4） | 逐 token 精确相等，最强 |
+| 非 0 | 只能证明「lane 没有引入额外漂移」，不能证明精确相等 |
+
+因此**正确性结论要在噪声底为 0 的并发下取得**（目前是 bs=4），而 cost table 这类性能
+测量不需要确定性，可以在高并发下做。别让一个工具干两件事。
 
 #### 判据
 

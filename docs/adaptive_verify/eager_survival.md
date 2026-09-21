@@ -204,9 +204,16 @@ fixed-K baseline 逐 token 相等，且每条裁剪 lane 都确实裁了：
 
 `verify_tokens = admitted + reqs` 在四条里都成立，`scheduled = reqs × K` 也都对得上。
 
-**未验证**，不要当作已支持：更高并发（`_max_total_logits` 的全局预算上限在
-4 个请求下不会触发）、更长上下文、随机采样（逐 token 相等只是 greedy 下的判据，
-采样需要另做分布验证）、以及任何性能结论（每步三次阻塞 D2H）。
+**结论的并发范围是 `max_num_seqs=4`。** 逐 token 相等只在 baseline 可复现的并发下
+才是有效判据。2026-09-21 实测：bs=16 时连续两次 baseline 自己就不一致——批随请求
+结束而收缩并被重排，TP 的 reduce 顺序与 kernel tiling 随批形状变化，末位 rounding 让
+greedy 的 argmax 在接近平手处翻转。这是数值不确定性，不是缺陷，但它意味着**上表的
+等价性结论不能外推到更高并发**。高并发下门槛改用 baseline 自身的噪声底作判据，见
+[入图契约](graph_contract.md)。
+
+**未验证**，不要当作已支持：更长上下文、随机采样（采样需要另做分布验证）、以及任何
+性能结论（每步三次阻塞 D2H）。`_max_total_logits` 的全局预算上限在 4 个请求下不会
+触发，那条分支仍未被走到。
 
 prefix caching 与异步调度：整网门槛是关闭它们跑的，但两者都不被 guard 拦，
 并且已在 serve 下实跑过。已知影响只有一条——它们让 prefill 突发变频繁，因此
