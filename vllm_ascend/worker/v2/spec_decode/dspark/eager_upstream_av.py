@@ -67,8 +67,13 @@ class AscendEagerUpstreamAVManager(AdaptiveVerificationManager):
 
         device = req_states.device
         max_num_reqs = req_states.max_num_reqs
-        self._confidence_probs = torch.empty(
-            (max_num_reqs, self.num_speculative_steps), dtype=torch.float32, device=device
+        # Upstream leaves this uninitialised and relies on add_request to seed
+        # each slot. Fill it with the neutral value instead: the ranking kernel
+        # reads the whole buffer's rows for the batch's slots, and a neutral
+        # start also keeps the repair counter below about real confidence rows
+        # rather than slots nothing has written yet.
+        self._confidence_probs = torch.full(
+            (max_num_reqs, self.num_speculative_steps), 1.0, dtype=torch.float32, device=device
         )
         self._batch_draft_capacity = torch.empty(max_num_reqs, dtype=torch.int32, device=device)
         self._num_non_draft_tokens = torch.empty_like(query_start_loc[:-1])
@@ -125,9 +130,10 @@ class AscendEagerUpstreamAVManager(AdaptiveVerificationManager):
         if self._pending_resets:
             self._stale_confidences[self._stale_idx].np[self._pending_resets] = 1.0
             self._pending_resets.clear()
-        self._confidence_probs[input_batch.idx_mapping] = current
-        # One blocking D2H; repair on the host copy, then publish it as stale.
-        values = self._confidence_probs.cpu().numpy()
+        # One blocking D2H of just this batch's rows; repair on the host copy.
+        # Copying the whole buffer, as upstream's async path does, would also drag
+        # in slots this batch never touched and count them as repaired.
+        values = current.cpu().numpy()
         # The confidence head emits non-finite rows during prefill bursts, which
         # prefix caching and async scheduling make common. Here that is not just
         # a bad trimming decision: the inherited budget cumprods this table on
@@ -146,9 +152,12 @@ class AscendEagerUpstreamAVManager(AdaptiveVerificationManager):
             values = np.where(bad, 1.0, values)
             # The device buffer is the one the ranking kernel reads, so repairing
             # only the host stale table would leave the top-k running on NaN.
-            self._confidence_probs.copy_(torch.from_numpy(values).to(self._confidence_probs.device))
+            current = torch.from_numpy(values).to(current.device)
         self._untrusted_rows += repaired_rows
-        self._stale_confidences[self._stale_idx].np[:] = values
+        self._confidence_probs[input_batch.idx_mapping] = current
+        # Per slot, so a request absent from this batch keeps its last value --
+        # the same end state as upstream's whole-buffer copy, without the cost.
+        self._stale_confidences[self._stale_idx].np[input_batch.idx_mapping_np] = values
 
     def batches_to_profile(self, capture_sizes):
         # Eager runs no capture; there is nothing to time.

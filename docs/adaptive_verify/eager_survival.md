@@ -78,8 +78,16 @@ flowchart LR
   不可信时保留可用 drafts。请求重排后 capacities 按 req_id 查回。
 - confidence head 在 prefill 期间会吐出非有限行（prefix cache 与异步调度会让它
   变得常见）。这样的行不承载可用概率：按行判定后标记为不可信，回退到"保留可用
-  drafts"这条保守路径，计数并在 warn 行里报出来，不中断推理。有限但越界的值
-  单独计数——那不是 prefill 现象，会是新缺陷，必须单独可见。
+  drafts"这条保守路径，计数并在 warn 行里报出来，不中断推理。
+- `compute_confidence` 以 `torch.sigmoid` 结尾，所以输出**不可能越界**，
+  `sigmoid(±inf)` 也落在 [0,1] 内；只有输入本身是 NaN 才会得到 NaN。因此
+  `untrusted_rows` 指向 draft 模型的 hidden states，而 `out_of_range` 非零意味着
+  问题不在 confidence head，两个计数器必须分开看。
+- 上游有完全相同的暴露面：`record_confidences` 不做任何校验，AV 与 dspark 路径上
+  没有 `isfinite` / `nan_to_num` / `clamp`。它不会崩，但会静默降级——按上游算术
+  喂一行 NaN（批 3 请求、K=4）：`np.sort` 把 NaN 排到末尾、`[::-1]` 把它翻到
+  `scores` 最前面，`np.cumsum` 于是全程 NaN，`np.argmax` 返回第一个 NaN 的下标，
+  预算从 7 塌到 1。所以这里选择比上游更防御，而不是照抄上游的"不检查"。
 - 裁剪是策略，不是正确性。confidence 错配或全部回退只会降低裁剪质量，
   rejection sampler 仍然正确，greedy 输出仍由 target 决定。
 - 全局 logits 限制仍生效，超限时用 survival 稳定排序分配预算，保证前缀语义。
