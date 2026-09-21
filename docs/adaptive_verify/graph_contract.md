@@ -270,6 +270,18 @@ PIECEWISE 是 33.88→59.06ms；ragged FULL 是 25.87→103.09ms。
 - **spread 明显、随 Q 单调** → 现在这套已经能支撑裁剪决策，B 的增量收益要单独论证
 - **仍然趋平** → 图外固定开销还占主导，B（ragged FULL）才是必需的，理由与文章一致
 
+还有一个不在文章里的信号，读日志时一起看：**真实曲线换掉合成曲线之后
+controller 还愿不愿意裁**。合成曲线是刻意造成凸的，为的是让 argmax 落在中间、
+产出 ragged 布局来验证正确性；真实曲线没有这个义务。2026-09-21 首次带真实测量的
+`upstream+graph` 跑出 `trimmed in 4/16 reported windows`、末尾窗口 `kept=100%`，
+而同一 lane 用合成曲线时是 `16/16`、`kept=52.1%`。如果这是真实曲线的判断，那它说的
+是"在这个配置下多数步不值得裁"——**这是关于收益的结论，不是缺陷**，但必须和 cost
+table 的数字一起读才站得住。
+
+> 脚本的 echo 过滤器一度只打 `" steps | "` 的数据行，把 cost table 那行漏掉了。
+> 现在改成打所有非数据行（横幅、cost table，按消息去重跨 rank）加最后几个窗口。
+> 旧日志里那行仍然在文件里：`grep "cost table" <日志目录>/upstream+graph.log`。
+
 两个 capability flag（`supports_device_cpu_query_lens_mismatch`、`ALWAYS`）属于
 阶段 C，是为了让上游 factory 直接接纳 GDN，**不是入图的前置条件**——本分支的两条
 lane 自己替换了 factory，所以阶段 A/B 不经过那两道 gate。

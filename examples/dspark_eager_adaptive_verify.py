@@ -181,9 +181,21 @@ def run_lane(lane: str, args: argparse.Namespace, log_dir: Path) -> tuple[list[l
 
     tagged = [line for line in log.splitlines() if LOG_TAG in line]
     data_lines = [line for line in tagged if DATA_LINE_MARK in line]
-    # One rank's view is enough; TP ranks choose identical capacities by
-    # construction, so printing all four only repeats the same numbers.
-    for line in tagged[:1] + data_lines[-4:]:
+    # Everything the lane says that is not a per-window data line -- the banner,
+    # the measured cost table -- plus the last few windows. Filtering to data
+    # lines alone silently dropped the cost table, which was the whole point of
+    # the run that produced it. One rank's view is enough: TP ranks choose
+    # identical capacities by construction, so dedup on the message itself.
+    seen: set[str] = set()
+    notes = []
+    for line in tagged:
+        if DATA_LINE_MARK in line:
+            continue
+        message = line[line.index(LOG_TAG) :]
+        if message not in seen:
+            seen.add(message)
+            notes.append(line)
+    for line in notes + data_lines[-4:]:
         print(f"    {line.strip()}", flush=True)
     # Report a crash before the lane-engaged check, so a startup failure is not
     # described as a lane that declined to engage.
