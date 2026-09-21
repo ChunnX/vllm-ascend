@@ -55,6 +55,7 @@ LOG_TAG = "[DSPARK-EAGER-AV"
 # budget: the banner just says the manager was built.
 DATA_LINE_MARK = " steps | "
 LOG_INTERVAL_ENV = "VLLM_ASCEND_DSPARK_EAGER_AV_LOG_INTERVAL"
+CPU_UPPER_BOUND_ENV = "VLLM_ASCEND_DSPARK_AV_CPU_UPPER_BOUND"
 # Long enough for a 27B load plus generation on a cold page cache.
 CHILD_TIMEOUT_S = 1800
 
@@ -110,6 +111,14 @@ def child_env(lane: str) -> dict[str, str]:
     # baseline run and quietly turn this into a comparison of a lane with itself.
     for key in LANE_ENVS:
         env.pop(key, None)
+    env.pop(CPU_UPPER_BOUND_ENV, None)
+    # "+ub" asks the lane to stop copying the trimmed boundaries back to host,
+    # so only the device view is exact. That is the contract a captured graph
+    # runs under, and matching the baseline under it is what lets GDN claim
+    # supports_device_cpu_query_lens_mismatch.
+    if lane.endswith("+ub"):
+        lane = lane[: -len("+ub")]
+        env[CPU_UPPER_BOUND_ENV] = "1"
     if lane == "baseline":
         pass
     elif lane.startswith("threshold:"):
@@ -197,7 +206,7 @@ def trimming_note(lane: str, data_lines: list[str]) -> str:
     trimmed = sum(1 for line in data_lines if "kept=100.0%" not in line)
     if trimmed:
         return f", trimmed in {trimmed}/{len(data_lines)} reported windows"
-    expected = lane == "threshold:0.0"
+    expected = lane.removesuffix("+ub") == "threshold:0.0"
     return ", kept every draft" + ("" if expected else " -- THIS MATCH IS NOT EVIDENCE")
 
 
@@ -220,12 +229,21 @@ def main() -> int:
     parser.add_argument(
         "--lanes",
         nargs="+",
-        default=["threshold:0.0", "threshold:0.4", "threshold:1.0", "upstream"],
+        default=[
+            "threshold:0.0",
+            "threshold:0.4",
+            "threshold:1.0",
+            "upstream",
+            "threshold:0.4+ub",
+            "upstream+ub",
+        ],
         help=(
             "Lanes to compare against the baseline. 'threshold:<x>' runs the "
             "survival-threshold lane at x; 'upstream' runs the upstream-manager "
             "lane. threshold:0.0 keeps every draft, so it is the equivalence "
-            "check that isolates the new GDN path from any trimming."
+            "check that isolates the new GDN path from any trimming. Append "
+            "'+ub' to run a lane with the host view left inexact (the contract "
+            "a captured graph runs under), e.g. 'threshold:0.4+ub'."
         ),
     )
     parser.add_argument("--tensor-parallel-size", type=int, default=4)
@@ -260,7 +278,7 @@ def main() -> int:
             # threshold:0.0 is supposed to keep everything; for any other lane a
             # match without trimming means the run never exercised the path it
             # was supposed to check.
-            if not trimmed and lane != "threshold:0.0":
+            if not trimmed and lane.removesuffix("+ub") != "threshold:0.0":
                 inconclusive.append(lane)
             continue
         # Name the first divergence: the prompt and token index localize which

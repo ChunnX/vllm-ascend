@@ -45,6 +45,7 @@ from vllm.v1.worker.gpu.model_runner import (
     GPUModelRunner,
 )
 
+import vllm_ascend.envs as envs_ascend
 from vllm_ascend.ascend_config import get_ascend_config
 from vllm_ascend.ascend_forward_context import (
     MoECommType,
@@ -251,6 +252,24 @@ class NPUModelRunner(GPUModelRunner):
             assert self.pp_handler is not None
             self.pp_handler.broadcast_drafts()
         return output
+
+    def _av_reads_back_exact_bounds(self) -> bool:
+        """Whether an eager AV lane still copies the trimmed boundaries to host.
+
+        The lanes were built that way so the host view matched the device one
+        exactly, which let the GDN builder keep planning off host query lengths.
+        A captured graph cannot pay a per-step copy, so the graph phase has to
+        leave the host view as the evenly-distributed upper bound upstream
+        produces and take every exact boundary from device -- which is what
+        ``supports_device_cpu_query_lens_mismatch`` asserts about a backend.
+
+        Clearing this flag is therefore the eager rehearsal for that contract:
+        if the whole-network gate still matches with the host view inexact, GDN
+        tolerates the mismatch and the capability claim is true.
+        """
+        if not getattr(self, "eager_survival_test", False):
+            return False
+        return not envs_ascend.VLLM_ASCEND_DSPARK_AV_CPU_UPPER_BOUND
 
     def initialize_kv_cache(
         self,
@@ -489,7 +508,7 @@ class NPUModelRunner(GPUModelRunner):
             total_num_logits = num_reqs * num_bonus_tokens + total_num_draft_tokens
 
             # Non-fia backends skip padding query boundary when using adaptive verification
-            if self.use_fia or getattr(self, "eager_survival_test", False):
+            if self.use_fia or self._av_reads_back_exact_bounds():
                 query_start_loc_np[: num_reqs + 1] = query_start_loc[: num_reqs + 1].cpu().numpy()
                 query_start_loc_np[num_reqs + 1 :] = int(query_start_loc_np[num_reqs])
 
@@ -535,7 +554,7 @@ class NPUModelRunner(GPUModelRunner):
             self.input_buffers.seq_lens,
         )
         seq_lens = self.input_buffers.seq_lens[:num_reqs_padded]
-        if adaptive_verification_active and (self.use_fia or getattr(self, "eager_survival_test", False)):
+        if adaptive_verification_active and (self.use_fia or self._av_reads_back_exact_bounds()):
             self.input_buffers.seq_lens_np[:num_reqs] = seq_lens[:num_reqs].cpu().numpy()
 
         # Pad for full CUDA graph mode.

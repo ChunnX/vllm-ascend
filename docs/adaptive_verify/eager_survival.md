@@ -258,6 +258,45 @@ vllm-ascend 前进了 120 个 commit，其中 `gdn.py` 换成了 main 缓存的 
 conv1d 权重（布局与原先手写的转置一致）。所以这些结论需要重跑一遍确认没有
 回归——算子源码未改动，不必重装算子包。
 
+## 入图阶段第一步：放弃精确的 host 视图
+
+两条 lane 现在每步把裁剪后的边界从 device 回读到 host，好让 GDN builder 继续按
+host query 长度规划。**图不能付这个拷贝**，所以入图必须回到上游的契约：host 视图
+保持上游产出的均匀分摊上界，精确边界只从 device 取。这正是
+`supports_device_cpu_query_lens_mismatch` 对一个 backend 的断言。
+
+`VLLM_ASCEND_DSPARK_AV_CPU_UPPER_BOUND=1` 关掉回读，于是这条断言可以**在 eager 下
+先排练**：整网门槛仍然逐 token 相等，就说明 GDN 本来就能容忍不一致，声明是真的。
+
+依据是上游自己的说明——裁剪只改变 draft 在各 verification 请求之间的**分配**，
+而总 token 数、decode/prefill 分界点、以及 prefill 的 per-request 长度都仍然正确。
+GDN builder 里读 per-request host 长度的地方（`_treat_single_token_prefills_with_state_as_decodes`、
+`_fold_spec_sized_prefill_chunks_into_spec`、`non_spec_query_lens_cpu`）读的都是
+prefill/decode 行，那些行不带 draft、不受裁剪影响；spec 行的边界一直取的是
+device 的 `spec_query_start_loc`。所以预期是能通过——但这是推断，要跑。
+
+验证脚本用 `+ub` 后缀表示"这条 lane 关掉回读"，默认会跑
+`threshold:0.4+ub` 和 `upstream+ub`，和不带后缀的那两条并列对比：
+
+```bash
+python examples/dspark_eager_adaptive_verify.py --lanes threshold:0.4 threshold:0.4+ub
+```
+
+两条都 MATCH 才能往下翻 capability flag。`+ub` 那条不过，失败位置就直接指向真正
+依赖精确 host 边界的地方，范围比通读 35 个调用点小得多。
+
+翻 flag 是后续两步，顺序不能反：
+
+1. `AscendGDNAttentionBackend.supports_device_cpu_query_lens_mismatch()` → True
+   （现在继承 `not is_ssm()` = False）
+2. builder 的 `_cudagraph_support` 从 `UNIFORM_BATCH` 改成在 dspark+AV 时报
+   `ALWAYS`，照 `dsa_v1.py` 里 15098 的写法
+
+注意 vLLM 0.28.0 的 factory 比 main 严：`get_query_lens_mismatch_unsupported_backend(attn_groups)`
+不收 `checked_layer_names`，`min_cg_support` 也是全局的，所以**所有** attention
+group 都要满足，包括 draft 的 FIA sink backend。目标 attention 和 FIA sink 目前
+都已经是 `ALWAYS` + True，GDN 是唯一的阻塞点。
+
 ## 后续阶段
 
 先完成上述 eager 门槛，然后接回上游成本预算：独立处理成本初始化、stale/live

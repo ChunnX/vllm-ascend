@@ -50,6 +50,14 @@ env_variables: dict[str, Callable[[], Any]] = {
     # price a real one. Requires DSpark AV and an eager target/draft. Default 0
     # (off). Not sensitive. Mutually exclusive with the survival-threshold lane.
     "VLLM_ASCEND_DSPARK_EAGER_UPSTREAM_AV": lambda: bool(int(os.getenv("VLLM_ASCEND_DSPARK_EAGER_UPSTREAM_AV", "0"))),
+    # Stop making the host query/seq-length view exact for the eager AV lanes.
+    # Both lanes currently read the trimmed boundaries back from device each
+    # step, which a captured graph cannot do. With this set the host keeps the
+    # evenly-distributed upper bound upstream produces and only the device view
+    # is exact -- upstream's own contract, and the precondition for GDN to claim
+    # supports_device_cpu_query_lens_mismatch. Default 0 (keep the readback).
+    # Not sensitive. Eager-only switch; the graph phase makes it unconditional.
+    "VLLM_ASCEND_DSPARK_AV_CPU_UPPER_BOUND": lambda: bool(int(os.getenv("VLLM_ASCEND_DSPARK_AV_CPU_UPPER_BOUND", "0"))),
     # Steps between the eager adaptive-verification lanes' aggregated warn
     # lines. Warn level so the trimming decisions are visible in an ordinary
     # serve log; aggregated so a long run stays readable. Not sensitive.
