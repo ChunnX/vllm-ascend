@@ -50,6 +50,11 @@ PROMPTS = [
 
 RESULT_PREFIX = "EAGER_AV_RESULT="
 LOG_TAG = "[DSPARK-EAGER-AV"
+# A lane logs a construction banner and then aggregated data lines. Only the
+# data lines carry " steps | ", and only they prove the lane actually decided a
+# budget: the banner just says the manager was built.
+DATA_LINE_MARK = " steps | "
+LOG_INTERVAL_ENV = "VLLM_ASCEND_DSPARK_EAGER_AV_LOG_INTERVAL"
 # Long enough for a 27B load plus generation on a cold page cache.
 CHILD_TIMEOUT_S = 1800
 
@@ -98,6 +103,9 @@ def child_env(lane: str) -> dict[str, str]:
     env["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
     env.setdefault("PYTORCH_NPU_ALLOC_CONF", "expandable_segments:True")
     env.setdefault("HCCL_BUFFSIZE", "2048")
+    # These runs are a few dozen decode steps, well under the serve-oriented
+    # default, so aggregate over a short window to get several data lines.
+    env.setdefault(LOG_INTERVAL_ENV, "5")
     # Start from a clean slate so an exported lane variable cannot leak into the
     # baseline run and quietly turn this into a comparison of a lane with itself.
     for key in LANE_ENVS:
@@ -113,7 +121,7 @@ def child_env(lane: str) -> dict[str, str]:
     return env
 
 
-def run_lane(lane: str, args: argparse.Namespace, log_dir: Path) -> list[list[int]]:
+def run_lane(lane: str, args: argparse.Namespace, log_dir: Path) -> tuple[list[list[int]], bool]:
     log_path = log_dir / f"{lane.replace(':', '-')}.log"
     cmd = [
         sys.executable,
@@ -150,24 +158,47 @@ def run_lane(lane: str, args: argparse.Namespace, log_dir: Path) -> list[list[in
     log = log_path.read_text(errors="replace")
     elapsed = time.monotonic() - started
 
-    observed = [line for line in log.splitlines() if LOG_TAG in line]
-    for line in observed:
+    tagged = [line for line in log.splitlines() if LOG_TAG in line]
+    data_lines = [line for line in tagged if DATA_LINE_MARK in line]
+    # One rank's view is enough; TP ranks choose identical capacities by
+    # construction, so printing all four only repeats the same numbers.
+    for line in tagged[:1] + data_lines[-4:]:
         print(f"    {line.strip()}", flush=True)
     # Report a crash before the lane-engaged check, so a startup failure is not
     # described as a lane that declined to engage.
     if result.returncode != 0:
         raise RuntimeError(f"lane {lane} exited {result.returncode}; tail of {log_path}:\n{log[-12000:]}")
-    if lane != "baseline" and not observed:
+    if lane != "baseline" and not data_lines:
+        # The construction banner also carries LOG_TAG, so requiring only the tag
+        # would accept a lane that was built and then never asked for a budget.
         raise RuntimeError(
-            f"lane {lane} produced no {LOG_TAG} line: the lane never engaged, so "
-            f"a token match would only prove the baseline equals itself ({log_path})"
+            f"lane {lane} logged no {DATA_LINE_MARK.strip()!r} line, so it never decided a "
+            f"budget: a token match would only prove the baseline equals itself ({log_path})"
         )
 
     lines = [line for line in log.splitlines() if line.startswith(RESULT_PREFIX)]
     if not lines:
         raise RuntimeError(f"lane {lane} printed no result line; tail of {log_path}:\n{log[-12000:]}")
-    print(f"=== lane {lane}: done in {elapsed:.0f}s", flush=True)
-    return json.loads(lines[-1].removeprefix(RESULT_PREFIX))
+    trimmed = any("kept=100.0%" not in line for line in data_lines)
+    print(f"=== lane {lane}: done in {elapsed:.0f}s{trimming_note(lane, data_lines)}", flush=True)
+    return json.loads(lines[-1].removeprefix(RESULT_PREFIX)), trimmed
+
+
+def trimming_note(lane: str, data_lines: list[str]) -> str:
+    """Say whether this lane ever trimmed, because a match otherwise proves little.
+
+    A lane that kept every draft ran the same verification width as the baseline,
+    so equal output says nothing about the trimmed layout. threshold:0.0 is meant
+    to keep everything -- that is its job as the equivalence check -- but for any
+    other lane this is the difference between evidence and a tautology.
+    """
+    if lane == "baseline" or not data_lines:
+        return ""
+    trimmed = sum(1 for line in data_lines if "kept=100.0%" not in line)
+    if trimmed:
+        return f", trimmed in {trimmed}/{len(data_lines)} reported windows"
+    expected = lane == "threshold:0.0"
+    return ", kept every draft" + ("" if expected else " -- THIS MATCH IS NOT EVIDENCE")
 
 
 def check_devices(expected: int) -> None:
@@ -215,16 +246,22 @@ def main() -> int:
     log_dir.mkdir(parents=True, exist_ok=True)
     print(f"Logs: {log_dir.resolve()}")
 
-    baseline = run_lane("baseline", args, log_dir)
+    baseline, _ = run_lane("baseline", args, log_dir)
     failures = []
+    inconclusive = []
     for lane in args.lanes:
         try:
-            tokens = run_lane(lane, args, log_dir)
+            tokens, trimmed = run_lane(lane, args, log_dir)
         except Exception as exc:  # noqa: BLE001 - report every lane, fail at the end
             failures.append(f"{lane}: {exc}")
             continue
         if tokens == baseline:
             print(f"=== lane {lane}: MATCH", flush=True)
+            # threshold:0.0 is supposed to keep everything; for any other lane a
+            # match without trimming means the run never exercised the path it
+            # was supposed to check.
+            if not trimmed and lane != "threshold:0.0":
+                inconclusive.append(lane)
             continue
         # Name the first divergence: the prompt and token index localize which
         # request's layout went wrong, which is where to look next.
@@ -239,12 +276,18 @@ def main() -> int:
         print(f"=== lane {lane}: MISMATCH -- {detail}", flush=True)
 
     print("\n==== summary ====")
-    if not failures:
-        print(f"All {len(args.lanes)} lane(s) matched the fixed-K baseline.")
-        return 0
     for line in failures:
         print(f"FAIL {line}")
-    return 1
+    for lane in inconclusive:
+        print(
+            f"INCONCLUSIVE {lane}: matched the baseline but never trimmed a draft, so it "
+            "verified the same width the baseline ran. Raise the threshold, lengthen the "
+            "run, or check that confidence reaches the manager."
+        )
+    if failures or inconclusive:
+        return 1
+    print(f"All {len(args.lanes)} lane(s) matched the fixed-K baseline, and each trimming lane did trim.")
+    return 0
 
 
 if __name__ == "__main__":

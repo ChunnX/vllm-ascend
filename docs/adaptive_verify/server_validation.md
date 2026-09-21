@@ -83,8 +83,14 @@ python examples/dspark_eager_adaptive_verify.py --lanes threshold:0.4 upstream
 分歧的 prompt 与 token 下标，据此定位。
 
 `threshold:0.0` 保留全部 draft，是把“新 GDN 路径”与“任何裁剪”分离开的等价性
-检查，应当先过。lane 没有真正生效时脚本会直接报错，不会把“baseline 等于自己”
-算成通过。每个 lane 的完整子进程日志保留在脚本打印的目录里。
+检查，应当先过。每个 lane 的完整子进程日志保留在脚本打印的目录里。
+
+**“相等”本身不等于证据。** 一个从未裁剪过的 lane 校验的宽度和 baseline 一样，
+逐 token 相等什么都没说明。脚本因此有两道门槛：lane 只打了启动横幅、没有任何
+聚合数据行 → 直接报错（横幅只证明 manager 被构造，不证明它决策过预算）；
+lane 相等但全程 `kept=100%` 且不是 `threshold:0.0` → 报 `INCONCLUSIVE` 并返回
+非零。看到 INCONCLUSIVE 要么提高阈值、要么加长 `--max-tokens`、要么去查
+confidence 有没有真的到 manager 手里，不要当成通过。
 
 随机采样需要另做分布验证；同 seed 逐 token 一致不作为跨裁剪策略的唯一判据。
 
@@ -101,8 +107,10 @@ python examples/dspark_eager_adaptive_verify.py --lanes threshold:0.4 upstream
 - `kept` 远低于 100% 且 `trimmed_steps` 接近满值，说明裁剪真的在发生；
   `kept=100%` 表示这一轮根本没裁，输出相等不能证明变长路径被走到。
 - `last_caps` 是最近一次的每请求裁剪长度；不是全 1 就说明 batch 确实是 ragged。
-- 间隔用 `VLLM_ASCEND_DSPARK_EAGER_AV_LOG_INTERVAL` 调整，默认 50 步。
-  设成 1 会每步一行，只在定位单步问题时用。
+- 第一条记录到的步数一定会打印一行，之后每 `interval` 步一行。短跑
+  （整网门槛只有几十步）因此不会只剩一条横幅。
+- 间隔用 `VLLM_ASCEND_DSPARK_EAGER_AV_LOG_INTERVAL` 调整，serve 默认 50 步；
+  整网脚本自己设成 5。设成 1 会每步一行，只在定位单步问题时用。
 - `upstream` lane 的每请求裁剪长度由 device 端 top-k 决定，只在会打印的那一步
   拷回 host，其余步不额外同步。
 

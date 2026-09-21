@@ -32,6 +32,7 @@ class EagerAVLogger:
         self._verify_tokens = 0
         self._trimmed_steps = 0
         self._capacities: tuple[int, ...] | None = None
+        self._emitted = False
 
     def sampling(self) -> bool:
         """True when the step being recorded next will emit a line.
@@ -40,7 +41,7 @@ class EagerAVLogger:
         capacities on device, and reading them every step would add a
         synchronization that lane does not otherwise need.
         """
-        return (self._steps + 1) % self.interval == 0
+        return not self._emitted or (self._steps + 1) % self.interval == 0
 
     def record(
         self,
@@ -60,8 +61,14 @@ class EagerAVLogger:
             self._trimmed_steps += 1
         if capacities is not None:
             self._capacities = tuple(int(c) for c in capacities)
-        if self._steps % self.interval:
+        # Always emit for the very first recorded step. A run shorter than one
+        # interval would otherwise finish having printed only the construction
+        # banner, and the banner proves the manager exists -- not that it ever
+        # trimmed anything. Without a data line, equal output between a lane and
+        # the baseline is not evidence about the trimmed path.
+        if self._emitted and self._steps % self.interval:
             return
+        self._emitted = True
 
         steps = self._steps
         keep = 100.0 * self._admitted / self._scheduled if self._scheduled else 100.0

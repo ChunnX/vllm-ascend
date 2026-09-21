@@ -169,11 +169,30 @@ def test_av_logger_emits_once_per_interval(av_logger_class, caplog):
         for _ in range(7):
             log.record(num_reqs=2, scheduled_drafts=8, admitted_drafts=4, verify_tokens=6, capacities=[3, 1])
     lines = [r.getMessage() for r in caplog.records]
-    assert len(lines) == 2  # steps 3 and 6; step 7 is still accumulating
+    assert len(lines) == 3  # step 1, then steps 4 and 7 close each interval
     assert "[DSPARK-EAGER-AV/threshold]" in lines[0]
     assert "kept=50.0%" in lines[0]
-    assert "trimmed_steps=3/3" in lines[0]
     assert "last_caps=[3, 1]" in lines[0]
+    assert "3 steps" in lines[1] and "trimmed_steps=3/3" in lines[1]
+
+
+def test_av_logger_always_reports_a_run_shorter_than_one_interval(av_logger_class, caplog):
+    """A short run must still produce a data line, not only the banner.
+
+    The whole-network gate compares a lane against the fixed-K baseline over a
+    few dozen decode steps. With the serve-oriented interval that is under one
+    window, so without this the run would finish having logged only the
+    construction banner -- which proves the manager exists, not that it ever
+    trimmed. Equal output would then say nothing about the trimmed path.
+    """
+    log = av_logger_class(lane="upstream", interval=50)
+    with caplog.at_level(logging.WARNING):
+        for _ in range(4):
+            log.record(num_reqs=1, scheduled_drafts=7, admitted_drafts=3, verify_tokens=4)
+    messages = [r.getMessage() for r in caplog.records]
+    assert len(messages) == 1
+    assert "1 steps" in messages[0]
+    assert "kept=42.9%" in messages[0]
 
 
 def test_av_logger_sampling_predicts_the_emitting_step(av_logger_class):
@@ -181,10 +200,11 @@ def test_av_logger_sampling_predicts_the_emitting_step(av_logger_class):
     # step will print, so a wrong answer either loses the field or adds a sync.
     log = av_logger_class(lane="upstream", interval=3)
     seen = []
-    for _ in range(6):
+    for _ in range(7):
         seen.append(log.sampling())
         log.record(num_reqs=1, scheduled_drafts=4, admitted_drafts=4, verify_tokens=5)
-    assert seen == [False, False, True, False, False, True]
+    # Step 1 always prints; after that every third step closes a window.
+    assert seen == [True, False, False, True, False, False, True]
 
 
 def test_av_logger_reports_untrimmed_steps_without_dividing_by_zero(av_logger_class, caplog):
