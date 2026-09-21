@@ -263,6 +263,38 @@ def trimming_note(lane: str, data_lines: list[str]) -> str:
     return ", kept every draft" + ("" if expected else " -- THIS MATCH IS NOT EVIDENCE")
 
 
+def divergence(tokens: list[list[int]], reference: list[list[int]]) -> tuple[int, int | None, str]:
+    """How far two runs of the same prompts drift apart.
+
+    Token equality is a correctness instrument only where the reference is
+    deterministic. It is not at higher concurrency: requests finish at different
+    steps, the batch shrinks and is re-sorted around them, and a kernel that
+    picks its tiling or reduction order from the batch shape rounds differently,
+    which flips a greedy argmax wherever two logits are near-tied. That is
+    numerical noise, not a defect, so a lane has to be judged against how far the
+    reference drifts from itself rather than against exact equality.
+    """
+    if len(tokens) != len(reference):
+        return len(reference), 0, "output count differs"
+    differing = [i for i, (got, want) in enumerate(zip(tokens, reference)) if got != want]
+    if not differing:
+        return 0, None, "identical"
+
+    def first_diff(i: int) -> int:
+        got, want = tokens[i], reference[i]
+        return next((j for j, (a, b) in enumerate(zip(got, want)) if a != b), min(len(got), len(want)))
+
+    head = differing[0]
+    at = first_diff(head)
+    earliest = min(first_diff(i) for i in differing)
+    got, want = tokens[head], reference[head]
+    detail = (
+        f"{len(differing)}/{len(reference)} prompts differ, earliest at token {earliest}; "
+        f"prompt {head} first differs at token {at}: got {got[at : at + 4]} want {want[at : at + 4]}"
+    )
+    return len(differing), earliest, detail
+
+
 def check_devices(expected: int) -> None:
     raw = os.getenv("ASCEND_RT_VISIBLE_DEVICES", "")
     devices = [d.strip() for d in raw.split(",") if d.strip()]
@@ -334,6 +366,19 @@ def main() -> int:
     print(f"Logs: {log_dir.resolve()}")
 
     baseline, _ = run_lane("baseline", args, log_dir)
+
+    # The noise floor. Without it a mismatch at concurrency cannot be attributed
+    # to a lane, and a match cannot be told apart from luck.
+    second, _ = run_lane("baseline2", args, log_dir)
+    floor_count, floor_earliest, floor_detail = divergence(second, baseline)
+    print(f"\n=== noise floor (baseline vs baseline): {floor_detail}", flush=True)
+    if floor_count:
+        print(
+            "    The reference disagrees with itself here, so only a lane that drifts "
+            "further than this can be called a defect.",
+            flush=True,
+        )
+
     failures = []
     inconclusive = []
     for lane in args.lanes:
@@ -342,32 +387,20 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001 - report every lane, fail at the end
             failures.append(f"{lane}: {exc}")
             continue
-        if tokens == baseline:
-            print(f"=== lane {lane}: MATCH", flush=True)
+        count, earliest, detail = divergence(tokens, baseline)
+        bare = lane.removesuffix("+axis").removesuffix("+graph").removesuffix("+ub")
+        no_worse = count <= floor_count and (earliest is None or floor_earliest is None or earliest >= floor_earliest)
+        if no_worse:
+            print(f"=== lane {lane}: {'MATCH' if count == 0 else f'WITHIN NOISE ({detail})'}", flush=True)
             # threshold:0.0 is supposed to keep everything; for any other lane a
             # match without trimming means the run never exercised the path it
             # was supposed to check.
-            bare = lane.removesuffix("+axis").removesuffix("+graph").removesuffix("+ub")
             if not trimmed and bare not in ("threshold:0.0", "baseline2"):
                 inconclusive.append(lane)
             continue
-        # Name the first divergence: the prompt and token index localize which
-        # request's layout went wrong, which is where to look next.
-        detail = "output count differs"
-        for i, (got, want) in enumerate(zip(tokens, baseline)):
-            if got == want:
-                continue
-            pos = next((j for j, (a, b) in enumerate(zip(got, want)) if a != b), min(len(got), len(want)))
-            detail = f"prompt {i} first differs at token {pos}: got {got[pos : pos + 4]} want {want[pos : pos + 4]}"
-            break
-        if lane == "baseline2":
-            detail = (
-                f"the baseline is not reproducible at this configuration: {detail}. "
-                "Until it is, a mismatch cannot be attributed to any lane, because "
-                "the gate compares one baseline run against one lane run."
-            )
+        detail = f"{detail} | noise floor: {floor_detail}"
         failures.append(f"{lane}: {detail}")
-        print(f"=== lane {lane}: MISMATCH -- {detail}", flush=True)
+        print(f"=== lane {lane}: WORSE THAN NOISE -- {detail}", flush=True)
 
     print("\n==== summary ====")
     for line in failures:
@@ -380,7 +413,15 @@ def main() -> int:
         )
     if failures or inconclusive:
         return 1
-    print(f"All {len(args.lanes)} lane(s) matched the fixed-K baseline, and each trimming lane did trim.")
+    qualifier = "matched" if not floor_count else "stayed within the baseline's own noise against"
+    print(f"All {len(args.lanes)} lane(s) {qualifier} the fixed-K baseline, and each trimming lane did trim.")
+    if floor_count:
+        print(f"Noise floor was non-zero: {floor_detail}")
+        print(
+            "A non-zero floor means this configuration cannot prove exact equality; it can "
+            "only show a lane adds no drift of its own. Use a concurrency where the floor "
+            "is zero for the correctness claim."
+        )
     return 0
 
 
