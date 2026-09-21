@@ -237,6 +237,21 @@ TP=4、四请求 greedy，依次对比 fixed K 与 `threshold:0/0.4/1`、`upstre
 `kept=100%` 表示这一轮没有裁剪，输出相等不能证明变长路径被走到。
 两个 lane 每步各付一次阻塞 D2H，不用于宣称性能收益。
 
+## Rebase 到 v0.29 main 后的已知缺口
+
+2026-09-21 rebase 到 `origin/main`（已升至 vLLM v0.29.0）时，main 把
+`attention_v1.py` 里约 395 行的逐步 graph-update 路径整段删掉，换成
+`raise NotImplementedError("FIA and PA should be use UpdatableGraph.")`。
+FIA sink 作为独立 backend（`attention/fia_sink_v1.py`）完整保留，但它对那条旧
+机制的**唯一挂钩**随之失效：原先在 `update_graph_params` 里把
+`seq_lens_list is None` 的 draft 层从逐步更新里过滤掉，因为 sink 算子是内联
+capture、replay 时重读自己的 device 输入。eager 不走这条路，所以当前不受影响；
+**入图阶段必须对着 `UpdatableGraph` 重新接上**，否则 FULL 图下 draft 层会被
+按普通 FIA 层逐步更新。
+
+同时，eager 的全部验证（算子 5/5、整网四条 lane）是在 **vLLM 0.28.0** 上做的。
+rebase 后的 vLLM 版本不同，这些结论需要在新环境重跑一遍才继续有效。
+
 ## 后续阶段
 
 先完成上述 eager 门槛，然后接回上游成本预算：独立处理成本初始化、stale/live
