@@ -366,9 +366,7 @@ def build_attn_metadata(
             # (_GDNSharedBatchPlan). Only on the real build() path -- capture uses
             # empty extra_kwargs, and build_for_cudagraph_capture does not take it.
             # NOTE(review): not NPU-validated; confirm the plan-sharing contract.
-            if not for_cudagraph_capture and isinstance(
-                attn_metadata_builder, AscendGDNAttentionMetadataBuilder
-            ):
+            if not for_cudagraph_capture and isinstance(attn_metadata_builder, AscendGDNAttentionMetadataBuilder):
                 attn_metadata_extra_kwargs.update(
                     batch_shared_cache=gdn_batch_shared_cache,
                 )

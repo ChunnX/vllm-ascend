@@ -97,6 +97,10 @@ class EagerSurvivalVerificationManager(AdaptiveVerificationManager):
         self._untrusted_rows = int(untrusted.sum())
         self._out_of_range_rows = int(out_of_range.any(axis=1).sum())
 
+    def note_graph_mode(self, cg_mode) -> None:
+        """Report the cudagraph mode the runner dispatched this step under."""
+        self._log.note_graph_mode(cg_mode)
+
     def get_num_tokens(self, num_tokens_per_req, draft_tokens):
         req_ids = list(num_tokens_per_req)
         scheduled = np.array([len(draft_tokens.get(r, ())) for r in req_ids], dtype=np.int32)

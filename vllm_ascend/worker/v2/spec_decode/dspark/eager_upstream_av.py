@@ -159,6 +159,10 @@ class AscendEagerUpstreamAVManager(AdaptiveVerificationManager):
         # the same end state as upstream's whole-buffer copy, without the cost.
         self._stale_confidences[self._stale_idx].np[input_batch.idx_mapping_np] = values
 
+    def note_graph_mode(self, cg_mode) -> None:
+        """Report the cudagraph mode the runner dispatched this step under."""
+        self._log.note_graph_mode(cg_mode)
+
     def batches_to_profile(self, capture_sizes):
         # Eager runs no capture; there is nothing to time.
         return iter(())

@@ -181,9 +181,43 @@ KV 长度、FIA replay line 存活于 capture。
 | --- | --- | --- | --- |
 | 1 | eager 下把状态算对 | 算子 golden 5/5；整网四条 lane 逐 token 相等 | 2026-09-21 通过 |
 | 1.5 | 放弃精确 host 视图（`VLLM_ASCEND_DSPARK_AV_CPU_UPPER_BOUND`） | `+ub` lane 仍然 MATCH | 2026-09-21 通过 |
-| **A** | uniform 图：`VLLM_ASCEND_DSPARK_AV_GRAPH=uniform`，按 uniform verify 宽度捕获，裁剪批回退 | `+graph` lane 输出相等；真实 cost table 随 Q 变化 | 待上机 |
+| **A** | uniform 图：`VLLM_ASCEND_DSPARK_AV_GRAPH=uniform`，按 uniform verify 宽度捕获，裁剪批回退 | `+graph` lane 输出相等**且日志里 `graph=` 显示真的进过图** | 2026-09-21 输出相等；图是否命中待观测 |
 | **B** | ragged 图：`B_graph=min(Q,B_max)`、`B_fia`、固定地址、descriptor 绑定概率、mixed 路由契约 | 输出相等；cost table 相邻 bucket 可区分 | 未开始 |
 | C | 翻 capability，让上游 factory 直接接纳 GDN，撤掉自建 manager | 不设 env 也能跑；可上游 | 未开始 |
+
+### 「相等」在图模式下同样不是证据
+
+2026-09-21 第一次跑 `+graph`：三条 lane 全部 MATCH，但**没有任何证据说明图被回放过**。
+耗时也回答不了：baseline(eager) 183s，三条 `+graph` 分别 249/250/247s——如果
+`threshold:0.0+graph` 真在回放图，它每步该比回退到 eager 的 `0.4+graph` 便宜、总耗时
+更低，而三条在 1 秒内。两种解释都成立：图从来没进过，多出的约 67s 全是 capture 开销；
+或者图进了，但整个生成只有约 20 个 decode 步，每步省几毫秒在 250s（模型加载 + 捕获主导）
+里完全看不见。
+
+算术上图是可达的：`cudagraph_capture_sizes=[1,2,4,8,16,24,32]`、`max_num_seqs=4`、K=7，
+纯投机批 = 4×8 = 32 token，uniform 描述符带 `32//8 = 4` 个请求 × 8 token，和真实批一致，
+`decode_cudagraph_max_bs = 32` 也够。而 `threshold:0.4` 裁剪后是 `[3,8,8,4]`=23 token，
+请求几何对不上任何 uniform 描述符，**应当回退**。
+
+这两个「应当」都需要观测。聚合行现在带 `graph=` 字段，按窗口统计每步被派到哪个
+cudagraph 模式：
+
+```txt
+... | last_caps=[7, 7, 7] | graph=FULL=5
+... | last_caps=[2, 7, 7, 3] | graph=NONE=5
+```
+
+判据：`threshold:0.0+graph` 必须出现 `FULL`（否则图根本没进过，MATCH 只证明回退路径
+正确）；`threshold:0.4+graph` 出现 `NONE` 是符合设计的回退，不是缺陷。
+
+### 阶段 B 的一条风险，来自阶段 A 的代码
+
+`build_attn_metadata` 不给 `build_for_cudagraph_capture` 传 `batch_shared_cache`，所以
+capture 时每个 KV cache group 各自重算 GDN-local 修正视图，而
+`_remove_spec_graph_padding_queries` 每次调用都新分配一个 device `query_start_loc`。
+当前无害——FULL 路径把值拷进 builder 自己的持久 buffer，图看到的是持久 buffer 而不是
+那个临时张量。但这正是文章 §4.1「capture 和 replay 必须同一块内存」要盯的形状，阶段 B
+引入更多随批变化的张量时要重新核。
 
 ### 为什么跳过通用 PIECEWISE
 

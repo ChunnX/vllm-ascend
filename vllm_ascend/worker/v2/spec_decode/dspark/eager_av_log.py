@@ -34,6 +34,7 @@ class EagerAVLogger:
         self._capacities: tuple[int, ...] | None = None
         self._untrusted = 0
         self._out_of_range = 0
+        self._graph_modes: dict[str, int] = {}
         self._emitted = False
 
     def sampling(self) -> bool:
@@ -44,6 +45,18 @@ class EagerAVLogger:
         synchronization that lane does not otherwise need.
         """
         return not self._emitted or (self._steps + 1) % self.interval == 0
+
+    def note_graph_mode(self, cg_mode) -> None:
+        """Record which cudagraph mode this step was dispatched under.
+
+        Matching the baseline says the lane is correct; it does not say a graph
+        ran. A trimmed batch matches no uniform descriptor and falls back, which
+        is by design, so without this the aggregated line cannot tell "replayed
+        a graph" from "captured one and never entered it" -- and at a few dozen
+        decode steps neither can the wall clock.
+        """
+        name = getattr(cg_mode, "name", None) or str(cg_mode)
+        self._graph_modes[name] = self._graph_modes.get(name, 0) + 1
 
     def record(
         self,
@@ -82,6 +95,9 @@ class EagerAVLogger:
         # requests kept their drafts. An out_of_range count is different: finite
         # but not a probability is not the prefill artifact, so name it apart.
         suffix = ""
+        if self._graph_modes:
+            modes = ",".join(f"{name}={count}" for name, count in sorted(self._graph_modes.items()))
+            suffix += f" | graph={modes}"
         if self._untrusted:
             suffix = f" | untrusted_rows={self._untrusted}"
             if self._out_of_range:
@@ -109,3 +125,4 @@ class EagerAVLogger:
         self._trimmed_steps = 0
         self._untrusted = 0
         self._out_of_range = 0
+        self._graph_modes = {}

@@ -197,6 +197,33 @@ def test_av_logger_always_reports_a_run_shorter_than_one_interval(av_logger_clas
     assert "kept=42.9%" in messages[0]
 
 
+def test_av_logger_reports_which_graph_each_step_earned(av_logger_class, caplog):
+    """A match under a graph mode does not say a graph ran.
+
+    A trimmed batch matches no uniform descriptor and falls back by design, and
+    at a few dozen decode steps the wall clock cannot separate a replayed graph
+    from one that was captured and never entered. So the line has to say.
+    """
+    log = av_logger_class(lane="threshold", interval=3)
+    with caplog.at_level(logging.WARNING):
+        log.note_graph_mode(SimpleNamespace(name="FULL"))
+        log.record(num_reqs=1, scheduled_drafts=7, admitted_drafts=7, verify_tokens=8)
+        for _ in range(2):
+            log.note_graph_mode(SimpleNamespace(name="NONE"))
+            log.record(num_reqs=1, scheduled_drafts=7, admitted_drafts=3, verify_tokens=4)
+        log.note_graph_mode(SimpleNamespace(name="FULL"))
+        log.record(num_reqs=1, scheduled_drafts=7, admitted_drafts=7, verify_tokens=8)
+    first, second = (r.getMessage() for r in caplog.records)
+    assert "graph=FULL=1" in first
+    # The window that closed next held two fallbacks and one replay.
+    assert "graph=FULL=1,NONE=2" in second
+    # Counts reset with the window, so the second line does not re-report the first.
+    log2 = av_logger_class(lane="threshold", interval=1)
+    with caplog.at_level(logging.WARNING):
+        log2.record(num_reqs=1, scheduled_drafts=7, admitted_drafts=7, verify_tokens=8)
+    assert "graph=" not in caplog.records[-1].getMessage()
+
+
 def test_av_logger_sampling_predicts_the_emitting_step(av_logger_class):
     # Lane B only copies its device capacities when this says the next recorded
     # step will print, so a wrong answer either loses the field or adds a sync.

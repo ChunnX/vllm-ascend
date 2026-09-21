@@ -467,6 +467,12 @@ class NPUModelRunner(GPUModelRunner):
         )
         num_scheduled_tokens_upper_bound = num_scheduled_tokens_np
         if adaptive_verification_active:
+            if getattr(self, "eager_survival_test", False):
+                # Which graph, if any, this batch's shape earned. A trimmed batch
+                # matches no uniform descriptor and runs eager by design, so this
+                # is the only way the aggregated line can tell a replayed graph
+                # from one that was captured and never entered.
+                adaptive_verification_manager.note_graph_mode(batch_desc.cg_mode)
             # prepare_request_order belongs to the survival-threshold manager only;
             # the upstream manager (lane B) does not need it.
             if getattr(self, "eager_survival_test", False) and hasattr(
