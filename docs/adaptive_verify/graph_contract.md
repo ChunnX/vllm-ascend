@@ -185,7 +185,7 @@ KV 长度、FIA replay line 存活于 capture。
 | **A′** | 测量真实 cost table | 可达范围内 spread 足够大 | 2026-09-21：`max_num_seqs=4` 下 spread=0.00ms |
 | **A″** | 在服务规模并发下重测 | 图内可达 spread 明显 | 2026-09-21 通过：bs=16 spread=144ms，bs=32 spread=263ms |
 | **A‴** | 弄清 bs≥16 的 MISMATCH | 相对 baseline 自身噪声不更差 | 2026-09-21：判据本身失效，已改用噪声底 |
-| **B** | ragged 图：`B_graph=min(Q,B_max)`、`B_fia`、固定地址、descriptor 绑定概率 | 输出相等；cost table 相邻 bucket 可区分 | 取决于 A″ |
+| **B** | ragged 图（清单见下） | 接受率不降且吞吐/TPOT 改善 | A″ 已提供依据，待做 |
 | C | 翻 capability，让上游 factory 直接接纳 GDN，撤掉自建 manager | 不设 env 也能跑；可上游 | 未开始 |
 
 ### 阶段 A 的实测结果：裁剪批落到 PIECEWISE，不是 eager
@@ -380,6 +380,36 @@ seq_lens 镜像的 padding 清理**一起成立的（隔壁分支为此有 `39e4
 因此**正确性结论要在噪声底为 0 的并发下取得**（目前是 bs=4），而 cost table 这类性能
 测量不需要确定性，可以在高并发下做。别让一个工具干两件事。
 
+### 逐 token 判据的天花板，以及正确性证据真正在哪
+
+`threshold:0.0` 在 bs=16 判为 worse than noise。它**完全不裁剪**，所以和裁剪无关。
+但它与 baseline 之间有一条更根本的差别：
+
+| | conv / recurrent 算子 |
+| --- | --- |
+| baseline（`AV=false`） | `npu_causal_conv1d_custom` / `npu_recurrent_gated_delta_rule` |
+| 任何 AV lane | **`npu_dcut_causal_conv1d` / `npu_dcut_recurrent_gated_delta_rule`** |
+
+两套不同 kernel，rounding 必然不同。而噪声底是 `baseline vs baseline`——**同一套
+kernel 重跑的噪声**。拿「不同实现」去比「同实现重跑」的底，本来就不对等。所以这个
+判定**不是新缺陷，是逐 token 判据的天花板**。
+
+**正确性证据不在端到端比较里。** `tests/e2e/.../test_eager_gdn_varlen.py` 5/5 用独立
+NumPy 参考、state 以 `rtol=0, atol=0` 精确比对——那是对 dcut 算子**比任何端到端 token
+比较都强**的陈述，因为它对的是独立参考而不是另一个实现。端到端比较的作用是发现
+*集成*层面的错误（query 边界、state 选择、logits 摆放），它在噪声底为 0 的并发下有效，
+再往上就失去分辨力。
+
+### 只保留 upstream 作为主路径
+
+`threshold` lane 从一开始是诊断脚手架：同步 confidence、精确 host 边界、无成本模型，
+为的是在 eager 下隔离正确性。**任务已完成**——它证明了 dcut 路径可用、ragged 布局正确。
+而它的「精确 host 边界」恰恰是图不能要的东西。
+
+所以门槛的默认 lane 改为 `upstream / upstream+ub / upstream+graph`：真正会上线的路径。
+`threshold` 的代码保留（自带 env 开关，不设即不生效），作为二分工具，不删除已验证过
+并已记录结果的实现。
+
 ### 高并发下的判据：接受率，不是「有没有乱码」
 
 2026-09-21 观察：`vllm serve` 在 16 并发、`THRESHOLD=0.4` 下输出正常，无乱码、无请求
@@ -442,3 +472,28 @@ table 的数字一起读才站得住。
 两个 capability flag（`supports_device_cpu_query_lens_mismatch`、`ALWAYS`）属于
 阶段 C，是为了让上游 factory 直接接纳 GDN，**不是入图的前置条件**——本分支的两条
 lane 自己替换了 factory，所以阶段 A/B 不经过那两道 gate。
+
+## 阶段 B 的清单
+
+「直接入全图」要分清两件事：
+
+- **uniform FULL 已经有了**（阶段 A：`graph=FULL` 实测命中，未裁剪批走 FULL、裁剪批
+  走 PIECEWISE，输出在噪声底为 0 的并发下相等）。
+- **ragged FULL** 是让裁剪后的批也能命中图，需要下面六项。它们不是探索性的，来源是
+  文章与 `main_dspark_adaptive_verify_dev` 的踩坑记录，逐项都有出处。
+
+| # | 内容 | 出处 |
+| --- | --- | --- |
+| 1 | `B_graph = min(Q, B_max)` 描述符，`Q > B_max` 时按 `64×3 + 32×2` 均分 | 文章 §3.4.2/3.4.3 |
+| 2 | `B_fia = B_live(+1)`，或固定为服务最大值 +1 行 | 文章 §3.4.4；`39e454375` |
+| 3 | `B_gdn = B_max` 固定轴（已实现，opt-in 待配齐后开启） | 文章 §3.4.5；本分支 `5dfe59be8` |
+| 4 | 固定地址 buffer + 批收缩时清理整个 inactive tail | 文章 §4.1；`275c0df09`、`564c7ecd9` |
+| 5 | 概率绑定 graph descriptor，每轮只消费一次 | 文章 §4.2；`f9542068c`、`577480c5b` |
+| 6 | drafter 未使用 KV tail 的 slot mapping 置无效 | 文章 §4.3 |
+
+第 3 项已在树上但默认关闭，因为单独打开它是半个契约（第 2、4 项未配齐）——这已经
+在 bs≥16 上验证过一次：它在 `max_num_seqs == 活跃请求数` 时是空操作，一旦不是就产生
+大量未被其他侧照顾的 padding 行。
+
+配齐后的验收判据按上面两节：正确性用算子 golden + 噪声底为 0 并发下的端到端相等，
+收益用接受率与吞吐/TPOT。

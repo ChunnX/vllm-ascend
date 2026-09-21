@@ -315,19 +315,14 @@ def main() -> int:
     parser.add_argument(
         "--lanes",
         nargs="+",
-        default=[
-            "threshold:0.0",
-            "threshold:0.4",
-            "threshold:1.0",
-            "upstream",
-            "threshold:0.4+ub",
-            "upstream+ub",
-        ],
+        default=["upstream", "upstream+ub", "upstream+graph"],
         help=(
-            "Lanes to compare against the baseline. 'threshold:<x>' runs the "
-            "survival-threshold lane at x; 'upstream' runs the upstream-manager "
-            "lane. threshold:0.0 keeps every draft, so it is the equivalence "
-            "check that isolates the new GDN path from any trimming. Suffixes "
+            "Lanes to compare against the baseline. 'upstream' runs the "
+            "upstream manager -- the real cost-argmax budget, device survival "
+            "top-k and measured cost table -- which is the path that would ship. "
+            "'threshold:<x>' runs the survival-threshold lane, kept as a bisect "
+            "tool: it isolated the GDN path in eager and its exact host "
+            "boundaries are the opposite of what a graph needs. Suffixes "
             "compose, outermost last: '+ub' leaves the host view inexact (the "
             "contract a captured graph runs under), '+graph' adds the uniform "
             "graph descriptor, '+axis' pins the GDN request axis to max_num_seqs "
