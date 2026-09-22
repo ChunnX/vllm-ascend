@@ -94,6 +94,17 @@ env_variables: dict[str, Callable[[], Any]] = {
     # (adapt). Setting 0 leaves enable_adaptive_verification working, just
     # without the ragged plumbing and the graph modes above. Not sensitive.
     "VLLM_ASCEND_DSPARK_AV_ADAPT": lambda: bool(int(os.getenv("VLLM_ASCEND_DSPARK_AV_ADAPT", "1"))),
+    # Broadcast each step's confidence from rank 0 before deciding the budget.
+    # Upstream does not: it broadcasts the cost curves once at setup and then
+    # trusts every rank to compute identical confidences, which they do because
+    # the confidence head's output is already reduced across the group. This was
+    # added as insurance against ranks disagreeing on a survival tie and so
+    # building different metadata, but insurance priced per step at TP=4 is a
+    # synchronising collective on every decode step. Default 0 (upstream
+    # behaviour); 1 restores it if ranks are ever seen to diverge -- the
+    # whole-network gate at a zero noise floor is what would show that.
+    # Not sensitive.
+    "VLLM_ASCEND_DSPARK_AV_TP_BROADCAST": lambda: bool(int(os.getenv("VLLM_ASCEND_DSPARK_AV_TP_BROADCAST", "0"))),
     # Stop making the host query/seq-length view exact for the eager AV lanes.
     # Both lanes currently read the trimmed boundaries back from device each
     # step, which a captured graph cannot do. With this set the host keeps the

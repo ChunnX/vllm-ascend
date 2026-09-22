@@ -266,8 +266,13 @@ def child_env() -> dict[str, str]:
     return env
 
 
+def requests_for(concurrency: int, args: argparse.Namespace) -> int:
+    return args.num_requests if args.num_requests else max(concurrency, args.waves * concurrency)
+
+
 def run_config(k: int, concurrency: int, adaptive: bool, args: argparse.Namespace, log_dir: Path) -> dict:
     lane = "dynamics" if adaptive else "fixed"
+    num_requests = requests_for(concurrency, args)
     log_path = log_dir / f"k{k}-c{concurrency}-{lane}.log"
     cmd = [
         sys.executable,
@@ -279,7 +284,7 @@ def run_config(k: int, concurrency: int, adaptive: bool, args: argparse.Namespac
         "--num-speculative-tokens", str(k),
         "--max-model-len", str(args.max_model_len),
         "--concurrency", str(concurrency),
-        "--num-requests", str(args.num_requests),
+        "--num-requests", str(num_requests),
         "--output-len", str(args.output_len),
         "--repeats", str(args.repeats),
         "--cudagraph-mode", args.cudagraph_mode,
@@ -308,7 +313,7 @@ def run_config(k: int, concurrency: int, adaptive: bool, args: argparse.Namespac
     runs = [json.loads(line.removeprefix(RESULT_PREFIX)) for line in log.splitlines() if line.startswith(RESULT_PREFIX)]
     if not runs:
         raise RuntimeError(f"K={k} c={concurrency} {lane} printed no timing; tail of {log_path}:\n{log[-12000:]}")
-    expected = args.num_requests * args.output_len
+    expected = num_requests * args.output_len
     for run in runs:
         if run["output_tokens"] != expected:
             # Without this the whole comparison silently degrades into the one
@@ -323,6 +328,17 @@ def run_config(k: int, concurrency: int, adaptive: bool, args: argparse.Namespac
     accept = [float(m) for m in ACCEPT_RE.findall(log)]
     draft_accept = [float(m) for m in DRAFT_ACCEPT_RE.findall(log)]
     av_lines = [line for line in log.splitlines() if AV_LOG_TAG in line and " steps | " in line]
+    # Sum the per-window dispatch counts. The share of steps that got no graph
+    # is the same for both lanes under a decode-only mode -- a mixed batch is
+    # eager either way -- so it does not explain a difference between them, but
+    # it does say how much of the run was never in a graph at all.
+    dispatch: dict[str, int] = {}
+    for line in av_lines:
+        for field in GRAPH_FIELD_RE.findall(line):
+            for entry in field.split(","):
+                name, _, count = entry.partition("=")
+                if count.isdigit():
+                    dispatch[name] = dispatch.get(name, 0) + int(count)
     record = {
         "k": k,
         "concurrency": concurrency,
@@ -330,7 +346,7 @@ def run_config(k: int, concurrency: int, adaptive: bool, args: argparse.Namespac
         "tps": tps,
         "accept": statistics.fmean(accept) if accept else None,
         "draft_accept": statistics.fmean(draft_accept) if draft_accept else None,
-        "graph": sorted({m for line in av_lines for m in GRAPH_FIELD_RE.findall(line)}),
+        "dispatch": dispatch,
         "kept": [float(m) for line in av_lines for m in KEPT_RE.findall(line)],
         "log": str(log_path),
     }
@@ -347,7 +363,7 @@ def run_config(k: int, concurrency: int, adaptive: bool, args: argparse.Namespac
         if not record["kept"]:
             raise RuntimeError(f"K={k} c={concurrency} dynamics logged no budget decision; see {log_path}")
         print(
-            f"    engaged: kept {min(record['kept']):.1f}-{max(record['kept']):.1f}%, graph {record['graph']}",
+            f"    engaged: kept {min(record['kept']):.1f}-{max(record['kept']):.1f}%, dispatch {dispatch}",
             flush=True,
         )
         if min(record["kept"]) >= 100.0:
@@ -363,13 +379,13 @@ def report(results: list[dict], args: argparse.Namespace) -> int:
     print("\n==== throughput ====")
     print(
         f"model={os.path.basename(args.model or '?')} TP={args.tensor_parallel_size} "
-        f"requests={args.num_requests} output_len={args.output_len} "
+        f"waves={args.waves if not args.num_requests else 'n/a'} output_len={args.output_len} "
         f"dataset={os.path.basename(args.dataset) if args.dataset else 'synthetic'} "
         f"cudagraph_mode={args.cudagraph_mode} repeats={args.repeats}"
     )
     header = (
-        f"{'Draft':>5} | {'Conc':>4} | {'Fixed TPS':>18} | {'Fixed Acc':>9} | "
-        f"{'Dynamics TPS':>18} | {'Dyn Acc':>9} | {'Acceleration':>13}"
+        f"{'Draft':>5} | {'Conc':>4} | {'Reqs':>5} | {'Fixed TPS':>18} | {'Fixed Acc':>9} | "
+        f"{'Dynamics TPS':>18} | {'Dyn Acc':>9} | {'Kept':>13} | {'NoGraph':>7} | {'Acceleration':>13}"
     )
     print(header)
     print("-" * len(header))
@@ -386,11 +402,23 @@ def report(results: list[dict], args: argparse.Namespace) -> int:
         # and crude is the right level for three repeats.
         decisive = abs(d_mean - f_mean) > (f_spread + d_spread)
         verdicts.append(((k, conc), gain, decisive))
+        kept = dyn["kept"]
+        kept_text = f"{min(kept):.0f}-{max(kept):.0f}%" if kept else "n/a"
+        total = sum(dyn["dispatch"].values())
+        no_graph = f"{dyn['dispatch'].get('NONE', 0) / total * 100:.1f}%" if total else "n/a"
         print(
-            f"{k:>5} | {conc:>4} | {f_mean:>10.1f} +/-{f_spread:>5.1f} | {_fmt(fixed['accept']):>9} | "
+            f"{k:>5} | {conc:>4} | {requests_for(conc, args):>5} | "
+            f"{f_mean:>10.1f} +/-{f_spread:>5.1f} | {_fmt(fixed['accept']):>9} | "
             f"{d_mean:>10.1f} +/-{d_spread:>5.1f} | {_fmt(dyn['accept']):>9} | "
-            f"{gain:>+11.1f}%{'' if decisive else ' ?'}"
+            f"{kept_text:>13} | {no_graph:>7} | {gain:>+11.1f}%{'' if decisive else ' ?'}"
         )
+    print(
+        "\nKept near 100% means the controller decided not to trim, which is a correct decision "
+        "about a flat cost table, not a fault -- but it also means the feature is paying its "
+        "per-step cost for nothing, so a loss there is expected rather than surprising. NoGraph is "
+        "the share of budgeted steps that ran eager because a prefill shared the batch; it is the "
+        "same for both lanes under a decode-only mode, so it does not explain a difference."
+    )
     print(
         "\nTPOT is not reported: with ignore_eos every request emits the same number of tokens, so "
         "mean per-token time is exactly concurrency/TPS and would restate this table. PR 15147's "
@@ -454,14 +482,21 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--waves",
+        type=int,
+        default=8,
+        help=(
+            "Workload size as a multiple of concurrency. PR 15147's 500 requests at concurrency 64 "
+            "is about eight waves; holding waves rather than requests fixed keeps each swept cell "
+            "the same shape and its runtime bounded -- 500 requests through a 4-wide engine is 125 "
+            "waves and took 29 minutes per cell."
+        ),
+    )
+    parser.add_argument(
         "--num-requests",
         type=int,
-        default=500,
-        help=(
-            "Workload size, independent of concurrency: PR 15147 measured 500 requests per dataset "
-            "at concurrency 64. Sending only as many requests as the batch is wide measures one wave, "
-            "not sustained throughput."
-        ),
+        default=None,
+        help="Fixed workload size, overriding --waves. Cells at different concurrency then differ in shape.",
     )
     parser.add_argument(
         "--dataset",

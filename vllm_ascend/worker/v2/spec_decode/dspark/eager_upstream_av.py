@@ -121,8 +121,9 @@ class AscendEagerUpstreamAVManager(AdaptiveVerificationManager):
 
         max_batch_tokens = req_states.max_num_batched_tokens
         # Draft cost is flat: constant across the budget within a batch, it only
-        # shifts every ratio equally. Both curves are identical on every rank, so
-        # no broadcast is needed to keep TP capacities consistent.
+        # shifts every ratio equally. Both curves are computed identically on
+        # every rank, so this synthetic pair needs no broadcast of its own --
+        # the inherited profiling path broadcasts the measured curves once.
         draft_curve = [(1, _DRAFT_FLAT_MS), (max(1, max_num_reqs), _DRAFT_FLAT_MS)]
         verify_curve = _synthetic_verify_curve(max_batch_tokens)
         self.cost_tables = build_cost_tables_from_curves(
@@ -182,11 +183,21 @@ class AscendEagerUpstreamAVManager(AdaptiveVerificationManager):
     def record_confidences(self, confidence_probs, input_batch) -> None:
         """Publish this step's confidences for the device top-k and CPU budget."""
         num_reqs = input_batch.num_reqs
-        # clone(): for a float32 confidence head detach/float/contiguous are all
-        # no-ops, so without it this is a view of the speculator's own buffer and
-        # the broadcast below would overwrite that buffer on every rank but 0.
-        raw = confidence_probs[:num_reqs].detach().float().clone()
-        get_tp_group().broadcast(raw, src=0)
+        raw = confidence_probs[:num_reqs].detach().float()
+        if envs_ascend.VLLM_ASCEND_DSPARK_AV_TP_BROADCAST:
+            # clone() first: for a float32 confidence head detach/float are both
+            # no-ops, so this is a view of the speculator's own buffer and an
+            # in-place broadcast would overwrite it on every rank but 0.
+            #
+            # Off by default. Upstream broadcasts the cost curves once and then
+            # relies on every rank computing the same confidence, which it does
+            # because the head's output is already reduced across the group.
+            # Doing it per step buys insurance against a survival tie splitting
+            # the ranks, at the price of a synchronising collective on every
+            # decode step -- and at TP=4 that price is paid whether or not the
+            # budget changes.
+            raw = raw.clone()
+            get_tp_group().broadcast(raw, src=0)
         self._accumulate_health(raw)
         # The confidence head emits non-finite rows during prefill bursts, which
         # prefix caching and async scheduling make common. Here that is not just
