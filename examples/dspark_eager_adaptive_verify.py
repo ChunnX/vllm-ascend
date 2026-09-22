@@ -272,22 +272,22 @@ def frozen_confidence(data_lines: list[str]) -> str | None:
     other check in this script, and a lane can pass the whole gate while its
     adaptive verification is dead.
 
-    ``conf_distinct=n/N`` is per window. A live op gives N distinct values over N
-    steps; a frozen buffer gives exactly 1 no matter how many steps ran. Only
-    windows with at least two steps can tell the two apart.
+    ``conf_moved=n/N`` is per window: N steps ran and the confidence differed
+    from the previous step on n of them. A live op moves on essentially every
+    step; a frozen buffer moves on none after the first. Only windows with at
+    least two steps can tell the two apart.
     """
     seen = [
-        (int(m.group(1)), int(m.group(2)))
-        for line in data_lines
-        if (m := re.search(r"conf_distinct=(\d+)/(\d+)", line))
+        (int(m.group(1)), int(m.group(2))) for line in data_lines if (m := re.search(r"conf_moved=(\d+)/(\d+)", line))
     ]
-    usable = [(distinct, steps) for distinct, steps in seen if steps >= 2]
-    if not usable or any(distinct > 1 for distinct, _ in usable):
+    # Allow the one move a frozen buffer still shows on its very first step.
+    usable = [(moved, steps) for moved, steps in seen if steps >= 2]
+    if not usable or any(moved > 1 for moved, _ in usable):
         return None
     steps = sum(steps for _, steps in usable)
     return (
-        f"{len(usable)} window(s) covering {steps} steps each reported a single distinct "
-        "confidence value, so the signal never moved. Under graph this is the confidence op "
+        f"{len(usable)} window(s) covering {steps} steps saw the confidence change at most "
+        "once, so the signal is not being recomputed. Under graph this is the confidence op "
         "missing from the captured draft graph; the budget is then decided on pre-capture "
         "numbers and a token match proves nothing about adaptive verification."
     )

@@ -153,8 +153,8 @@ manager 并打一条 warning**，而不是让引擎起不来——那是这条�
   整网脚本自己设成 5。设成 1 会每步一行，只在定位单步问题时用。
 - `upstream` lane 的每请求裁剪长度由 device 端 top-k 决定，只在会打印的那一步
   拷回 host，其余步不额外同步。
-- `conf_distinct=n/N` 是**窗口内 confidence 首行的不同取值个数**。`N/N` 表示 confidence
-  op 每步都在重算；`1/N` 表示 buffer 冻结——捕获时这个 op 没被 trace 进 drafter 的图，
+- `conf_moved=n/N` 是**窗口内 confidence 首行与上一步不同的步数**。`N/N` 表示 confidence
+  op 每步都在重算；`0/N` 表示 buffer 冻结——捕获时这个 op 没被 trace 进 drafter 的图，
   之后每次回放都跳过它。这个失效模式对输出完全隐形（裁剪只是策略，拒绝采样仍然正确），
   唯一表象是「动态校验没有收益」，所以整网脚本把它算作失败。
 - `graph=FULL=n` 与 `kept<100%` 同时出现，才说明**裁剪批真的回放了全图**。
@@ -165,6 +165,8 @@ manager 并打一条 warning**，而不是让引擎起不来——那是这条�
 - `--noconftest` 只用于上面两个自包含测试，不是完整仓库 UT 的运行方式。
 - `git pull` 不更新 editable 安装中已有的算子二进制。改了算子源码就必须重装。
 - 不要在现有服务使用的环境中覆盖安装。
-- 两个 lane 各自每步都付一次阻塞 D2H，都是诊断用途，不要拿来量性能。
+- lane B（默认路径）用上游的异步双缓冲拷贝，稳态没有每步同步，可以用来量性能。建不出
+  side stream 时会打一条 warning 并退回阻塞拷贝——看到那条 warning 时的吞吐数据不作数。
+  lane A 仍然每步一次阻塞 D2H，是诊断用途。
 - 回传脚本的 `==== summary ====` 段、失败 lane 的日志路径，以及其中的
   `[DSPARK-EAGER-AV/...]` 行。

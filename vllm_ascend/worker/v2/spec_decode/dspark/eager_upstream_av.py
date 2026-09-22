@@ -12,18 +12,28 @@ Ascend:
    the curve is invented -- but it makes the real argmax land at an interior,
    ragged budget.
 2. The upstream manager builds ``torch.cuda`` copy streams/events for an async
-   D2H double buffer. On the v2 Ascend path ``torch.cuda.Stream`` is not reliably
-   aliased to the NPU stream at construction time, so this manager does not call
-   ``super().__init__`` and records confidences synchronously instead (a blocking
-   D2H, as the survival-threshold lane already does). Async D2H is a throughput
-   optimisation for the graph phase, not a correctness requirement here.
+   D2H double buffer. ``torch.cuda.Stream`` is not guaranteed to alias the NPU
+   stream on the v2 path, so this manager does not call ``super().__init__`` and
+   builds them defensively, falling back to a blocking copy if they cannot be
+   created. The async path is not an optimisation to defer: a blocking copy
+   waits on the confidence the drafter produced *this* step, so the host waits
+   for the draft forward every step and async scheduling stops overlapping
+   anything. Measured on specbench, that alone made turning the feature on cost
+   about a tenth of TPOT while changing accepted length by two percent -- a cost
+   of the instrumentation, not of adaptive verification.
+
+Both diagnostics therefore accumulate on device and are read once per logging
+window: a per-step copy to count them would reintroduce exactly the stall this
+lane just removed.
 """
 
 import numpy as np
 import torch
 from vllm.distributed.parallel_state import get_tp_group
 from vllm.logger import init_logger
+from vllm.utils.gpu_sync_debug import gpu_sync_allowed
 from vllm.v1.utils import CpuGpuBuffer
+from vllm.v1.worker.gpu.async_utils import stream
 from vllm.v1.worker.gpu.spec_decode.adaptive_verification import (
     AdaptiveVerificationManager,
     build_cost_tables_from_curves,
@@ -100,6 +110,14 @@ class AscendEagerUpstreamAVManager(AdaptiveVerificationManager):
         self._stale_idx = 0
         for slot in self._stale_confidences:
             slot.np.fill(1.0)
+        self._async_confidence = self._setup_async_confidence(device)
+        # [rows repaired, steps whose leading confidence row moved]. Both live on
+        # device and are accumulated with device ops, so counting them costs no
+        # synchronisation; the logging window reads the pair once.
+        self._health = torch.zeros(2, dtype=torch.int64, device=device)
+        self._health_steps = 0
+        # NaN compares unequal to everything, so the first step counts as moved.
+        self._last_row = torch.full((self.num_speculative_steps,), float("nan"), dtype=torch.float32, device=device)
 
         max_batch_tokens = req_states.max_num_batched_tokens
         # Draft cost is flat: constant across the budget within a batch, it only
@@ -128,63 +146,128 @@ class AscendEagerUpstreamAVManager(AdaptiveVerificationManager):
                 "The curve is invented, so the chosen budget is a layout signal, not a performance one."
             )
 
+    def _setup_async_confidence(self, device) -> bool:
+        """Build the async D2H double buffer, or report why we cannot.
+
+        Defensive because the reason this manager skips ``super().__init__`` is
+        that ``torch.cuda.Stream`` may not be the NPU stream here. If it is not,
+        staying synchronous costs throughput and nothing else, which is a much
+        better outcome than failing to start.
+        """
+        try:
+            self._copy_stream = torch.cuda.Stream(device)
+            self._copy_events = [torch.cuda.Event(blocking=True) for _ in range(2)]
+        except Exception as exc:  # noqa: BLE001 - any stream failure means stay sync
+            logger.warning(
+                "[DSPARK-EAGER-AV/upstream] async confidence copy unavailable (%s); falling back "
+                "to a blocking copy each step. Correct, but the host then waits for the draft "
+                "forward every step and throughput will show it.",
+                exc,
+            )
+            return False
+        return True
+
     def add_request(self, req_idx: int) -> None:
         self._stale_confidences[self._stale_idx].np[req_idx].fill(1.0)
         self._pending_resets.append(req_idx)
         self._confidence_probs[req_idx].fill_(1.0)
 
     def record_confidences(self, confidence_probs, input_batch) -> None:
-        """Publish this step's confidences for the device top-k and CPU budget.
-
-        Synchronous by design: a single blocking D2H makes the stale table exact
-        (stale == live under eager), so the next step's budget reads landed
-        values without any stream machinery. The TP broadcast keeps every rank's
-        capacities identical, including survival ties.
-        """
+        """Publish this step's confidences for the device top-k and CPU budget."""
         num_reqs = input_batch.num_reqs
         # clone(): for a float32 confidence head detach/float/contiguous are all
         # no-ops, so without it this is a view of the speculator's own buffer and
         # the broadcast below would overwrite that buffer on every rank but 0.
-        current = confidence_probs[:num_reqs].detach().float().clone()
-        get_tp_group().broadcast(current, src=0)
-        if self._pending_resets:
-            self._stale_confidences[self._stale_idx].np[self._pending_resets] = 1.0
-            self._pending_resets.clear()
-        # One blocking D2H of just this batch's rows; repair on the host copy.
-        # Copying the whole buffer, as upstream's async path does, would also drag
-        # in slots this batch never touched and count them as repaired.
-        values = current.cpu().numpy()
+        raw = confidence_probs[:num_reqs].detach().float().clone()
+        get_tp_group().broadcast(raw, src=0)
+        self._accumulate_health(raw)
         # The confidence head emits non-finite rows during prefill bursts, which
         # prefix caching and async scheduling make common. Here that is not just
         # a bad trimming decision: the inherited budget cumprods this table on
         # the host and _assign_draft_token_budget cumprods and top-ks the device
-        # buffer, so one NaN makes the whole batch's ranking and argmax
-        # meaningless. Substitute the neutral 1.0, which is what upstream's own
-        # add_request uses for a slot it has no information about.
+        # buffer, and NaN sorts to the front of the reversed ranking, so argmax
+        # collapses every request's budget -- one bad row costs the whole batch.
+        # Substitute the neutral 1.0, which is what add_request already uses for
+        # a slot it has no information about.
         #
         # 1.0 is the top of the ranking, so a repaired row can win budget from a
-        # row with real confidence. That is the accepted trade: this lane's cost
-        # curve is synthetic anyway, so its budget is a layout signal, and
-        # retaining drafts can only cost throughput, never correctness.
-        bad = ~np.isfinite(values) | (values < 0) | (values > 1)
-        repaired_rows = int(bad.any(axis=1).sum())
-        if repaired_rows:
-            values = np.where(bad, 1.0, values)
-            # The device buffer is the one the ranking kernel reads, so repairing
-            # only the host stale table would leave the top-k running on NaN.
-            current = torch.from_numpy(values).to(current.device)
-        self._untrusted_rows += repaired_rows
-        # Fingerprint one fixed row rather than the whole batch. If the
-        # confidence op was not traced into the drafter's graph the buffer never
-        # changes, so the leading rows read identical bytes every step no matter
-        # which requests occupy them -- whereas a fingerprint over the whole
-        # batch varies with num_reqs and would report a frozen buffer as live.
-        if len(values):
-            self._log.note_confidence(hash(values[0].tobytes()))
+        # row with real confidence. That is the accepted trade: retaining drafts
+        # can only cost throughput, never correctness.
+        #
+        # On device on purpose. Repairing a host copy is what forced a blocking
+        # copy every step, and the repair never needed the values on host.
+        current = torch.nan_to_num(raw, nan=1.0, posinf=1.0, neginf=1.0)
+        if self._async_confidence:
+            self._record_async(current, input_batch)
+        else:
+            self._record_sync(current, input_batch)
+
+    def _record_async(self, current, input_batch) -> None:
+        """Upstream's double-buffered copy: only ever wait on an older step.
+
+        The event synchronised here belongs to the copy started two steps ago,
+        so by now it has landed and the wait is free. This step's copy is
+        enqueued on a side stream and read by a later step's budget -- the host
+        never waits for the drafter it just launched.
+        """
+        ready_idx = self._stale_idx ^ 1
+        with gpu_sync_allowed():
+            self._copy_events[ready_idx].synchronize()
+        if self._pending_resets:
+            self._stale_confidences[ready_idx].np[self._pending_resets] = 1.0
+            self._pending_resets.clear()
+        self._stale_idx, write_idx = ready_idx, self._stale_idx
+
+        self._confidence_probs[input_batch.idx_mapping] = current
+        write_slot = self._stale_confidences[write_idx]
+        write_slot.gpu.copy_(self._confidence_probs)
+
+        current_stream = torch.cuda.current_stream(self.req_states.device)
+        self._copy_stream.wait_stream(current_stream)
+        with stream(self._copy_stream, current_stream):
+            write_slot.copy_to_cpu()
+            self._copy_events[write_idx].record()
+
+    def _record_sync(self, current, input_batch) -> None:
+        """Fallback when no side stream could be created. Blocks on this step."""
+        if self._pending_resets:
+            self._stale_confidences[self._stale_idx].np[self._pending_resets] = 1.0
+            self._pending_resets.clear()
         self._confidence_probs[input_batch.idx_mapping] = current
         # Per slot, so a request absent from this batch keeps its last value --
-        # the same end state as upstream's whole-buffer copy, without the cost.
-        self._stale_confidences[self._stale_idx].np[input_batch.idx_mapping_np] = values
+        # the same end state as the whole-buffer copy, without the cost.
+        self._stale_confidences[self._stale_idx].np[input_batch.idx_mapping_np] = current.cpu().numpy()
+
+    def _accumulate_health(self, raw) -> None:
+        """Count repaired rows and whether the signal moved, without syncing.
+
+        Two things need watching and neither may cost a copy per step:
+
+        - Non-finite rows, because one of them collapses the batch's budget.
+        - Whether the confidence is still being recomputed at all. Under graph
+          the op is only recomputed per replay if it was traced into the
+          captured draft graph; left out, every replay skips it and the buffer
+          freezes at its pre-capture value. Trimming is only a policy, so the
+          tokens stay byte-identical to a fixed-K run while every budget is
+          decided on numbers that stopped moving -- invisible to any output
+          comparison, and visible here as a row that never changes.
+
+        Both accumulate into one device tensor with device ops, and the logging
+        window reads the pair in a single copy.
+        """
+        if not raw.numel():
+            return
+        self._health_steps += 1
+        self._health[0] += (~torch.isfinite(raw)).any(dim=1).sum()
+        self._health[1] += (raw[0] != self._last_row).any()
+        self._last_row.copy_(raw[0])
+        if not self._log.sampling():
+            return
+        repaired, moved = (int(v) for v in self._health.cpu())
+        self._untrusted_rows += repaired
+        self._log.note_confidence_steps(moved=moved, steps=self._health_steps)
+        self._health.zero_()
+        self._health_steps = 0
 
     def note_graph_mode(self, cg_mode) -> None:
         """Report the cudagraph mode the runner dispatched this step under."""

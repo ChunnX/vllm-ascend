@@ -631,6 +631,36 @@ controller 现在有约 30ms 的**图内**动态范围可以优化，`trimmed` �
 这已经是文章里收益数据所在的那个形态——曲线在图内单调、出图是悬崖，所以「待在图里、但落进
 更便宜的桶」这个决策第一次有了实际空间。
 
+## 打开这个特性为什么会变慢（2026-09-22，specbench_80，bs=4）
+
+| | TPOT | SpecAcc | AvgSpecLen | E2E | decode token |
+| --- | --- | --- | --- | --- | --- |
+| `enable_adaptive_verification: true` | **18.10ms** | 46.4% | 4.25 | 229.4s | 48774 |
+| 关闭 | **16.30ms** | 47.6% | 4.33 | 220.6s | 52102 |
+
+少收 2% 的 token 却多花 11% 的时间，说明多出来的时间**不在校验宽度上**。
+
+根因是这条 lane 自己的实现，不是动态校验。`record_confidences` 原来做
+`current.cpu().numpy()`——**阻塞等这一步 drafter 刚产出的 confidence**。上游不是这样：它用
+双缓冲 + 独立 stream + event，只 `synchronize()` 两步以前那次已经落地的拷贝，从不等刚
+launch 出去的 draft forward。同步版每步把 host 和 device 串成一条，异步调度就完全不重叠了。
+
+当初跳过 `super().__init__` 的理由是 `torch.cuda.Stream` 在 v2 Ascend 路径上不保证是 NPU
+stream——作为 eager 预演这个取舍是对的，作为出货路径它就是「打开特性的主要代价」。
+
+**改法**：按上游的方式建 side stream 与 event，建不出来就退回阻塞拷贝并打 warning（正确性
+不受影响，只是慢）。NaN 修复挪到**设备侧** `torch.nan_to_num`——它从来不需要 host 上的值，
+在 host 上修才是那次阻塞拷贝的唯一理由。
+
+### 两个探针也不能每步付一次拷贝
+
+`untrusted_rows` 和 confidence 活性检查都改成**设备侧累加进一个 2 元素张量**，每个日志窗口
+读一次。否则为了测量这个停顿，反而会重新引入同一个停顿。
+
+活性检查同时换了更好的形式：不再哈希 host 上的首行，而是设备侧比较首行与上一步是否相等，
+累加「变化过的步数」。`conf_moved=50/50` 表示 op 每步都在重算；`conf_moved=0/50` 表示
+buffer 冻结。这比指纹精确（逐步，不抽样），而且不需要任何同步。
+
 ### 一个所有 MATCH 都排除不了的失效模式
 
 隔壁分支的 `f9542068c` 记录了这个:`compute_confidence` 被一个 Python
@@ -647,19 +677,19 @@ trace 进 drafter 的图**,之后每次回放都跳过它,confidence buffer 冻�
 `kept` 和 `last_caps` 会变也不能反驳:`scheduled_drafts` 每步不同,冻结的 confidence 配上
 变化的 valid mask 同样给出变化的预算。
 
-所以聚合行加了 `conf_distinct=n/N`:每个窗口内 confidence 首行的不同取值个数。
+所以聚合行加了 `conf_moved=n/N`:窗口内 confidence 首行与上一步不同的步数。
 
 | 现象 | 含义 |
 | --- | --- |
-| `conf_distinct=5/5` | op 活着,每步重算 |
-| `conf_distinct=1/5` | **buffer 冻结**,这是 `f9542068c` |
-| `conf_distinct=1/1` | 单步窗口,判不了(脚本会忽略) |
+| `conf_moved=50/50` | op 活着,每步重算 |
+| `conf_moved=0/50` | **buffer 冻结**,这是 `f9542068c` |
+| `conf_moved=1/1` | 单步窗口,判不了(脚本会忽略) |
 
-探针取**固定行**而不是整批的指纹:buffer 冻结时首行每步都是同样的字节,无论坐在那一行的是
-哪个请求;而整批指纹会随 `num_reqs` 变化,把冻结的 buffer 报成活的。
+探针取**固定行**而不是整批:buffer 冻结时首行每步都不变,无论坐在那一行的是哪个请求;而整批
+比较会随 `num_reqs` 变化,把冻结的 buffer 报成活的。冻结的 buffer 在第一步仍会算一次「变化」
+(初值是 NaN),所以脚本把 `n<=1` 都算冻结。
 
-脚本把 `conf_distinct=1/N`(N≥2 且所有可判窗口都是 1)列为**失败**而不是警告,理由和
-「只有横幅没有数据行」同一条:那样的 MATCH 不是证据。
+脚本把它列为**失败**而不是警告,理由和「只有横幅没有数据行」同一条:那样的 MATCH 不是证据。
 
 ### 耗时不要当性能读
 

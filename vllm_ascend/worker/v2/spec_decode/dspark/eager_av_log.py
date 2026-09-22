@@ -35,7 +35,8 @@ class EagerAVLogger:
         self._untrusted = 0
         self._out_of_range = 0
         self._graph_modes: dict[str, int] = {}
-        self._conf_prints: set[int] = set()
+        self._conf_moved: int | None = None
+        self._conf_steps = 0
         self._emitted = False
 
     def sampling(self) -> bool:
@@ -47,23 +48,25 @@ class EagerAVLogger:
         """
         return not self._emitted or (self._steps + 1) % self.interval == 0
 
-    def note_confidence(self, fingerprint: int) -> None:
-        """Record a fingerprint of this step's confidence, to prove it is live.
+    def note_confidence_steps(self, *, moved: int, steps: int) -> None:
+        """Record how often the confidence signal actually changed.
 
         Under graph the confidence op is only recomputed per replay if it was
         traced into the captured draft graph. A Python ``if`` around it that was
         False at capture leaves it out, and then every replay skips it and the
-        confidence buffer stays frozen at its pre-capture value.
+        buffer stays frozen at its pre-capture value.
 
-        No equality check can catch that. Trimming is only a policy, so the
-        rejection sampler stays correct and the output is byte-for-byte what the
-        baseline produced -- while the budget is being decided on numbers that
-        stopped moving. The visible symptom would only be "adaptive verification
-        does not help", which is exactly the kind of thing that hides for weeks.
+        No output comparison can catch that. Trimming is only a policy, so the
+        rejection sampler stays correct and the tokens are byte-for-byte what a
+        fixed-K run produces -- while every budget is decided on numbers that
+        stopped moving. The only visible symptom would be "adaptive verification
+        does not help", which hides for weeks.
 
-        A window with many steps but one distinct fingerprint is that failure.
+        The caller counts on device so no step pays a copy for this, and hands
+        over the totals when the window closes.
         """
-        self._conf_prints.add(fingerprint)
+        self._conf_moved = moved
+        self._conf_steps = steps
 
     def note_graph_mode(self, cg_mode) -> None:
         """Record which cudagraph mode this step was dispatched under.
@@ -114,10 +117,10 @@ class EagerAVLogger:
         # requests kept their drafts. An out_of_range count is different: finite
         # but not a probability is not the prefill artifact, so name it apart.
         suffix = ""
-        if self._conf_prints:
-            # n/N, not a boolean: one distinct value over several steps is the
-            # frozen-buffer failure, and N distinct values is a live op.
-            suffix += f" | conf_distinct={len(self._conf_prints)}/{steps}"
+        if self._conf_moved is not None:
+            # n/N, not a boolean: zero over several steps is the frozen buffer,
+            # and roughly N is an op being recomputed every step.
+            suffix += f" | conf_moved={self._conf_moved}/{self._conf_steps}"
         if self._graph_modes:
             modes = ",".join(f"{name}={count}" for name, count in sorted(self._graph_modes.items()))
             suffix += f" | graph={modes}"
@@ -149,4 +152,5 @@ class EagerAVLogger:
         self._untrusted = 0
         self._out_of_range = 0
         self._graph_modes = {}
-        self._conf_prints = set()
+        self._conf_moved = None
+        self._conf_steps = 0

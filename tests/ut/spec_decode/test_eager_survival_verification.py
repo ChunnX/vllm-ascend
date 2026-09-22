@@ -232,48 +232,41 @@ def test_av_logger_separates_a_live_confidence_from_a_frozen_one(av_logger_class
     If the confidence op is not traced into the captured draft graph, every
     replay skips it and the buffer stays at its pre-capture value. Trimming is
     only a policy, so the rejection sampler stays correct and the tokens are
-    byte-identical to the baseline -- while every budget is decided on numbers
-    that stopped moving. So the count of distinct values has to be reported, and
-    as n/N rather than a flag: one value over four steps is the failure, four
-    over four is a live op.
+    byte-identical to a fixed-K run -- while every budget is decided on numbers
+    that stopped moving. So the line reports how often the signal moved, and as
+    n/N rather than a flag: the caller counts on device, because a copy per step
+    to measure this would cost more than the thing being measured.
     """
-    # Five steps, interval four: the first step always emits on its own, then
-    # steps two to five close one full window.
     log = av_logger_class(lane="upstream", interval=4)
     with caplog.at_level(logging.WARNING):
-        for step in range(5):
-            log.note_confidence(hash(("row", step)))
-            log.record(num_reqs=1, scheduled_drafts=7, admitted_drafts=4, verify_tokens=5)
-    assert "conf_distinct=4/4" in caplog.records[-1].getMessage()
+        log.note_confidence_steps(moved=50, steps=50)
+        log.record(num_reqs=1, scheduled_drafts=7, admitted_drafts=4, verify_tokens=5)
+    assert "conf_moved=50/50" in caplog.records[-1].getMessage()
 
     frozen = av_logger_class(lane="upstream", interval=4)
     with caplog.at_level(logging.WARNING):
-        for _ in range(5):
-            frozen.note_confidence(hash(("row", "same")))
-            frozen.record(num_reqs=1, scheduled_drafts=7, admitted_drafts=4, verify_tokens=5)
-    assert "conf_distinct=1/4" in caplog.records[-1].getMessage()
+        frozen.note_confidence_steps(moved=0, steps=50)
+        frozen.record(num_reqs=1, scheduled_drafts=7, admitted_drafts=4, verify_tokens=5)
+    assert "conf_moved=0/50" in caplog.records[-1].getMessage()
 
     # A lane that never reports one must not grow an empty field.
     silent = av_logger_class(lane="threshold", interval=1)
     with caplog.at_level(logging.WARNING):
         silent.record(num_reqs=1, scheduled_drafts=7, admitted_drafts=7, verify_tokens=8)
-    assert "conf_distinct" not in caplog.records[-1].getMessage()
+    assert "conf_moved" not in caplog.records[-1].getMessage()
 
 
-def test_av_logger_forgets_confidence_prints_between_windows(av_logger_class, caplog):
-    # Carrying the set across windows would make a frozen buffer look live from
-    # the second window on, because the first window's value is still in it.
-    log = av_logger_class(lane="upstream", interval=2)
+def test_av_logger_forgets_confidence_counts_between_windows(av_logger_class, caplog):
+    # Carrying them over would report a stale window's totals against the next
+    # window's steps, which is how a frozen buffer would look live again.
+    log = av_logger_class(lane="upstream", interval=1)
     with caplog.at_level(logging.WARNING):
-        for value in (0, 1, 2, 3, 3):
-            log.note_confidence(value)
-            log.record(num_reqs=1, scheduled_drafts=7, admitted_drafts=4, verify_tokens=5)
-    opening, moving, still = (r.getMessage() for r in caplog.records)
-    assert "conf_distinct=1/1" in opening
-    assert "conf_distinct=2/2" in moving
-    # Had the set carried over, this window would read 3/2 or 4/2 -- a frozen
-    # buffer would look live from the second window on.
-    assert "conf_distinct=1/2" in still
+        log.note_confidence_steps(moved=3, steps=3)
+        log.record(num_reqs=1, scheduled_drafts=7, admitted_drafts=4, verify_tokens=5)
+        log.record(num_reqs=1, scheduled_drafts=7, admitted_drafts=4, verify_tokens=5)
+    first, second = (r.getMessage() for r in caplog.records)
+    assert "conf_moved=3/3" in first
+    assert "conf_moved" not in second
 
 
 def test_av_logger_sampling_predicts_the_emitting_step(av_logger_class):
