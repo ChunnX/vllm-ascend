@@ -132,18 +132,25 @@ class AscendEagerUpstreamAVManager(AdaptiveVerificationManager):
             lane="upstream",
             interval=envs_ascend.VLLM_ASCEND_DSPARK_EAGER_AV_LOG_INTERVAL,
         )
+        # Name the confidence path here, not just in the failure warning: this
+        # banner is where someone checks what actually ran, and reading
+        # "synchronous" while the async copy is live (or the reverse) is worse
+        # than saying nothing.
+        confidence = "async confidence copy" if self._async_confidence else "blocking confidence copy"
         if self._profiles_cost:
             logger.warning(
                 "[DSPARK-EAGER-AV/upstream] active: graph mode %s, profiling a real cost table, "
-                "real cost-argmax budget and device survival top-k, synchronous confidence. "
+                "real cost-argmax budget and device survival top-k, %s. "
                 "The synthetic curve below is only a fallback if profiling yields nothing.",
                 self._graph_mode,
+                confidence,
             )
         else:
             logger.warning(
                 "[DSPARK-EAGER-AV/upstream] active: synthetic cost curve, real cost-argmax budget "
-                "and device survival top-k, synchronous confidence (no cudagraph, no async D2H). "
-                "The curve is invented, so the chosen budget is a layout signal, not a performance one."
+                "and device survival top-k, %s (no cudagraph). The curve is invented, so the "
+                "chosen budget is a layout signal, not a performance one.",
+                confidence,
             )
 
     def _setup_async_confidence(self, device) -> bool:

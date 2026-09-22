@@ -691,6 +691,48 @@ trace 进 drafter 的图**,之后每次回放都跳过它,confidence buffer 冻�
 
 脚本把它列为**失败**而不是警告,理由和「只有横幅没有数据行」同一条:那样的 MATCH 不是证据。
 
+### PIECEWISE 不是模型的一部分,是整模型的另一套图
+
+捕获时会看到「7 张 PIECEWISE + 7 张 FULL」。7 是 `cudagraph_capture_sizes=[1,2,4,8,16,24,32]`
+的尺寸个数,每个尺寸各一张。两套图都覆盖整个模型,区别是**图里留了多少洞、以及哪种批会用**。
+
+`platform.py` 的分支说得很清楚:
+
+```python
+elif compilation_config.cudagraph_mode.requires_piecewise_compilation():
+    compilation_config.set_splitting_ops_for_v1(...)      # 在 attention 类算子处切开
+elif compilation_config.cudagraph_mode.has_full_cudagraphs():
+    compilation_config.splitting_ops = []                  # 完全不切
+```
+
+而默认的 splitting ops 里**包含 GDN**:
+
+```txt
+vllm::unified_attention_with_output              ← 全注意力
+vllm::qwen_gdn_attention_core                    ← 我们的 GDN
+vllm::qwen_gdn_attention_core_fused_norm_packed
+vllm::mamba_mixer / vllm::linear_attention / ...
+```
+
+所以:
+
+| | 全注意力 | GDN | 谁用 |
+| --- | --- | --- | --- |
+| PIECEWISE | 图外 eager | **图外 eager** | prefill / 混合批,以及匹配不上 FULL 的 decode 批 |
+| FULL | 图内 | **图内** | 能匹配上描述符的 decode 批 |
+
+**GDN 只有在 FULL 下才在图里。** 这也是为什么固定 GDN 请求轴是 ragged 的必要条件——进了图的
+GDN 拿不到 replay 期更新,捕获进去的几何就是它唯一会跑的几何。
+
+### 这解释了阶段 A 的 cost table 为什么是平的
+
+当时只观察到「uniform 下裁剪批落 PIECEWISE」和「可达 spread=0.00ms」两件事,没把它们连起来。
+连起来就是:**PIECEWISE 里 GDN 是 eager 的,不随 Q 变化**,所以整条曲线被它的固定开销压平在
+116.80ms;ragged 让裁剪批进 FULL,GDN 跟着进图,曲线才变成 33→42ms 单调。
+
+同一个机制同时解释了三件此前分开记录的事:平的曲线、约 3× 的绝对开销差、以及 controller 从
+`kept=100%` 变成持续裁剪。
+
 ### 耗时不要当性能读
 
 284s vs baseline 184s（阶段 A 约 250s）。整个生成只有约 20 个 decode 步，模型加载 + 捕获
