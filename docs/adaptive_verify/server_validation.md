@@ -222,7 +222,22 @@ python examples/dspark_adaptive_verify_throughput.py --concurrency 16 --repeats 
 从这里拿了三样，其中第二样修掉了本脚本一个真的设计错误：
 
 1. **用具名数据集**（Math500 / Dolly），不是合成文本。收益依赖 confidence 在请求之间**有
-   差异**，几条重复 prompt 会低估这个差异。`--dataset` 按文件顺序读 jsonl/json/txt。
+   差异**，几条重复 prompt 会低估这个差异。
+
+   ```bash
+   # Dolly：https://huggingface.co/datasets/databricks/databricks-dolly-15k
+   python examples/dspark_adaptive_verify_throughput.py --dataset /路径/databricks-dolly-15k.jsonl
+   ```
+
+   两个数据集的字段不同，loader 都认：Math500 取 `problem`，Dolly 把 `instruction` 和
+   `context` **拼起来**——closed_qa / summarization 那些类目缺了 context 就没意义
+   （"Summarize the following" 后面什么都没有）。
+
+   **预期 Dolly 的收益明显高于 Math500**（15147 是 +19.1% 对 +8.5%），原因就是接受率：数学
+   的 draft 本来就接受得好，可裁的更少。所以 Math500 是对 AV 最不利的那个数据集。
+
+   workload 小于文件时按**等距取样**而不是取前 N 条：32 条请求从 Dolly 的 15011 条里取，
+   取头部很可能整段是同一个类目，那会让接受率、进而让结论由文件顺序决定。
 2. **workload 大小不等于并发。** 500 个请求过一个 64 宽的引擎是持续吞吐；**只发和批一样
    宽的请求数量是在测一波**。原来 `--concurrency` 被我同时当成两者用，现在拆成
    `--concurrency`（= `max_num_seqs`）和 `--num-requests`（默认 500）。

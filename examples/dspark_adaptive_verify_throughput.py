@@ -46,7 +46,10 @@ Math500 and +19.1% on Dolly. Three things taken from that:
 
 - **Named datasets, not synthetic text.** The benefit depends on confidence
   varying across requests, and a handful of repeated prompts understates that
-  spread, so ``--dataset`` takes Math500 or Dolly in file order.
+  spread. ``--dataset`` reads Math500 (``problem``) or Dolly
+  (``instruction`` + ``context``, joined). Expect Dolly to show more: that PR
+  measured +19.1% on it against +8.5% on Math500, and the ordering follows from
+  acceptance -- maths drafts are accepted well, so there is less to trim.
 - **Workload size is not concurrency.** 500 requests through a 64-wide engine is
   sustained throughput; sending as many requests as the batch is wide measures
   one wave. So ``--num-requests`` and ``--concurrency`` are separate.
@@ -132,6 +135,18 @@ def load_dataset(path: str) -> list[str]:
             continue
         if not isinstance(record, dict):
             continue
+        # Dolly splits a request across two fields: `instruction` plus a
+        # `context` that the closed-QA and summarisation categories are
+        # meaningless without ("Summarise the following" with nothing to
+        # summarise). Join them, so the prompt is the record.
+        instruction = record.get("instruction")
+        if isinstance(instruction, str) and instruction.strip():
+            context = record.get("context")
+            if isinstance(context, str) and context.strip():
+                prompts.append(f"{instruction.strip()}\n\n{context.strip()}")
+            else:
+                prompts.append(instruction.strip())
+            continue
         for key in _PROMPT_KEYS:
             value = record.get(key)
             if isinstance(value, str) and value.strip():
@@ -160,8 +175,16 @@ def build_prompts(count: int, dataset: str | None = None) -> list[str]:
     """
     count = max(1, count)
     pool = load_dataset(dataset) if dataset else [f"{p} (variation {i})" for i, p in enumerate(_BASE_PROMPTS)]
-    # Cycle rather than truncate, so a small file still fills the workload and
-    # a large one is used in file order.
+    if len(pool) >= count:
+        # Evenly spaced through the file, not the first N. A 32-request workload
+        # out of Dolly's 15k records would otherwise be whatever sits at the top
+        # of the file, and in an instruction set that is often one category --
+        # which would decide the acceptance rate, and so the result, by
+        # accident. Deterministic either way, so both lanes see the same
+        # workload.
+        step = len(pool) / count
+        return [pool[int(i * step)] for i in range(count)]
+    # Cycle when the file is smaller than the workload.
     return [pool[i % len(pool)] for i in range(count)]
 
 
