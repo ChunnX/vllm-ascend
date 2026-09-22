@@ -35,6 +35,7 @@ class EagerAVLogger:
         self._untrusted = 0
         self._out_of_range = 0
         self._graph_modes: dict[str, int] = {}
+        self._conf_prints: set[int] = set()
         self._emitted = False
 
     def sampling(self) -> bool:
@@ -45,6 +46,24 @@ class EagerAVLogger:
         synchronization that lane does not otherwise need.
         """
         return not self._emitted or (self._steps + 1) % self.interval == 0
+
+    def note_confidence(self, fingerprint: int) -> None:
+        """Record a fingerprint of this step's confidence, to prove it is live.
+
+        Under graph the confidence op is only recomputed per replay if it was
+        traced into the captured draft graph. A Python ``if`` around it that was
+        False at capture leaves it out, and then every replay skips it and the
+        confidence buffer stays frozen at its pre-capture value.
+
+        No equality check can catch that. Trimming is only a policy, so the
+        rejection sampler stays correct and the output is byte-for-byte what the
+        baseline produced -- while the budget is being decided on numbers that
+        stopped moving. The visible symptom would only be "adaptive verification
+        does not help", which is exactly the kind of thing that hides for weeks.
+
+        A window with many steps but one distinct fingerprint is that failure.
+        """
+        self._conf_prints.add(fingerprint)
 
     def note_graph_mode(self, cg_mode) -> None:
         """Record which cudagraph mode this step was dispatched under.
@@ -95,6 +114,10 @@ class EagerAVLogger:
         # requests kept their drafts. An out_of_range count is different: finite
         # but not a probability is not the prefill artifact, so name it apart.
         suffix = ""
+        if self._conf_prints:
+            # n/N, not a boolean: one distinct value over several steps is the
+            # frozen-buffer failure, and N distinct values is a live op.
+            suffix += f" | conf_distinct={len(self._conf_prints)}/{steps}"
         if self._graph_modes:
             modes = ",".join(f"{name}={count}" for name, count in sorted(self._graph_modes.items()))
             suffix += f" | graph={modes}"
@@ -126,3 +149,4 @@ class EagerAVLogger:
         self._untrusted = 0
         self._out_of_range = 0
         self._graph_modes = {}
+        self._conf_prints = set()

@@ -32,6 +32,7 @@ Exit status is 0 only when every requested lane matched the baseline.
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -173,7 +174,7 @@ def child_env(lane: str, max_model_len: int) -> dict[str, str]:
     return env
 
 
-def run_lane(lane: str, args: argparse.Namespace, log_dir: Path) -> tuple[list[list[int]], bool]:
+def run_lane(lane: str, args: argparse.Namespace, log_dir: Path) -> tuple[list[list[int]], bool, str | None]:
     log_path = log_dir / f"{lane.replace(':', '-')}.log"
     env_for_lane = child_env(lane, args.max_model_len)
     cmd = [
@@ -249,8 +250,42 @@ def run_lane(lane: str, args: argparse.Namespace, log_dir: Path) -> tuple[list[l
     if not lines:
         raise RuntimeError(f"lane {lane} printed no result line; tail of {log_path}:\n{log[-12000:]}")
     trimmed = any("kept=100.0%" not in line for line in data_lines)
+    frozen = frozen_confidence(data_lines)
     print(f"=== lane {lane}: done in {elapsed:.0f}s{trimming_note(lane, data_lines)}", flush=True)
-    return json.loads(lines[-1].removeprefix(RESULT_PREFIX)), trimmed
+    if frozen:
+        print(f"    FROZEN CONFIDENCE: {frozen}", flush=True)
+    return json.loads(lines[-1].removeprefix(RESULT_PREFIX)), trimmed, frozen
+
+
+def frozen_confidence(data_lines: list[str]) -> str | None:
+    """Detect a confidence buffer that stopped moving.
+
+    Under graph the confidence op is only recomputed per replay if it was traced
+    into the captured draft graph; left out, the buffer freezes and every budget
+    is decided on pre-capture numbers. Output stays byte-identical to the
+    baseline, because trimming is only a policy -- so this is invisible to every
+    other check in this script, and a lane can pass the whole gate while its
+    adaptive verification is dead.
+
+    ``conf_distinct=n/N`` is per window. A live op gives N distinct values over N
+    steps; a frozen buffer gives exactly 1 no matter how many steps ran. Only
+    windows with at least two steps can tell the two apart.
+    """
+    seen = [
+        (int(m.group(1)), int(m.group(2)))
+        for line in data_lines
+        if (m := re.search(r"conf_distinct=(\d+)/(\d+)", line))
+    ]
+    usable = [(distinct, steps) for distinct, steps in seen if steps >= 2]
+    if not usable or any(distinct > 1 for distinct, _ in usable):
+        return None
+    steps = sum(steps for _, steps in usable)
+    return (
+        f"{len(usable)} window(s) covering {steps} steps each reported a single distinct "
+        "confidence value, so the signal never moved. Under graph this is the confidence op "
+        "missing from the captured draft graph; the budget is then decided on pre-capture "
+        "numbers and a token match proves nothing about adaptive verification."
+    )
 
 
 def trimming_note(lane: str, data_lines: list[str]) -> str:
@@ -371,11 +406,11 @@ def main() -> int:
     log_dir.mkdir(parents=True, exist_ok=True)
     print(f"Logs: {log_dir.resolve()}")
 
-    baseline, _ = run_lane("baseline", args, log_dir)
+    baseline, _, _ = run_lane("baseline", args, log_dir)
 
     # The noise floor. Without it a mismatch at concurrency cannot be attributed
     # to a lane, and a match cannot be told apart from luck.
-    second, _ = run_lane("baseline2", args, log_dir)
+    second, _, _ = run_lane("baseline2", args, log_dir)
     floor_count, floor_earliest, floor_detail = divergence(second, baseline)
     print(f"\n=== noise floor (baseline vs baseline): {floor_detail}", flush=True)
     if floor_count:
@@ -389,9 +424,12 @@ def main() -> int:
     inconclusive = []
     for lane in args.lanes:
         try:
-            tokens, trimmed = run_lane(lane, args, log_dir)
+            tokens, trimmed, frozen = run_lane(lane, args, log_dir)
         except Exception as exc:  # noqa: BLE001 - report every lane, fail at the end
             failures.append(f"{lane}: {exc}")
+            continue
+        if frozen:
+            failures.append(f"{lane}: {frozen}")
             continue
         count, earliest, detail = divergence(tokens, baseline)
         bare = lane.removesuffix("+axis").removesuffix("+graph").removesuffix("+ragged").removesuffix("+ub")

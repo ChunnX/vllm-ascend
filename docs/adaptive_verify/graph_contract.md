@@ -600,6 +600,67 @@ python examples/dspark_eager_adaptive_verify.py --lanes upstream+ragged   --max-
 16，**凭空多出 12 行 padding**。这把「高并发本身不可复现」和「宽 padding 轴破坏状态」两件事
 解耦开——这是 bs=16 直接跑做不到的，那里 baseline 自己就不相等。
 
+### 宽 padding 轴实测通过（2026-09-22，`max_num_seqs=16 --num-prompts 4`）
+
+`upstream+ragged` **MATCH**，噪声底 identical——`--num-prompts 4` 让活跃请求只有 4，批组成
+和 bs=4 一样稳定，所以逐 token 判据在这里仍然有效。
+
+```txt
+5 steps | mean reqs=3.00 scheduled_drafts=21.00 admitted=18.60 verify_tokens=21.60
+  | kept=88.6% | trimmed_steps=2/5 | last_caps=[3] | graph=FULL=5
+trimmed in 20/20 reported windows
+```
+
+`mean reqs=3.00` 而轴宽 16 → **每步 13 行 padding**，同时裁剪批仍在回放 FULL，输出与定长
+baseline 完全相等。第 3 项到这里才算验过，而它正是隔壁分支 `0d6dd7559` 当初坏掉的地方。
+
+这一轮的设计意图是**解耦**：直接跑 bs=16 的话 baseline 自己就不相等，真出问题也归因不了；
+把并发压在 4、只把轴放宽到 16，就把「宽 padding 轴破坏状态」从「高并发不可复现」里单独拿了
+出来。
+
+### cost table 换了量级
+
+| | bs=4 | bs=16（4 活跃） |
+| --- | --- | --- |
+| `graph_limit` | 32 | **128**（16×8） |
+| 图内范围 | Q=8..32 | **Q=1..128 全在图内**，单调 |
+| 可达 spread | 12.31ms | **29.97ms** |
+| 出图悬崖 | Q=48:229.99 | Q=192:233.59（约 4×） |
+
+controller 现在有约 30ms 的**图内**动态范围可以优化，`trimmed` 从 16/20 升到 **20/20**。
+这已经是文章里收益数据所在的那个形态——曲线在图内单调、出图是悬崖，所以「待在图里、但落进
+更便宜的桶」这个决策第一次有了实际空间。
+
+### 一个所有 MATCH 都排除不了的失效模式
+
+隔壁分支的 `f9542068c` 记录了这个:`compute_confidence` 被一个 Python
+`if self.enable_adaptive_verification` 挡着,**捕获时若该 flag 为 False,这个 op 根本没被
+trace 进 drafter 的图**,之后每次回放都跳过它,confidence buffer 冻结在捕获前的值。
+
+对我们来说这个模式是开放的:脚本第 96 行 `"enforce_eager": not args.graph` 在
+`speculative_config` 里,所以 `+graph` / `+ragged` 下 **drafter 也在图里**。
+(`577480c5b` 的另一半——`ModelWithContext` 缺 `compute_confidence` 代理——已经在树上,
+`aclgraph_utils.py:324`。)
+
+**而它对逐 token 判据完全隐形。** 裁剪只是策略,拒绝采样仍然正确,输出与 baseline 逐字节
+相同——只是每一步的预算都建立在停止变化的数字上。唯一的表象是「动态校验没有收益」。
+`kept` 和 `last_caps` 会变也不能反驳:`scheduled_drafts` 每步不同,冻结的 confidence 配上
+变化的 valid mask 同样给出变化的预算。
+
+所以聚合行加了 `conf_distinct=n/N`:每个窗口内 confidence 首行的不同取值个数。
+
+| 现象 | 含义 |
+| --- | --- |
+| `conf_distinct=5/5` | op 活着,每步重算 |
+| `conf_distinct=1/5` | **buffer 冻结**,这是 `f9542068c` |
+| `conf_distinct=1/1` | 单步窗口,判不了(脚本会忽略) |
+
+探针取**固定行**而不是整批的指纹:buffer 冻结时首行每步都是同样的字节,无论坐在那一行的是
+哪个请求;而整批指纹会随 `num_reqs` 变化,把冻结的 buffer 报成活的。
+
+脚本把 `conf_distinct=1/N`(N≥2 且所有可判窗口都是 1)列为**失败**而不是警告,理由和
+「只有横幅没有数据行」同一条:那样的 MATCH 不是证据。
+
 ### 耗时不要当性能读
 
 284s vs baseline 184s（阶段 A 约 250s）。整个生成只有约 20 个 decode 步，模型加载 + 捕获

@@ -174,6 +174,13 @@ class AscendEagerUpstreamAVManager(AdaptiveVerificationManager):
             # only the host stale table would leave the top-k running on NaN.
             current = torch.from_numpy(values).to(current.device)
         self._untrusted_rows += repaired_rows
+        # Fingerprint one fixed row rather than the whole batch. If the
+        # confidence op was not traced into the drafter's graph the buffer never
+        # changes, so the leading rows read identical bytes every step no matter
+        # which requests occupy them -- whereas a fingerprint over the whole
+        # batch varies with num_reqs and would report a frozen buffer as live.
+        if len(values):
+            self._log.note_confidence(hash(values[0].tobytes()))
         self._confidence_probs[input_batch.idx_mapping] = current
         # Per slot, so a request absent from this batch keeps its last value --
         # the same end state as upstream's whole-buffer copy, without the cost.
