@@ -39,12 +39,28 @@ generate. So each process loads once and times the same workload several times,
 and the table carries the spread next to the mean. A mean whose spread overlaps
 the other lane's is not a result.
 
+PR 15147, the D-Cut author's own Ascend implementation, states its method where
+15098 does not: "D-Cut runs in PIECEWISE mode at concurrency 64, using 500
+requests per dataset and a two-run average", reporting +8.5% throughput on
+Math500 and +19.1% on Dolly. Three things taken from that:
+
+- **Named datasets, not synthetic text.** The benefit depends on confidence
+  varying across requests, and a handful of repeated prompts understates that
+  spread, so ``--dataset`` takes Math500 or Dolly in file order.
+- **Workload size is not concurrency.** 500 requests through a 64-wide engine is
+  sustained throughput; sending as many requests as the batch is wide measures
+  one wave. So ``--num-requests`` and ``--concurrency`` are separate.
+- **Repeats.** Two runs averaged there, three here, with the spread printed.
+
+Scale expectations accordingly: those gains are at concurrency 64, four times
+what 4x910B4 allows, and the reachable cost-table spread grows with concurrency.
+
 Usage (one process per configuration, repeats inside each):
 
     export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3
     export VLLM_TEST_QWEN36_MODEL=/path/Qwen3.6-27B
     export VLLM_TEST_DSPARK_MODEL=/path/DSpark
-    python examples/dspark_adaptive_verify_throughput.py
+    python examples/dspark_adaptive_verify_throughput.py --dataset /path/math500.jsonl
 
     # one concurrency, more repeats
     python examples/dspark_adaptive_verify_throughput.py --concurrency 16 --repeats 5
@@ -86,17 +102,67 @@ _BASE_PROMPTS = (
 )
 
 
-def build_prompts(count: int) -> list[str]:
-    """Deterministic, distinct prompts -- real text, not random token ids.
+_PROMPT_KEYS = ("prompt", "question", "problem", "instruction", "text", "context")
 
-    Random ids would give exact input lengths, but the draft model cannot
-    predict them, so confidence would be uniformly low and trimming trivially
-    aggressive. That measures the wrong thing: the benefit depends on confidence
-    *varying* across requests and positions. Real prompts keep that structure,
-    and since every configuration gets the identical list, the varying input
-    lengths are a constant of the comparison rather than a confound.
+
+def load_dataset(path: str) -> list[str]:
+    """Prompts from a jsonl/json/txt file, in file order.
+
+    PR 15147 measured D-Cut on Math500 and Dolly rather than on synthetic text,
+    and that matters for more than realism: the benefit depends on confidence
+    *varying* across requests and positions, so a handful of repeated prompts
+    understates the spread the controller has to work with. File order, not a
+    shuffle, so every configuration sees the identical workload.
     """
-    return [f"{_BASE_PROMPTS[i % len(_BASE_PROMPTS)]} (variation {i})" for i in range(max(1, count))]
+    file = Path(path)
+    raw = file.read_text(errors="replace")
+    records: list = []
+    if file.suffix == ".jsonl":
+        records = [json.loads(line) for line in raw.splitlines() if line.strip()]
+    elif file.suffix == ".json":
+        loaded = json.loads(raw)
+        records = loaded if isinstance(loaded, list) else loaded.get("data") or loaded.get("rows") or []
+    else:
+        return [line.strip() for line in raw.splitlines() if line.strip()]
+
+    prompts = []
+    for record in records:
+        if isinstance(record, str):
+            prompts.append(record)
+            continue
+        if not isinstance(record, dict):
+            continue
+        for key in _PROMPT_KEYS:
+            value = record.get(key)
+            if isinstance(value, str) and value.strip():
+                prompts.append(value.strip())
+                break
+        else:
+            # Chat-shaped rows: take the first user turn.
+            messages = record.get("messages") or record.get("conversations")
+            if isinstance(messages, list) and messages and isinstance(messages[0], dict):
+                content = messages[0].get("content") or messages[0].get("value")
+                if isinstance(content, str) and content.strip():
+                    prompts.append(content.strip())
+    if not prompts:
+        raise ValueError(f"no prompts found in {path}; expected one of {_PROMPT_KEYS}, messages, or plain lines")
+    return prompts
+
+
+def build_prompts(count: int, dataset: str | None = None) -> list[str]:
+    """The workload: `count` prompts, deterministic and identical across lanes.
+
+    Synthetic prompts are the fallback, not the intent. They are real text
+    rather than random token ids on purpose -- the draft model cannot predict
+    random ids, so confidence would be uniformly low and trimming trivially
+    aggressive, which measures the wrong thing. But a handful of variations
+    still has less confidence spread than a real dataset, so prefer --dataset.
+    """
+    count = max(1, count)
+    pool = load_dataset(dataset) if dataset else [f"{p} (variation {i})" for i, p in enumerate(_BASE_PROMPTS)]
+    # Cycle rather than truncate, so a small file still fills the workload and
+    # a large one is used in file order.
+    return [pool[i % len(pool)] for i in range(count)]
 
 
 def draft_block_size(draft: str) -> int | None:
@@ -136,7 +202,7 @@ def run_engine(args: argparse.Namespace) -> int:
         model=args.model,
         dtype="bfloat16",
         max_model_len=args.max_model_len,
-        max_num_seqs=args.max_num_seqs,
+        max_num_seqs=args.concurrency,
         enable_prefix_caching=args.prefix_caching,
         async_scheduling=args.async_scheduling,
         tensor_parallel_size=args.tensor_parallel_size,
@@ -152,7 +218,7 @@ def run_engine(args: argparse.Namespace) -> int:
         },
     )
 
-    prompts = build_prompts(args.concurrency)
+    prompts = build_prompts(args.num_requests, args.dataset)
     # ignore_eos is the point: every configuration then emits exactly
     # concurrency x output_len tokens, so TPS compares time and nothing else.
     params = SamplingParams(temperature=0, max_tokens=args.output_len, ignore_eos=True, seed=17)
@@ -160,7 +226,7 @@ def run_engine(args: argparse.Namespace) -> int:
     # Discard the first pass. It carries graph capture, the cost-table
     # profiling and every lazy allocation, none of which recur -- charging them
     # to the first timed repeat would make the mean depend on the repeat count.
-    llm.generate(build_prompts(min(2, args.concurrency)), SamplingParams(temperature=0, max_tokens=8, ignore_eos=True))
+    llm.generate(prompts[: args.concurrency], SamplingParams(temperature=0, max_tokens=8, ignore_eos=True))
 
     runs = []
     for _ in range(max(1, args.repeats)):
@@ -212,14 +278,16 @@ def run_config(k: int, concurrency: int, adaptive: bool, args: argparse.Namespac
         "--tensor-parallel-size", str(args.tensor_parallel_size),
         "--num-speculative-tokens", str(k),
         "--max-model-len", str(args.max_model_len),
-        "--max-num-seqs", str(args.max_num_seqs),
         "--concurrency", str(concurrency),
+        "--num-requests", str(args.num_requests),
         "--output-len", str(args.output_len),
         "--repeats", str(args.repeats),
         "--cudagraph-mode", args.cudagraph_mode,
     ]  # fmt: skip
     if adaptive:
         cmd.append("--adaptive")
+    if args.dataset:
+        cmd += ["--dataset", args.dataset]
     if args.prefix_caching:
         cmd.append("--prefix-caching")
     if args.async_scheduling:
@@ -240,7 +308,7 @@ def run_config(k: int, concurrency: int, adaptive: bool, args: argparse.Namespac
     runs = [json.loads(line.removeprefix(RESULT_PREFIX)) for line in log.splitlines() if line.startswith(RESULT_PREFIX)]
     if not runs:
         raise RuntimeError(f"K={k} c={concurrency} {lane} printed no timing; tail of {log_path}:\n{log[-12000:]}")
-    expected = concurrency * args.output_len
+    expected = args.num_requests * args.output_len
     for run in runs:
         if run["output_tokens"] != expected:
             # Without this the whole comparison silently degrades into the one
@@ -295,7 +363,9 @@ def report(results: list[dict], args: argparse.Namespace) -> int:
     print("\n==== throughput ====")
     print(
         f"model={os.path.basename(args.model or '?')} TP={args.tensor_parallel_size} "
-        f"output_len={args.output_len} cudagraph_mode={args.cudagraph_mode} repeats={args.repeats}"
+        f"requests={args.num_requests} output_len={args.output_len} "
+        f"dataset={os.path.basename(args.dataset) if args.dataset else 'synthetic'} "
+        f"cudagraph_mode={args.cudagraph_mode} repeats={args.repeats}"
     )
     header = (
         f"{'Draft':>5} | {'Conc':>4} | {'Fixed TPS':>18} | {'Fixed Acc':>9} | "
@@ -321,6 +391,12 @@ def report(results: list[dict], args: argparse.Namespace) -> int:
             f"{d_mean:>10.1f} +/-{d_spread:>5.1f} | {_fmt(dyn['accept']):>9} | "
             f"{gain:>+11.1f}%{'' if decisive else ' ?'}"
         )
+    print(
+        "\nTPOT is not reported: with ignore_eos every request emits the same number of tokens, so "
+        "mean per-token time is exactly concurrency/TPS and would restate this table. PR 15147's "
+        "separate TPS and TPOT columns carry independent information only because its output "
+        "lengths varied (its +19.1% and -17.4% are the same measurement seen twice)."
+    )
     print(
         "\n'?' marks a difference smaller than the two lanes' own run-to-run spread. "
         "Acceptance is context: trimming removes drafts, so it is expected to fall. "
@@ -366,16 +442,34 @@ def main() -> int:
     )
     parser.add_argument("--tensor-parallel-size", type=int, default=4)
     parser.add_argument("--max-model-len", type=int, default=4096)
-    parser.add_argument("--max-num-seqs", type=int, default=16)
     parser.add_argument(
         "--concurrency",
         type=int,
         nargs="+",
         default=[4, 8, 16],
         help=(
-            "Simultaneous requests, swept. This is the axis that stands in for the draft count, "
+            "Concurrency (max_num_seqs), swept. This is the axis that stands in for the draft count, "
             "since that is fixed by the checkpoint: the cost table's reachable spread was 12.31ms "
             "at four requests and 29.97ms at sixteen, and trimming can only earn what it contains."
+        ),
+    )
+    parser.add_argument(
+        "--num-requests",
+        type=int,
+        default=500,
+        help=(
+            "Workload size, independent of concurrency: PR 15147 measured 500 requests per dataset "
+            "at concurrency 64. Sending only as many requests as the batch is wide measures one wave, "
+            "not sustained throughput."
+        ),
+    )
+    parser.add_argument(
+        "--dataset",
+        default=None,
+        help=(
+            "jsonl/json/txt file of prompts, used in file order. PR 15147 used Math500 and Dolly. "
+            "Prefer this over the synthetic fallback: the benefit depends on confidence varying "
+            "across requests, and a few repeated prompts understate that spread."
         ),
     )
     parser.add_argument(

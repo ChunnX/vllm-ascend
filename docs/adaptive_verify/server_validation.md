@@ -207,6 +207,34 @@ python examples/dspark_adaptive_verify_throughput.py --concurrency 16 --repeats 
 默认 `--concurrency 4 8 16`、`--output-len 256`、`--repeats 3`，6 个进程
 （3 个并发 × 2 条 lane）约 30 分钟。
 
+### PR 15147 把方法写出来了
+
+15147 是 D-Cut 作者自己那套 vllm-ascend 适配（不只是算子），它写了 15098 没写的东西：
+
+> "D-Cut runs in PIECEWISE mode at concurrency 64, using 500 requests per dataset
+> and a two-run average."
+
+| 数据集 | 吞吐 | TPOT |
+| --- | --- | --- |
+| Math500 | **+8.5%** | −9.2% |
+| Dolly | **+19.1%** | −17.4% |
+
+从这里拿了三样，其中第二样修掉了本脚本一个真的设计错误：
+
+1. **用具名数据集**（Math500 / Dolly），不是合成文本。收益依赖 confidence 在请求之间**有
+   差异**，几条重复 prompt 会低估这个差异。`--dataset` 按文件顺序读 jsonl/json/txt。
+2. **workload 大小不等于并发。** 500 个请求过一个 64 宽的引擎是持续吞吐；**只发和批一样
+   宽的请求数量是在测一波**。原来 `--concurrency` 被我同时当成两者用，现在拆成
+   `--concurrency`（= `max_num_seqs`）和 `--num-requests`（默认 500）。
+3. **重复取平均**（他们两次，这里三次，并打出 spread）。
+
+**期望值要按比例缩。** 那些收益是在并发 64 测的，是 4×910B4 上限的四倍，而 cost table 的
+可达 spread 随并发增长。
+
+顺带一个观察：他们的 TPS 和 TPOT **不是两份独立证据**——+19.1% 与 −17.4% 是同一次测量的两
+个视角（1/1.191 ≈ 0.840）。本脚本因此只报 TPS：`ignore_eos` 把输出长度钉死之后，平均单
+token 时间就精确等于 `concurrency/TPS`，再列一栏只是重述。
+
 ### 上游 vLLM 那边（PR 47808）没有性能测试
 
 `tests/v1/spec_decode/test_adaptive_verification.py` 里全是 **CPU 单测**，测的是预算算术和
