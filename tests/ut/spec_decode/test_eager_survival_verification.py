@@ -630,6 +630,7 @@ def _graph_factory(monkeypatch, mode):
     config_module = types.ModuleType(f"{PKG}.eager_config")
     config_module.GRAPH_MODE_NONE = "none"
     config_module.GRAPH_MODE_UNIFORM = "uniform"
+    config_module.GRAPH_MODE_RAGGED = "ragged"
     config_module.av_graph_mode = lambda: mode
     monkeypatch.setitem(sys.modules, config_module.__name__, config_module)
 
@@ -645,7 +646,10 @@ def _graph_factory(monkeypatch, mode):
     namespace = {
         "contextmanager": contextmanager,
         "vllm_model_runner": upstream,
-        "CUDAGraphMode": SimpleNamespace(NONE="none"),
+        "CUDAGraphMode": SimpleNamespace(
+            NONE="none", FULL_AND_PIECEWISE="full_and_piecewise", FULL_DECODE_ONLY="full_decode_only"
+        ),
+        "logger": logging.getLogger("model_runner_stub"),
         "ModelAclGraphManager": lambda *args, **kwargs: (args, kwargs),
     }
     exec(compile(code, str(path), "exec"), namespace)
@@ -685,6 +689,37 @@ def test_uniform_graph_mode_keeps_the_graph_and_drops_the_varlen_descriptor(monk
         assert kwargs["varlen_decode"] is False
 
 
+def test_ragged_drops_a_piecewise_family_that_cannot_be_piecewise(monkeypatch, caplog):
+    """Upstream forces FULL_AND_PIECEWISE so trimmed batches have a fallback.
+
+    Ragged mode removes that need -- a trimmed batch replays the decode graph --
+    so the piecewise half becomes a second family to capture. Downgrade it only
+    when it could not have been piecewise anyway: splitting_ops is decided at
+    config time from the configured mode, before upstream's override runs, so a
+    run that asked for FULL_DECODE_ONLY has none and its "piecewise" captures
+    are unsplit whole-model graphs. Where splitting really was configured, the
+    mode must be left alone.
+    """
+    wrapper, upstream = _graph_factory(monkeypatch, "ragged")
+    unsplit = SimpleNamespace(cudagraph_mode="full_and_piecewise", splitting_ops_contain_attention=lambda: False)
+    config = SimpleNamespace(compilation_config=unsplit)
+    with wrapper(SimpleNamespace(eager_survival_test=True)), caplog.at_level(logging.WARNING):
+        args, kwargs = upstream.ModelCudaGraphManager(config, "cpu", "full_and_piecewise", 8, varlen_decode=True)
+    assert args[2] == "full_decode_only"
+    assert unsplit.cudagraph_mode == "full_decode_only"
+    # The varlen descriptor has to survive the downgrade, or ragged loses the
+    # only thing it needs: FULL_DECODE_ONLY is still a separate-routine mode.
+    assert kwargs["varlen_decode"] is True
+    assert "FULL_DECODE_ONLY" in caplog.text
+
+    split = SimpleNamespace(cudagraph_mode="full_and_piecewise", splitting_ops_contain_attention=lambda: True)
+    config = SimpleNamespace(compilation_config=split)
+    with wrapper(SimpleNamespace(eager_survival_test=True)):
+        args, kwargs = upstream.ModelCudaGraphManager(config, "cpu", "full_and_piecewise", 8, varlen_decode=True)
+    assert args[2] == "full_and_piecewise"
+    assert split.cudagraph_mode == "full_and_piecewise"
+
+
 def test_ragged_graph_mode_keeps_the_varlen_descriptor(monkeypatch):
     """The whole of item 1 is *not* dropping the variable-length descriptor.
 
@@ -696,7 +731,11 @@ def test_ragged_graph_mode_keeps_the_varlen_descriptor(monkeypatch):
     not the descriptor.
     """
     wrapper, upstream = _graph_factory(monkeypatch, "ragged")
-    config = SimpleNamespace(compilation_config=SimpleNamespace(cudagraph_mode="full_and_piecewise"))
+    config = SimpleNamespace(
+        compilation_config=SimpleNamespace(
+            cudagraph_mode="full_and_piecewise", splitting_ops_contain_attention=lambda: True
+        )
+    )
     with wrapper(SimpleNamespace(eager_survival_test=True)):
         args, kwargs = upstream.ModelCudaGraphManager(config, "cpu", "full_and_piecewise", 8, varlen_decode=True)
         assert args[2] == "full_and_piecewise"

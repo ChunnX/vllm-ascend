@@ -691,47 +691,58 @@ trace 进 drafter 的图**,之后每次回放都跳过它,confidence buffer 冻�
 
 脚本把它列为**失败**而不是警告,理由和「只有横幅没有数据行」同一条:那样的 MATCH 不是证据。
 
-### PIECEWISE 不是模型的一部分,是整模型的另一套图
+### PIECEWISE 是另一套图,但它「有没有洞」取决于配置时的 splitting_ops
 
-捕获时会看到「7 张 PIECEWISE + 7 张 FULL」。7 是 `cudagraph_capture_sizes=[1,2,4,8,16,24,32]`
-的尺寸个数,每个尺寸各一张。两套图都覆盖整个模型,区别是**图里留了多少洞、以及哪种批会用**。
+**勘误。** 此前这一节写的是「PIECEWISE 下全注意力和 GDN 都在图外 eager 跑」。那只在
+`splitting_ops` 真的被设过时成立,而实际运行的配置里往往不是。
 
-`platform.py` 的分支说得很清楚:
+关键是**时序**:
 
-```python
-elif compilation_config.cudagraph_mode.requires_piecewise_compilation():
-    compilation_config.set_splitting_ops_for_v1(...)      # 在 attention 类算子处切开
-elif compilation_config.cudagraph_mode.has_full_cudagraphs():
-    compilation_config.splitting_ops = []                  # 完全不切
-```
+1. **配置时**,`vllm/config/vllm.py:1741` 和 vllm-ascend `platform.py` 按**配置的**
+   `cudagraph_mode` 决定 `splitting_ops`。显式配了 `FULL_DECODE_ONLY` 就走
+   `has_full_cudagraphs()` 那一支,`splitting_ops = []`。
+2. **之后**,`vllm/v1/worker/gpu/model_runner.py:676` 在有 AV manager 时**无条件**把
+   `cudagraph_mode` 改成 `FULL_AND_PIECEWISE`——不看配置、不打 warning。
+3. `resolve_cudagraph_mode_and_sizes` 的降级分支要求 `mixed_mode() == FULL`,而
+   `FULL_AND_PIECEWISE.mixed_mode()` 是 PIECEWISE,所以这个覆盖**原封不动活下来**。
 
-而默认的 splitting ops 里**包含 GDN**:
+于是显式配 `FULL_DECODE_ONLY` 时:
+
+| | 配置时 `splitting_ops` | 最终 mode | 那 7 张 PIECEWISE |
+| --- | --- | --- | --- |
+| AV 关 | `[]` | `FULL_DECODE_ONLY` | 不存在,prefill 走 eager |
+| AV 开 | **`[]`,同样** | `FULL_AND_PIECEWISE` | **没切过的整模型图**,挂在混合批派发键上 |
+
+所以那种配置下 GDN 在两套图里都在图内,而且 `enable_npugraph_ex` / static kernel 在两次
+运行里相同(它们只在 piecewise 那一支被强制关掉,而那一支没走到)。**此前怀疑的编译配置
+污染不存在。**
+
+只有在真的配了 piecewise 编译时,默认 splitting ops 才会生效,而它**包含 GDN**:
 
 ```txt
 vllm::unified_attention_with_output              ← 全注意力
-vllm::qwen_gdn_attention_core                    ← 我们的 GDN
+vllm::qwen_gdn_attention_core                    ← GDN
 vllm::qwen_gdn_attention_core_fused_norm_packed
 vllm::mamba_mixer / vllm::linear_attention / ...
 ```
 
-所以:
+那种配置下 GDN 才真的在图外,而 `FULL` 那一支 `splitting_ops = []` 完全不切。这也是固定
+GDN 请求轴之所以是 ragged 前提的原因:进了图的 GDN 拿不到 replay 期更新。
 
-| | 全注意力 | GDN | 谁用 |
-| --- | --- | --- | --- |
-| PIECEWISE | 图外 eager | **图外 eager** | prefill / 混合批,以及匹配不上 FULL 的 decode 批 |
-| FULL | 图内 | **图内** | 能匹配上描述符的 decode 批 |
+### ragged 不需要 piecewise 兜底,所以不接受那次覆盖
 
-**GDN 只有在 FULL 下才在图里。** 这也是为什么固定 GDN 请求轴是 ragged 的必要条件——进了图的
-GDN 拿不到 replay 期更新,捕获进去的几何就是它唯一会跑的几何。
+上游强制 `FULL_AND_PIECEWISE` 的理由很明确:裁剪批匹配不上 FULL 描述符,需要 piecewise
+接住。**ragged 把这个理由去掉了**——裁剪批直接回放 decode 图,设备上验过两次。
 
-### 这解释了阶段 A 的 cost table 为什么是平的
+所以 ragged 模式现在会把它降回 `FULL_DECODE_ONLY`,但**只在它本来就不可能是 piecewise 时**
+(`splitting_ops_contain_attention()` 为假)。判据用的是上游自己的那个谓词——
+`resolve_cudagraph_mode_and_sizes` 就是按它在两个模式之间选。真配了切图的运行不受影响。
 
-当时只观察到「uniform 下裁剪批落 PIECEWISE」和「可达 spread=0.00ms」两件事,没把它们连起来。
-连起来就是:**PIECEWISE 里 GDN 是 eager 的,不随 Q 变化**,所以整条曲线被它的固定开销压平在
-116.80ms;ragged 让裁剪批进 FULL,GDN 跟着进图,曲线才变成 33→42ms 单调。
+`FULL_DECODE_ONLY = (FULL, NONE)` 的 `separate_routine()` 仍为 True,所以 **varlen 捕获
+照样成立**,ragged 唯一依赖的东西没丢。
 
-同一个机制同时解释了三件此前分开记录的事:平的曲线、约 3× 的绝对开销差、以及 controller 从
-`kept=100%` 变成持续裁剪。
+代价要说清楚:混合 prefill+decode 批从 PIECEWISE 掉到 eager。但**关 AV 的基线本来就是这样
+跑的**,所以在这条轴上不会比基线更差。
 
 ### 耗时不要当性能读
 

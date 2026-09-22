@@ -26,6 +26,7 @@ from vllm.compilation import breakable_cudagraph
 from vllm.config import VllmConfig
 from vllm.config.compilation import CompilationMode, CUDAGraphMode
 from vllm.distributed.kv_transfer import get_kv_transfer_group, has_kv_transfer_group
+from vllm.logger import init_logger
 from vllm.sequence import IntermediateTensors
 from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.kv_cache_interface import KVCacheConfig
@@ -80,6 +81,8 @@ from vllm_ascend.worker.v2.spec_decode import init_speculator
 from vllm_ascend.worker.v2.spec_decode.eagle.speculator import AscendEagleSpeculator
 from vllm_ascend.worker.v2.states import AscendRequestState
 from vllm_ascend.worker.v2.utils import torch_cuda_wrapper
+
+logger = init_logger(__name__)
 
 if vllm_version_is("0.28.0"):
     from vllm.v1.worker.gpu.cp_utils import prepare_dcp_local_seq_lens
@@ -950,6 +953,7 @@ def graph_manager_wrapper(model_runner):
         if getattr(model_runner, "eager_survival_test", False):
             from vllm_ascend.worker.v2.spec_decode.dspark.eager_config import (
                 GRAPH_MODE_NONE,
+                GRAPH_MODE_RAGGED,
                 GRAPH_MODE_UNIFORM,
                 av_graph_mode,
             )
@@ -980,8 +984,35 @@ def graph_manager_wrapper(model_runner):
                 # is correct and gives up the trimming benefit under graph, which
                 # is what the ragged mode exists to recover.
                 varlen_decode = False
-            # Ragged mode leaves varlen_decode alone, which is the whole change
-            # it needs on this side. The manager then captures a decode graph per
+            elif mode == GRAPH_MODE_RAGGED and cudagraph_mode == CUDAGraphMode.FULL_AND_PIECEWISE:
+                # Upstream rewrites cudagraph_mode to FULL_AND_PIECEWISE for any
+                # run with an adaptive-verification manager, overriding whatever
+                # was configured and without a warning. The reason is the
+                # fallback: a trimmed batch matches no full descriptor, so it
+                # needs the piecewise family to land somewhere. Ragged mode
+                # removes that reason -- a trimmed batch replays the decode graph
+                # -- so the piecewise half is only a second family to capture.
+                #
+                # Downgrade it only when the graph could not be piecewise in the
+                # first place. splitting_ops is decided at config time from the
+                # configured mode, before this override runs, so a run that asked
+                # for FULL_DECODE_ONLY has no splitting ops and its "piecewise"
+                # graphs are unsplit whole-model captures. This is upstream's own
+                # test for the same question (resolve_cudagraph_mode_and_sizes
+                # picks between the two on exactly this predicate); where
+                # splitting really was configured, leave the mode alone.
+                compilation = vllm_config.compilation_config
+                if not compilation.splitting_ops_contain_attention():
+                    cudagraph_mode = CUDAGraphMode.FULL_DECODE_ONLY
+                    compilation.cudagraph_mode = cudagraph_mode
+                    logger.warning(
+                        "[DSPARK-AV] cudagraph_mode FULL_AND_PIECEWISE -> FULL_DECODE_ONLY: "
+                        "no attention splitting ops are configured, so the piecewise family "
+                        "would be a second set of unsplit captures, and the ragged mode does "
+                        "not need it to catch trimmed batches."
+                    )
+            # Ragged mode otherwise leaves varlen_decode alone, which is the whole
+            # change it needs on this side. The manager then captures a decode graph per
             # size with num_reqs = min(Q, max_num_seqs) and max_query_len =
             # decode_query_len, and _is_compatible admits any batch with no more
             # requests, no more tokens and no longer a query -- "any mix of

@@ -49,8 +49,16 @@ _GDN_CUMSUM_WORKING_SET = 2**18
 
 
 def _stable_argsort_for_npu(tensor: torch.Tensor) -> torch.Tensor:
-    if tensor.dtype == torch.bool:
-        tensor = tensor.to(torch.int32)
+    """Stable argsort with a sort key AiCore can actually take.
+
+    ArgSort has no AiCore implementation for int32/int64 and silently falls back
+    to AiCPU, which the runtime warns about and recommends float32 for. The keys
+    here are boolean masks, so float32 represents them exactly and a stable sort
+    gives the identical permutation -- the dtype is free to choose and int32 was
+    the one choice that leaves AiCore.
+    """
+    if tensor.dtype in (torch.bool, torch.int8, torch.int16, torch.int32, torch.int64):
+        tensor = tensor.to(torch.float32)
     return torch.argsort(tensor, stable=True)
 
 
