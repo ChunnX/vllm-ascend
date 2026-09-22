@@ -545,3 +545,62 @@ padding 应该补到**捕获轴**而不是派发轴。uniform 模式下两者恰
 
 配齐后的验收判据按上面两节：正确性用算子 golden + 噪声底为 0 并发下的端到端相等，
 收益用接受率与吞吐/TPOT。
+
+## 阶段 B 实测（2026-09-21，`max_num_seqs=4`，K=7，TP=4，27B）
+
+`upstream+ragged` **MATCH**，噪声底 identical（baseline 两遍逐 token 相同），
+所以这次的相等是有效证据。判据那一行：
+
+```txt
+5 steps | mean reqs=3.40 scheduled_drafts=23.80 admitted=17.40 verify_tokens=20.80
+  | kept=73.1% | trimmed_steps=4/5 | last_caps=[7] | graph=FULL=5
+```
+
+**`graph=FULL=5` 与 `kept=73.1%` 同时出现**：那个窗口 5 步全部派到 FULL，其中 4 步是裁剪
+过的，所以**裁剪批确实回放了捕获的全图**。uniform 模式下这个组合不可能出现（裁剪批必然落
+PIECEWISE）。全程 16/20 个窗口有裁剪。
+
+§「上设备前唯一没想清楚的一点」里的风险（padding 补到派发轴而非捕获轴）**没有发生**：
+输出在噪声底为 0 的并发上相等，说明 FIA 请求轴不是烧进图里的那种依赖。
+
+### cost table 从平变单调，这是阶段 B 的真正回报
+
+同一配置（bs=4）两个阶段对比：
+
+| | 阶段 A（uniform） | 阶段 B（ragged） |
+| --- | --- | --- |
+| Q=8 / 16 / 24 / 32 | 116.80 / 116.80 / 116.80 / 116.80 | 33.37 / 35.89 / 39.14 / 42.13 |
+| 可达范围 spread | **0.00ms** | **12.31ms**，单调 |
+| controller 实际决策 | `kept=100%`（不裁） | `kept=73.1%`，16/20 窗口裁 |
+
+因果链闭合：**曲线平 → `argmax(accepted/cost)` 永远选最大 Q → 裁剪买不到任何东西；曲线有
+梯度 → 小预算真的落进更便宜的桶 → controller 开始裁。** 阶段 A 的 `kept=100%` 不是缺陷，是
+对一张平表的正确决策；ragged 把表变成有梯度的，决策才跟着变。
+
+每步 116.80 → 33–42ms（约 3×）的来源是同一件事：被 profile 的那些批在 uniform 下匹配不到
+描述符、全落 PIECEWISE，ragged 下直接回放图。
+
+这也修正了 §A″ 的一个判断。当时结论是「bs=4 测不出裁剪有没有用，要到服务规模曲线才有梯度」
+——**那是 uniform 下的结论**。裁剪批一旦能回放图，bs=4 就有梯度了。服务规模的梯度依然更大，
+但不再是能不能看到收益的前提。
+
+### 这一轮几乎没有测到第 3 项（固定 GDN 轴）
+
+`mean reqs=3.40`、`max_num_seqs=4` → 轴宽 4、活跃 3~4 行，**最多一行 padding**。而 bs=16
+下批部分排空时会有多达 15 行。所以这次证明的是第 1 项（描述符几何），第 3 项只是顺带走了
+一两行，padding 行处理基本没被压到。
+
+下一轮要单独把它逼出来，而且要保住有效判据：
+
+```bash
+python examples/dspark_eager_adaptive_verify.py --lanes upstream+ragged   --max-num-seqs 16 --num-prompts 4 --max-tokens 64
+```
+
+活跃请求仍是 4（批组成稳定 → baseline 可复现 → 逐 token 判据仍然有效），而 GDN 轴被钉到
+16，**凭空多出 12 行 padding**。这把「高并发本身不可复现」和「宽 padding 轴破坏状态」两件事
+解耦开——这是 bs=16 直接跑做不到的，那里 baseline 自己就不相等。
+
+### 耗时不要当性能读
+
+284s vs baseline 184s（阶段 A 约 250s）。整个生成只有约 20 个 decode 步，模型加载 + 捕获
+主导总耗时，ragged 捕获的桶还更多。稳态收益要用接受率与 TPOT 在长跑上量，不是这张表。
