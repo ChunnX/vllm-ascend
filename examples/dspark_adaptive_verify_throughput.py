@@ -15,6 +15,10 @@ shape of that table, and this script exists to reproduce all three:
   checkpoints. The axis we do have is **concurrency**, which moves the same
   quantity: the reachable spread of the cost table was 12.31ms at four requests
   and 29.97ms at sixteen, and trimming can only earn what that spread contains.
+  But ``max_num_seqs`` is not a load knob -- it sets the captured bucket set,
+  the graph limit, that spread and the pinned GDN axis together, so two values
+  are two graph configurations rather than one under two loads. It therefore
+  defaults to a single value, the deployment point, and a sweep is opt-in.
 - **The figure of merit is throughput, not per-token latency.** Adaptive
   verification trades accepted tokens per step for cheaper steps, and the
   controller's own objective is accepted tokens per unit cost -- which is
@@ -52,7 +56,7 @@ Math500 and +19.1% on Dolly. Three things taken from that:
   acceptance -- maths drafts are accepted well, so there is less to trim.
 - **Workload size is not concurrency.** 500 requests through a 64-wide engine is
   sustained throughput; sending as many requests as the batch is wide measures
-  one wave. So ``--num-requests`` and ``--concurrency`` are separate.
+  one wave. So ``--num-requests`` (500, as there) is separate from capacity.
 - **Repeats.** Two runs averaged there, three here, with the spread printed.
 
 Scale expectations accordingly: those gains are at concurrency 64, four times
@@ -65,8 +69,9 @@ Usage (one process per configuration, repeats inside each):
     export VLLM_TEST_DSPARK_MODEL=/path/DSpark
     python examples/dspark_adaptive_verify_throughput.py --dataset /path/math500.jsonl
 
-    # one concurrency, more repeats
-    python examples/dspark_adaptive_verify_throughput.py --concurrency 16 --repeats 5
+    # more repeats, or a sweep over engine capacity (each row its own config)
+    python examples/dspark_adaptive_verify_throughput.py --repeats 5
+    python examples/dspark_adaptive_verify_throughput.py --max-num-seqs 4 8 16 --waves 8
 """
 
 from __future__ import annotations
@@ -225,7 +230,7 @@ def run_engine(args: argparse.Namespace) -> int:
         model=args.model,
         dtype="bfloat16",
         max_model_len=args.max_model_len,
-        max_num_seqs=args.concurrency,
+        max_num_seqs=args.max_num_seqs,
         enable_prefix_caching=args.prefix_caching,
         async_scheduling=args.async_scheduling,
         tensor_parallel_size=args.tensor_parallel_size,
@@ -249,7 +254,7 @@ def run_engine(args: argparse.Namespace) -> int:
     # Discard the first pass. It carries graph capture, the cost-table
     # profiling and every lazy allocation, none of which recur -- charging them
     # to the first timed repeat would make the mean depend on the repeat count.
-    llm.generate(prompts[: args.concurrency], SamplingParams(temperature=0, max_tokens=8, ignore_eos=True))
+    llm.generate(prompts[: args.max_num_seqs], SamplingParams(temperature=0, max_tokens=8, ignore_eos=True))
 
     runs = []
     for _ in range(max(1, args.repeats)):
@@ -289,14 +294,22 @@ def child_env() -> dict[str, str]:
     return env
 
 
-def requests_for(concurrency: int, args: argparse.Namespace) -> int:
-    return args.num_requests if args.num_requests else max(concurrency, args.waves * concurrency)
+def requests_for(max_num_seqs: int, args: argparse.Namespace) -> int:
+    """Workload size for a cell.
+
+    ``--waves`` exists for a swept run: 500 requests through a 4-wide engine is
+    125 waves against 31 through a 16-wide one, so a fixed count makes swept
+    cells different shapes as well as different configurations.
+    """
+    if args.waves:
+        return max(max_num_seqs, args.waves * max_num_seqs)
+    return args.num_requests
 
 
-def run_config(k: int, concurrency: int, adaptive: bool, args: argparse.Namespace, log_dir: Path) -> dict:
+def run_config(k: int, max_num_seqs: int, adaptive: bool, args: argparse.Namespace, log_dir: Path) -> dict:
     lane = "dynamics" if adaptive else "fixed"
-    num_requests = requests_for(concurrency, args)
-    log_path = log_dir / f"k{k}-c{concurrency}-{lane}.log"
+    num_requests = requests_for(max_num_seqs, args)
+    log_path = log_dir / f"k{k}-b{max_num_seqs}-{lane}.log"
     cmd = [
         sys.executable,
         os.path.abspath(__file__),
@@ -306,7 +319,7 @@ def run_config(k: int, concurrency: int, adaptive: bool, args: argparse.Namespac
         "--tensor-parallel-size", str(args.tensor_parallel_size),
         "--num-speculative-tokens", str(k),
         "--max-model-len", str(args.max_model_len),
-        "--concurrency", str(concurrency),
+        "--max-num-seqs", str(max_num_seqs),
         "--num-requests", str(num_requests),
         "--output-len", str(args.output_len),
         "--repeats", str(args.repeats),
@@ -321,7 +334,7 @@ def run_config(k: int, concurrency: int, adaptive: bool, args: argparse.Namespac
     if args.async_scheduling:
         cmd.append("--async-scheduling")
 
-    print(f"\n=== K={k} concurrency={concurrency} {lane}: starting, log -> {log_path}", flush=True)
+    print(f"\n=== K={k} max_num_seqs={max_num_seqs} {lane}: starting, log -> {log_path}", flush=True)
     started = time.monotonic()
     with log_path.open("w") as stream:
         result = subprocess.run(
@@ -330,12 +343,12 @@ def run_config(k: int, concurrency: int, adaptive: bool, args: argparse.Namespac
     log = log_path.read_text(errors="replace")
     if result.returncode != 0:
         raise RuntimeError(
-            f"K={k} c={concurrency} {lane} exited {result.returncode}; tail of {log_path}:\n{log[-12000:]}"
+            f"K={k} b={max_num_seqs} {lane} exited {result.returncode}; tail of {log_path}:\n{log[-12000:]}"
         )
 
     runs = [json.loads(line.removeprefix(RESULT_PREFIX)) for line in log.splitlines() if line.startswith(RESULT_PREFIX)]
     if not runs:
-        raise RuntimeError(f"K={k} c={concurrency} {lane} printed no timing; tail of {log_path}:\n{log[-12000:]}")
+        raise RuntimeError(f"K={k} b={max_num_seqs} {lane} printed no timing; tail of {log_path}:\n{log[-12000:]}")
     expected = num_requests * args.output_len
     for run in runs:
         if run["output_tokens"] != expected:
@@ -343,7 +356,7 @@ def run_config(k: int, concurrency: int, adaptive: bool, args: argparse.Namespac
             # the specbench runs already showed to be unreadable: different
             # configurations emitting different numbers of tokens.
             raise RuntimeError(
-                f"K={k} c={concurrency} {lane} emitted {run['output_tokens']} tokens, expected {expected}. "
+                f"K={k} b={max_num_seqs} {lane} emitted {run['output_tokens']} tokens, expected {expected}. "
                 "ignore_eos did not hold, so TPS is not comparable across lanes."
             )
 
@@ -364,7 +377,7 @@ def run_config(k: int, concurrency: int, adaptive: bool, args: argparse.Namespac
                     dispatch[name] = dispatch.get(name, 0) + int(count)
     record = {
         "k": k,
-        "concurrency": concurrency,
+        "max_num_seqs": max_num_seqs,
         "lane": lane,
         "tps": tps,
         "accept": statistics.fmean(accept) if accept else None,
@@ -375,7 +388,7 @@ def run_config(k: int, concurrency: int, adaptive: bool, args: argparse.Namespac
     }
     elapsed = time.monotonic() - started
     print(
-        f"=== K={k} concurrency={concurrency} {lane}: done in {elapsed:.0f}s | "
+        f"=== K={k} max_num_seqs={max_num_seqs} {lane}: done in {elapsed:.0f}s | "
         f"TPS {statistics.fmean(tps):.1f}" + (f" +/- {max(tps) - min(tps):.1f}" if len(tps) > 1 else ""),
         flush=True,
     )
@@ -384,37 +397,38 @@ def run_config(k: int, concurrency: int, adaptive: bool, args: argparse.Namespac
         # anything. A run that never trimmed verified the same width as the
         # fixed lane, so equal throughput would be a tautology.
         if not record["kept"]:
-            raise RuntimeError(f"K={k} c={concurrency} dynamics logged no budget decision; see {log_path}")
+            raise RuntimeError(f"K={k} b={max_num_seqs} dynamics logged no budget decision; see {log_path}")
         print(
             f"    engaged: kept {min(record['kept']):.1f}-{max(record['kept']):.1f}%, dispatch {dispatch}",
             flush=True,
         )
         if min(record["kept"]) >= 100.0:
             raise RuntimeError(
-                f"K={k} c={concurrency} dynamics never trimmed a draft, so its throughput is the fixed lane's "
+                f"K={k} b={max_num_seqs} dynamics never trimmed a draft, so its throughput is the fixed lane's "
                 f"with extra bookkeeping, not a measurement of trimming; see {log_path}"
             )
     return record
 
 
 def report(results: list[dict], args: argparse.Namespace) -> int:
-    by_key = {(r["k"], r["concurrency"], r["lane"]): r for r in results}
+    by_key = {(r["k"], r["max_num_seqs"], r["lane"]): r for r in results}
     print("\n==== throughput ====")
     print(
         f"model={os.path.basename(args.model or '?')} TP={args.tensor_parallel_size} "
-        f"waves={args.waves if not args.num_requests else 'n/a'} output_len={args.output_len} "
+        f"requests={f'{args.waves}x cap' if args.waves else args.num_requests} "
+        f"output_len={args.output_len} "
         f"dataset={os.path.basename(args.dataset) if args.dataset else 'synthetic'} "
         f"cudagraph_mode={args.cudagraph_mode} repeats={args.repeats}"
     )
     header = (
-        f"{'Draft':>5} | {'Conc':>4} | {'Reqs':>5} | {'Fixed TPS':>18} | {'Fixed Acc':>9} | "
+        f"{'Draft':>5} | {'Cap':>4} | {'Reqs':>5} | {'Fixed TPS':>18} | {'Fixed Acc':>9} | "
         f"{'Dynamics TPS':>18} | {'Dyn Acc':>9} | {'Kept':>13} | {'NoGraph':>7} | {'Acceleration':>13}"
     )
     print(header)
     print("-" * len(header))
     verdicts = []
-    for k, conc in sorted({(r["k"], r["concurrency"]) for r in results}):
-        fixed, dyn = by_key.get((k, conc, "fixed")), by_key.get((k, conc, "dynamics"))
+    for k, cap in sorted({(r["k"], r["max_num_seqs"]) for r in results}):
+        fixed, dyn = by_key.get((k, cap, "fixed")), by_key.get((k, cap, "dynamics"))
         if not (fixed and dyn):
             continue
         f_mean, d_mean = statistics.fmean(fixed["tps"]), statistics.fmean(dyn["tps"])
@@ -424,13 +438,13 @@ def report(results: list[dict], args: argparse.Namespace) -> int:
         # against the summed spread is the crude version of a significance test,
         # and crude is the right level for three repeats.
         decisive = abs(d_mean - f_mean) > (f_spread + d_spread)
-        verdicts.append(((k, conc), gain, decisive))
+        verdicts.append(((k, cap), gain, decisive))
         kept = dyn["kept"]
         kept_text = f"{min(kept):.0f}-{max(kept):.0f}%" if kept else "n/a"
         total = sum(dyn["dispatch"].values())
         no_graph = f"{dyn['dispatch'].get('NONE', 0) / total * 100:.1f}%" if total else "n/a"
         print(
-            f"{k:>5} | {conc:>4} | {requests_for(conc, args):>5} | "
+            f"{k:>5} | {cap:>4} | {requests_for(cap, args):>5} | "
             f"{f_mean:>10.1f} +/-{f_spread:>5.1f} | {_fmt(fixed['accept']):>9} | "
             f"{d_mean:>10.1f} +/-{d_spread:>5.1f} | {_fmt(dyn['accept']):>9} | "
             f"{kept_text:>13} | {no_graph:>7} | {gain:>+11.1f}%{'' if decisive else ' ?'}"
@@ -444,7 +458,7 @@ def report(results: list[dict], args: argparse.Namespace) -> int:
     )
     print(
         "\nTPOT is not reported: with ignore_eos every request emits the same number of tokens, so "
-        "mean per-token time is exactly concurrency/TPS and would restate this table. PR 15147's "
+        "mean per-token time is exactly capacity/TPS and would restate this table. PR 15147's "
         "separate TPS and TPOT columns carry independent information only because its output "
         "lengths varied (its +19.1% and -17.4% are the same measurement seen twice)."
     )
@@ -459,8 +473,8 @@ def report(results: list[dict], args: argparse.Namespace) -> int:
     undecided = [key for key, _, decisive in verdicts if not decisive]
     if undecided:
         print(
-            f"(draft, concurrency) cells with no decisive difference: {undecided}. "
-            "More repeats, or a larger concurrency -- the cost table's reachable spread grows with it, "
+            f"(draft, capacity) cells with no decisive difference: {undecided}. "
+            "More repeats, or a larger capacity -- the cost table's reachable spread grows with it, "
             "and trimming can only earn what that spread contains."
         )
     return 0
@@ -494,32 +508,39 @@ def main() -> int:
     parser.add_argument("--tensor-parallel-size", type=int, default=4)
     parser.add_argument("--max-model-len", type=int, default=4096)
     parser.add_argument(
-        "--concurrency",
+        "--max-num-seqs",
         type=int,
         nargs="+",
-        default=[4, 8, 16],
+        default=[16],
         help=(
-            "Concurrency (max_num_seqs), swept. This is the axis that stands in for the draft count, "
-            "since that is fixed by the checkpoint: the cost table's reachable spread was 12.31ms "
-            "at four requests and 29.97ms at sixteen, and trimming can only earn what it contains."
-        ),
-    )
-    parser.add_argument(
-        "--waves",
-        type=int,
-        default=8,
-        help=(
-            "Workload size as a multiple of concurrency. PR 15147's 500 requests at concurrency 64 "
-            "is about eight waves; holding waves rather than requests fixed keeps each swept cell "
-            "the same shape and its runtime bounded -- 500 requests through a 4-wide engine is 125 "
-            "waves and took 29 minutes per cell."
+            "Engine capacity. Defaults to a single value -- the deployment point -- because this is "
+            "not a load knob: it sets the captured bucket set, the graph limit, the cost table's "
+            "reachable range and the pinned GDN request axis, all at once. Measured graph_limit was "
+            "32 at four and 128 at sixteen, so two such cells are different graph configurations, "
+            "not one configuration under two loads. Passing several still works and is a useful "
+            "sweep -- the reachable spread was 12.31ms at four and 29.97ms at sixteen, and trimming "
+            "can only earn what it contains -- but read each row as its own configuration."
         ),
     )
     parser.add_argument(
         "--num-requests",
         type=int,
+        default=500,
+        help=(
+            "Workload size, independent of capacity -- PR 15147 used 500 requests. A dataset larger "
+            "than this is sampled at an even stride, so there is no need to trim the file: 500 out "
+            "of Dolly's 15k spans the whole dataset, while its first 500 rows would not."
+        ),
+    )
+    parser.add_argument(
+        "--waves",
+        type=int,
         default=None,
-        help="Fixed workload size, overriding --waves. Cells at different concurrency then differ in shape.",
+        help=(
+            "Workload size as a multiple of capacity instead of a fixed count. Only useful when "
+            "sweeping --max-num-seqs: 500 requests is 31 waves through a 16-wide engine but 125 "
+            "through a 4-wide one, which took 29 minutes per cell."
+        ),
     )
     parser.add_argument(
         "--dataset",
@@ -558,7 +579,7 @@ def main() -> int:
 
     if args.engine_child:
         args.num_speculative_tokens = args.num_speculative_tokens[0]
-        args.concurrency = args.concurrency[0]
+        args.max_num_seqs = args.max_num_seqs[0]
         return run_engine(args)
     if not args.model or not args.draft:
         parser.error("set VLLM_TEST_QWEN36_MODEL and VLLM_TEST_DSPARK_MODEL, or pass --model/--draft")
@@ -578,15 +599,15 @@ def main() -> int:
 
     results, failures = [], []
     for k in args.num_speculative_tokens:
-        for concurrency in args.concurrency:
+        for max_num_seqs in args.max_num_seqs:
             # Fixed first: if it fails, the dynamics number has nothing to compare to.
             for adaptive in (False, True):
                 lane = "dynamics" if adaptive else "fixed"
                 try:
-                    results.append(run_config(k, concurrency, adaptive, args, log_dir))
+                    results.append(run_config(k, max_num_seqs, adaptive, args, log_dir))
                 except Exception as exc:  # noqa: BLE001 - report every cell, fail at the end
-                    failures.append(f"K={k} c={concurrency} {lane}: {exc}")
-                    print(f"=== K={k} concurrency={concurrency} {lane}: FAILED -- {exc}", flush=True)
+                    failures.append(f"K={k} b={max_num_seqs} {lane}: {exc}")
+                    print(f"=== K={k} max_num_seqs={max_num_seqs} {lane}: FAILED -- {exc}", flush=True)
 
     rc = report(results, args) if results else 1
     for line in failures:

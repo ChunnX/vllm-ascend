@@ -238,9 +238,17 @@ python examples/dspark_adaptive_verify_throughput.py --concurrency 16 --repeats 
 
    workload 小于文件时按**等距取样**而不是取前 N 条：32 条请求从 Dolly 的 15011 条里取，
    取头部很可能整段是同一个类目，那会让接受率、进而让结论由文件顺序决定。
-2. **workload 大小不等于并发。** 500 个请求过一个 64 宽的引擎是持续吞吐；**只发和批一样
-   宽的请求数量是在测一波**。原来 `--concurrency` 被我同时当成两者用，现在拆成
-   `--concurrency`（= `max_num_seqs`）和 `--num-requests`（默认 500）。
+2. **workload 大小不等于引擎容量。** 500 个请求过一个 64 宽的引擎是持续吞吐；**只发和批一样
+   宽的请求数量是在测一波**。所以 `--num-requests`（默认 500，同 15147）和
+   `--max-num-seqs` 是两个参数。
+
+   **`max_num_seqs` 不是负载旋钮。** 它同时决定捕获的 bucket 集合、`graph_limit`、cost
+   table 的可达范围、以及钉住的 GDN 请求轴——实测 `graph_limit` 在 4 是 32、在 16 是 128。
+   所以两个不同的值是**两种图配置**，不是同一配置下的两种负载。默认因此只跑一个值（部署点
+   16）；`--max-num-seqs 4 8 16 --waves 8` 仍可扫，但每一行要当成独立配置读。
+
+   **数据集不需要裁。** workload 小于文件时按等距取样，500 条从 Dolly 的 15011 条里取是
+   步长约 30、跨越整个文件；`head -n 500` 反而只覆盖头部。
 3. **重复取平均**（他们两次，这里三次，并打出 spread）。
 
 **期望值要按比例缩。** 那些收益是在并发 64 测的，是 4×910B4 上限的四倍，而 cost table 的
