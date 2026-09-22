@@ -171,7 +171,7 @@ python examples/dspark_adaptive_verify_throughput.py
 
 | | 说明 |
 | --- | --- |
-| **扫 draft 数** | 15098 的收益是 +12.1%（K=9）/ +6.9%（K=7）/ +2.1%（K=5）。裁剪只能在有东西可裁的地方赚钱，所以收益随 K 增长。**此前所有测量都固定在 K=7**，说明不了别的 K。 |
+| **收益随「可裁的量」增长** | 15098 是 +12.1%（K=9）/ +6.9%（K=7）/ +2.1%（K=5）。**但 K 不是我们能调的轴**：`vllm/config/speculative.py:177` 要求 `num_speculative_tokens` **精确等于** draft checkpoint 的 `block_size`，不是 ≤。block7 的模型上 K=5/9 连引擎都起不来。15098 那三行是**三个 checkpoint**（文档里的模型名就叫 `dspark_qwen3_8b_block7`）。我们能用的等效轴是**并发**：cost table 可达 spread 在 4 并发是 12.31ms、16 并发是 29.97ms，裁剪能赚的不会超过这个 spread。 |
 | **判据是 TPS 不是 TPOT** | AV 拿「每步接受更少 token」换「每步更便宜」，controller 的目标函数就是单位成本的接受 token —— 那是吞吐。单请求延迟只量到这笔交易的一边。 |
 | **接受率是上下文** | 它在 15098 自己的数据里也是降的（4.10 → 4.01）。降是特性在工作；**降了而吞吐没涨**才是要担心的，那说明 cost table 高估了裁剪的收益。 |
 
@@ -195,14 +195,40 @@ token、输出长 7%，和被测效应同一个量级 —— 跨输出长度比 
 它校验的宽度和定长 lane 一样，吞吐相等是同义反复。这和整网门槛里「相等不是证据」同一条
 规矩。
 
-跑一个 draft 数、多跑几遍：
+`-k` 不传就从 draft checkpoint 的 `config.json` 里读 `block_size`，因为那是唯一能起来的值；
+传多个值需要每个值一个 checkpoint。
+
+单点多跑几遍：
 
 ```bash
-python examples/dspark_adaptive_verify_throughput.py -k 9 --repeats 5
+python examples/dspark_adaptive_verify_throughput.py --concurrency 16 --repeats 5
 ```
 
-默认 `--concurrency 16`（你的硬件上限）、`--output-len 256`、`--repeats 3`，6 个进程
-（3 个 K × 2 条 lane）约 30 分钟。
+默认 `--concurrency 4 8 16`、`--output-len 256`、`--repeats 3`，6 个进程
+（3 个并发 × 2 条 lane）约 30 分钟。
+
+### 上游 vLLM 那边（PR 47808）没有性能测试
+
+`tests/v1/spec_decode/test_adaptive_verification.py` 里全是 **CPU 单测**，测的是预算算术和
+不变量，没有吞吐或端到端用例：
+
+```txt
+test_budget_stops_where_marginal_drafts_stop_paying_for_themselves
+test_profiled_batches_seed_cost_curves_via_consumer
+test_compact_batch_preserves_totals_and_bounds
+test_budget_caps_at_one_rejection_sampler_chunk
+test_zero_budget_rebuilds_cpu_cu_num_logits
+test_zero_budget_keeps_one_grammar_row_per_scheduled_draft
+test_manager_scopes_varlen_check_without_weakening_runner_cg_mode
+```
+
+也就是说**上游 CI 里只保证正确性与不变量，性能数字只出现在 PR 描述里**（15098 的表标注
+"provided by StanislavII"，**没有说用的是哪个数据集**）。所以我们这边的分工照抄这个形状是
+对的：整网门槛管正确性，吞吐脚本管收益，两者都不进 CI 的性能断言。
+
+其中有几条不变量值得我们也照着验一遍（后三条我们还没有对应用例）：预算上限是一个
+rejection sampler chunk；零预算时重建 CPU 侧 `cu_num_logits`；零预算时每个被调度的 draft
+仍保留一行 grammar。
 
 ## 运行时日志
 
