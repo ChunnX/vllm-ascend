@@ -29,6 +29,8 @@ STUB_ENVS = {
     "VLLM_ASCEND_DSPARK_EAGER_AV_LOG_INTERVAL": 50,
     "VLLM_ASCEND_DSPARK_AV_CPU_UPPER_BOUND": False,
     "VLLM_ASCEND_DSPARK_AV_GRAPH": "none",
+    "VLLM_ASCEND_DSPARK_AV_ADAPT": True,
+    "VLLM_ASCEND_DSPARK_GDN_FIXED_AXIS": False,
 }
 
 
@@ -359,7 +361,7 @@ def test_av_logger_names_untrusted_rows_only_when_there_are_any(av_logger_class,
     assert "untrusted_rows=3 (out_of_range=1)" in third
 
 
-def config_gate(policy, value, upstream=False, graph_mode="none", gdn_fixed_axis=False):
+def config_gate(policy, value, upstream=False, graph_mode="none", gdn_fixed_axis=False, adapt=True):
     # Load the real guard without importing the Ascend platform bootstrap.
     import ast
 
@@ -373,9 +375,14 @@ def config_gate(policy, value, upstream=False, graph_mode="none", gdn_fixed_axis
     envs["VLLM_ASCEND_DSPARK_EAGER_UPSTREAM_AV"] = upstream
     envs["VLLM_ASCEND_DSPARK_AV_GRAPH"] = graph_mode
     envs["VLLM_ASCEND_DSPARK_GDN_FIXED_AXIS"] = gdn_fixed_axis
+    envs["VLLM_ASCEND_DSPARK_AV_ADAPT"] = adapt
     namespace = {
         "envs_ascend": SimpleNamespace(**envs),
         "validate_threshold": policy.validate_threshold,
+        # The module keeps the `logger = init_logger(__name__)` assignment, so
+        # the stub namespace has to satisfy it without importing vllm.
+        "init_logger": logging.getLogger,
+        "__name__": "eager_config_stub",
     }
     exec(compile(module, str(source), "exec"), namespace)
     return namespace
@@ -424,10 +431,78 @@ def test_the_other_graph_modes_leave_the_gdn_axis_to_the_variable(policy, mode):
     assert gate["av_graph_pins_gdn_axis"]() is True
 
 
-@pytest.mark.parametrize("mode", ["", "full", "piecewise", "None", "uniform "])
+@pytest.mark.parametrize("mode", ["full", "piecewise", "None", "uniform "])
 def test_an_unknown_graph_mode_is_rejected(policy, mode):
     with pytest.raises(ValueError, match="must be one of"):
         config_gate(policy, 0.4, graph_mode=mode)["av_graph_mode"]()
+
+
+def test_an_unset_graph_mode_is_ragged_except_under_the_threshold_lane(policy):
+    """Unset has to mean the path that ships, which is the ragged graph.
+
+    Lane A is the one exception and it is not a preference: it computes exact
+    host capacities every step, and a captured graph cannot pay that copy. So
+    the default is per lane rather than global -- otherwise turning the feature
+    on by config would silently put the bisect tool in a graph it cannot run in.
+    """
+    assert config_gate(policy, None, upstream=True, graph_mode="")["av_graph_mode"]() == "ragged"
+    assert config_gate(policy, None, graph_mode="")["av_graph_mode"]() == "ragged"
+    assert config_gate(policy, 0.4, graph_mode="")["av_graph_mode"]() == "none"
+    # Named explicitly, lane A can still be put under a graph on purpose.
+    assert config_gate(policy, 0.4, graph_mode="uniform")["av_graph_mode"]() == "uniform"
+
+
+def test_config_alone_engages_the_upstream_lane(policy):
+    """enable_adaptive_verification=true is the whole switch.
+
+    Before this, the adaptation was gated on an environment variable, so the
+    config flag on its own gave upstream's unmodified manager with none of the
+    ragged plumbing -- which is the difference between a working experiment and
+    a working feature.
+    """
+    config = eager_config()
+    config.model_config.enforce_eager = False
+    config.speculative_config.enforce_eager = False
+    gate = config_gate(policy, None, graph_mode="")
+    assert gate["eager_upstream_av_enabled"](config) is True
+    assert gate["eager_adaptive_lane_active"](config) is True
+
+
+def test_the_opt_out_hands_the_run_back_to_upstream(policy):
+    config = eager_config()
+    config.model_config.enforce_eager = False
+    gate = config_gate(policy, None, graph_mode="", adapt=False)
+    assert gate["eager_upstream_av_enabled"](config) is False
+    assert gate["eager_adaptive_lane_active"](config) is False
+
+
+def test_an_unsupported_config_falls_back_instead_of_failing_to_start(policy, caplog):
+    """Default-on must not take down a config that used to work.
+
+    Asked for by name, an unsupported config is a mistake and raises. Reached by
+    default, it has to degrade to upstream's own manager -- which is exactly
+    what the run would have got before this became the default -- and say so.
+    """
+    config = eager_config()
+    config.model_config.enforce_eager = False
+    config.parallel_config.pipeline_parallel_size = 2
+
+    gate = config_gate(policy, None, graph_mode="")
+    with caplog.at_level(logging.WARNING):
+        assert gate["eager_upstream_av_enabled"](config) is False
+    assert "falling back to the upstream manager" in caplog.text
+
+    named = config_gate(policy, None, upstream=True, graph_mode="")
+    with pytest.raises(ValueError, match="PP=PCP=DCP=1"):
+        named["eager_upstream_av_enabled"](config)
+
+
+def test_av_disabled_in_config_engages_nothing(policy):
+    config = eager_config()
+    config.speculative_config.enable_adaptive_verification = False
+    gate = config_gate(policy, None, graph_mode="")
+    assert gate["av_enabled_in_config"](config) is False
+    assert gate["eager_upstream_av_enabled"](config) is False
 
 
 def eager_config():

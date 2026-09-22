@@ -99,6 +99,41 @@ confidence 有没有真的到 manager 手里，不要当成通过。
 
 随机采样需要另做分布验证；同 seed 逐 token 一致不作为跨裁剪策略的唯一判据。
 
+## 功能开启方式（一个配置项）
+
+动态校验现在由**配置驱动**，不需要任何环境变量：
+
+```bash
+vllm serve /实际路径/Qwen3.6-27B \
+  --tensor-parallel-size 4 --max-num-seqs 16 --max-model-len 4096 \
+  --enable-prefix-caching --async-scheduling \
+  --speculative-config '{"method":"dspark","model":"/实际路径/DSpark",
+    "num_speculative_tokens":7,"enable_adaptive_verification":true}'
+```
+
+`enable_adaptive_verification: true` 一项同时决定：选用带 ragged 改动的 manager、图模式取
+`ragged`、GDN 请求轴钉到 `max_num_seqs`、host 侧 query 边界保持为上界（图必须如此）。
+**不要加 `--enforce-eager`**，那会把图关掉。
+
+在此之前这些都挂在环境变量上，配置项单独打开拿到的是上游未改的 manager——这是「实验通了」
+和「功能通了」的差别。
+
+剩下的环境变量都只是诊断/二分用：
+
+| 变量 | 用途 |
+| --- | --- |
+| `VLLM_ASCEND_DSPARK_AV_GRAPH` | 显式指定 `none`/`uniform`/`ragged`，不设＝`ragged` |
+| `VLLM_ASCEND_DSPARK_AV_ADAPT=0` | 完全退回上游 manager，用于对照 |
+| `VLLM_ASCEND_DSPARK_EAGER_UPSTREAM_AV=1` | 显式点名这条 lane：配置不支持时**报错**而不是退回 |
+| `VLLM_ASCEND_DSPARK_EAGER_SURVIVAL_THRESHOLD` | lane A，二分工具，默认保持 eager |
+| `VLLM_ASCEND_DSPARK_GDN_FIXED_AXIS` | 在非 ragged 模式下单独钉住 GDN 轴 |
+
+### 不支持的配置会退回，不会起不来
+
+默认路径下，PP/PCP/DCP≠1、LoRA、DBO、`num_speculative_tokens` 超出 1..15 会**退回上游
+manager 并打一条 warning**，而不是让引擎起不来——那是这条路径成为默认之前那些配置本来会
+得到的行为。显式设了 `VLLM_ASCEND_DSPARK_EAGER_UPSTREAM_AV=1` 则报错，因为那是点名要求。
+
 ## 运行时日志
 
 两个 lane 的裁剪决策以 **warning** 打印，按步数聚合，无需调 DEBUG：
@@ -118,6 +153,11 @@ confidence 有没有真的到 manager 手里，不要当成通过。
   整网脚本自己设成 5。设成 1 会每步一行，只在定位单步问题时用。
 - `upstream` lane 的每请求裁剪长度由 device 端 top-k 决定，只在会打印的那一步
   拷回 host，其余步不额外同步。
+- `conf_distinct=n/N` 是**窗口内 confidence 首行的不同取值个数**。`N/N` 表示 confidence
+  op 每步都在重算；`1/N` 表示 buffer 冻结——捕获时这个 op 没被 trace 进 drafter 的图，
+  之后每次回放都跳过它。这个失效模式对输出完全隐形（裁剪只是策略，拒绝采样仍然正确），
+  唯一表象是「动态校验没有收益」，所以整网脚本把它算作失败。
+- `graph=FULL=n` 与 `kept<100%` 同时出现，才说明**裁剪批真的回放了全图**。
 
 ## 注意事项
 

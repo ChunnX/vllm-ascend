@@ -263,11 +263,19 @@ class NPUModelRunner(GPUModelRunner):
         produces and take every exact boundary from device -- which is what
         ``supports_device_cpu_query_lens_mismatch`` asserts about a backend.
 
-        Clearing this flag is therefore the eager rehearsal for that contract:
-        if the whole-network gate still matches with the host view inexact, GDN
-        tolerates the mismatch and the capability claim is true.
+        So the readback follows the graph mode rather than a switch of its own:
+        any mode that captures cannot do it, and the eager mode is where it was
+        rehearsed away. The environment variable stays only to drop the readback
+        while still eager, which is how the contract was first validated.
         """
         if not getattr(self, "eager_survival_test", False):
+            return False
+        from vllm_ascend.worker.v2.spec_decode.dspark.eager_config import (
+            GRAPH_MODE_NONE,
+            av_graph_mode,
+        )
+
+        if av_graph_mode() != GRAPH_MODE_NONE:
             return False
         return not envs_ascend.VLLM_ASCEND_DSPARK_AV_CPU_UPPER_BOUND
 

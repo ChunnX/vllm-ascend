@@ -21,20 +21,22 @@ _original_factory = getattr(
 
 @wraps(_original_factory)
 def _maybe_create_adaptive_verification_manager(**kwargs):
-    # Only touch get_current_vllm_config when an eager lane env is set, so the
-    # non-eager path is exactly upstream.
-    if (
-        envs_ascend.VLLM_ASCEND_DSPARK_EAGER_SURVIVAL_THRESHOLD is None
-        and not envs_ascend.VLLM_ASCEND_DSPARK_EAGER_UPSTREAM_AV
-    ):
+    # No confidence head means no lane can run, and it is also the common path,
+    # so keep it free of any config lookup. A lane asked for by name is still
+    # worth a clear error rather than a silent downgrade.
+    if not kwargs["enable_adaptive_verification"]:
+        if (
+            envs_ascend.VLLM_ASCEND_DSPARK_EAGER_SURVIVAL_THRESHOLD is not None
+            or envs_ascend.VLLM_ASCEND_DSPARK_EAGER_UPSTREAM_AV
+        ):
+            raise ValueError("The DSpark adaptive-verification lanes require a loaded confidence head")
         return _original_factory(**kwargs)
     config = get_current_vllm_config()
 
-    # Lane B: the real upstream manager, run eager with a synthetic cost curve.
-    # It exercises the device survival top-k and async D2H the graph phase reuses.
+    # Lane B: the upstream manager with this repo's ragged plumbing. Reached
+    # whenever the config enables adaptive verification, which is what makes
+    # enable_adaptive_verification=true the whole switch.
     if eager_upstream_av_enabled(config):
-        if not kwargs["enable_adaptive_verification"]:
-            raise ValueError("Eager upstream AV requires a loaded DSpark confidence head")
         from vllm_ascend.worker.v2.spec_decode.dspark.eager_upstream_av import AscendEagerUpstreamAVManager
 
         return AscendEagerUpstreamAVManager(
@@ -48,8 +50,6 @@ def _maybe_create_adaptive_verification_manager(**kwargs):
     threshold = eager_survival_threshold(config)
     if threshold is None:
         return _original_factory(**kwargs)
-    if not kwargs["enable_adaptive_verification"]:
-        raise ValueError("Eager survival verification requires a loaded DSpark confidence head")
     from vllm_ascend.worker.v2.spec_decode.dspark.eager_verification import EagerSurvivalVerificationManager
 
     # Exact CPU boundaries remove the CPU/device mismatch; no graph is built,

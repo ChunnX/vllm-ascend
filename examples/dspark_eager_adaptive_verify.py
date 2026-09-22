@@ -163,6 +163,11 @@ def child_env(lane: str, max_model_len: int) -> dict[str, str]:
             env[CPU_UPPER_BOUND_ENV] = "1"
             env[AV_GRAPH_ENV] = mode
             break
+    else:
+        # Pin every other lane to eager explicitly. Unset now means ragged --
+        # that is the shipping default -- so leaving it out would silently give
+        # a bare lane the graph, and the suffix would stop meaning anything.
+        env[AV_GRAPH_ENV] = "none"
     if lane in ("baseline", "baseline2"):
         pass
     elif lane.startswith("threshold:"):
