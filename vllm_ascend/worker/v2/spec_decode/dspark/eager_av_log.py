@@ -31,6 +31,7 @@ class EagerAVLogger:
         self._admitted = 0
         self._verify_tokens = 0
         self._trimmed_steps = 0
+        self._prefill_steps = 0
         self._capacities: tuple[int, ...] | None = None
         self._untrusted = 0
         self._out_of_range = 0
@@ -98,6 +99,15 @@ class EagerAVLogger:
         self._verify_tokens += verify_tokens
         if admitted_drafts < scheduled_drafts:
             self._trimmed_steps += 1
+        # A pure decode step verifies exactly one bonus token per request plus
+        # the admitted drafts. Anything beyond that is prefill sharing the batch,
+        # and those are the steps that get no decode graph: FULL_DECODE_ONLY
+        # dispatches a mixed batch to NONE by definition, and a batch carrying
+        # prefill also tends to exceed the largest captured size. Counting them
+        # here makes the graph field self-explanatory -- without it, attributing
+        # a NONE means doing this subtraction by hand.
+        if verify_tokens > admitted_drafts + num_reqs:
+            self._prefill_steps += 1
         self._untrusted += untrusted_rows
         self._out_of_range += out_of_range_rows
         if capacities is not None:
@@ -117,6 +127,8 @@ class EagerAVLogger:
         # requests kept their drafts. An out_of_range count is different: finite
         # but not a probability is not the prefill artifact, so name it apart.
         suffix = ""
+        if self._prefill_steps:
+            suffix += f" | prefill_steps={self._prefill_steps}"
         if self._conf_moved is not None:
             # n/N, not a boolean: zero over several steps is the frozen buffer,
             # and roughly N is an op being recomputed every step.
@@ -149,6 +161,7 @@ class EagerAVLogger:
         self._admitted = 0
         self._verify_tokens = 0
         self._trimmed_steps = 0
+        self._prefill_steps = 0
         self._untrusted = 0
         self._out_of_range = 0
         self._graph_modes = {}

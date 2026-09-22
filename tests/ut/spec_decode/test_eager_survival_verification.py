@@ -269,6 +269,36 @@ def test_av_logger_forgets_confidence_counts_between_windows(av_logger_class, ca
     assert "conf_moved" not in second
 
 
+def test_av_logger_counts_the_steps_that_carried_prefill(av_logger_class, caplog):
+    """Make the graph field explain itself.
+
+    Under FULL_DECODE_ONLY a mixed batch dispatches to NONE by definition, so a
+    window with NONE in it needs a reason, and the reason is available for free:
+    a pure decode step verifies one bonus token per request plus the admitted
+    drafts, so anything beyond that is prefill sharing the batch. Without this
+    the count of NONE steps can only be attributed by doing the subtraction by
+    hand against verify_tokens.
+    """
+    # The first step always emits on its own, so the window under test is the
+    # three that follow it.
+    log = av_logger_class(lane="upstream", interval=3)
+    with caplog.at_level(logging.WARNING):
+        # Pure decode: one bonus token per request on top of the drafts.
+        log.record(num_reqs=2, scheduled_drafts=14, admitted_drafts=8, verify_tokens=10)
+        log.record(num_reqs=2, scheduled_drafts=14, admitted_drafts=8, verify_tokens=10)
+        # Prefill riding along: more tokens than the verify width accounts for.
+        log.record(num_reqs=2, scheduled_drafts=14, admitted_drafts=8, verify_tokens=74)
+        log.record(num_reqs=2, scheduled_drafts=14, admitted_drafts=8, verify_tokens=10)
+    opening, window = (r.getMessage() for r in caplog.records)
+    assert "prefill_steps" not in opening
+    assert "prefill_steps=1" in window
+
+    quiet = av_logger_class(lane="upstream", interval=1)
+    with caplog.at_level(logging.WARNING):
+        quiet.record(num_reqs=2, scheduled_drafts=14, admitted_drafts=8, verify_tokens=10)
+    assert "prefill_steps" not in caplog.records[-1].getMessage()
+
+
 def test_av_logger_sampling_predicts_the_emitting_step(av_logger_class):
     # Lane B only copies its device capacities when this says the next recorded
     # step will print, so a wrong answer either loses the field or adds a sync.
