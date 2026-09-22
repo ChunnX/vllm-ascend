@@ -124,11 +124,38 @@ def load_dataset(path: str) -> list[str]:
     """
     file = Path(path)
     raw = file.read_text(errors="replace")
+    # A Git LFS pointer is a ~130-byte stub that a clone without the LFS smudge
+    # filter leaves in place of the data. Left to the JSON parser it surfaces as
+    # "Expecting value: line 1 column 1", which reads like a bug in this script.
+    if raw.lstrip().startswith("version https://git-lfs.github.com/spec/v1"):
+        raise ValueError(
+            f"{path} is a Git LFS pointer, not the dataset ({file.stat().st_size} bytes). "
+            "Fetch the real file: `git lfs install && git lfs pull` in its directory, or download "
+            "it directly, e.g. "
+            "https://huggingface.co/datasets/databricks/databricks-dolly-15k/resolve/main/"
+            "databricks-dolly-15k.jsonl"
+        )
+
     records: list = []
     if file.suffix == ".jsonl":
-        records = [json.loads(line) for line in raw.splitlines() if line.strip()]
+        for number, line in enumerate(raw.splitlines(), start=1):
+            if not line.strip():
+                continue
+            try:
+                parsed = json.loads(line)
+                # A .jsonl that is really a single JSON array is a common
+                # mislabelling; flatten it rather than skipping every row.
+                records.extend(parsed) if isinstance(parsed, list) else records.append(parsed)
+            except ValueError as exc:
+                # Name the line and show it: a jsonl file that is actually a
+                # single JSON array, or has a header row, fails on line 1 and
+                # the bare decoder message says nothing about which is which.
+                raise ValueError(f"{path} line {number} is not JSON ({exc}); line starts: {line[:80]!r}") from exc
     elif file.suffix == ".json":
-        loaded = json.loads(raw)
+        try:
+            loaded = json.loads(raw)
+        except ValueError as exc:
+            raise ValueError(f"{path} is not JSON ({exc}); file starts: {raw[:80]!r}") from exc
         records = loaded if isinstance(loaded, list) else loaded.get("data") or loaded.get("rows") or []
     else:
         return [line.strip() for line in raw.splitlines() if line.strip()]
