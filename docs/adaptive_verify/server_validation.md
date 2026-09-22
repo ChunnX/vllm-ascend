@@ -77,6 +77,27 @@ python examples/dspark_eager_adaptive_verify.py
 python examples/dspark_eager_adaptive_verify.py --lanes threshold:0.4 upstream
 ```
 
+### 一次跑多久,以及为什么
+
+这个脚本的成本是**启动了几个进程**,不是它们算了多少东西:27B TP=4 加载约 3 分钟,生成只有
+几秒。所以:
+
+- 噪声底默认在**同一个引擎里生成两遍**,不再起第二个进程。
+- baseline 结果按 **commit + 引擎配置**缓存。同一份代码上换 lane 反复跑,只启动一个进程。
+
+| | 进程数 | 大致耗时 |
+| --- | --- | --- |
+| 改动代码后第一次 | 2 | 约 10 分钟 |
+| 同一 commit 再跑别的 lane | **1** | **约 5 分钟** |
+| `--floor cross-process` | 3 | 约 15 分钟 |
+
+缓存键里有 HEAD,所以 `git pull` 之后会自动重测;**tracked 文件有改动时完全不缓存**——没有
+哪个键能表示「我现在手上这些改动」。`--refresh-baseline` 用于同一份代码想重测。
+
+`--floor in-process` 读出来的噪声**不会高于**跨进程的那个:它覆盖调度与 reduce 顺序的不确
+定性,但不覆盖 allocator 布局和 worker 初始化顺序。对判 lane 来说偏紧是保守方向,但也可能把
+真实的参考噪声算成 lane 的缺陷,所以判决卡在边界上时用 `--floor cross-process` 复核。
+
 判据：greedy 采样下 target 决定每一个 token，裁剪只改变每步校验多少 draft，
 不改变输出。因此逐 token 相等是有效门槛，任何差异都是裁剪后布局的真实缺陷
 （query 边界、GDN state 选择、logits 摆放），不是采样噪声。脚本会打印首个

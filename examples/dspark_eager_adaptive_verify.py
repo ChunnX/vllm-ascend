@@ -30,6 +30,7 @@ Exit status is 0 only when every requested lane matched the baseline.
 """
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -103,11 +104,14 @@ def run_engine(args: argparse.Namespace) -> int:
             "enable_adaptive_verification": args.adaptive,
         },
     )
-    outputs = llm.generate(
-        build_prompts(args.num_prompts or args.max_num_seqs),
-        SamplingParams(temperature=0, max_tokens=args.max_tokens, seed=17),
-    )
-    print(RESULT_PREFIX + json.dumps([list(o.outputs[0].token_ids) for o in outputs]), flush=True)
+    prompts = build_prompts(args.num_prompts or args.max_num_seqs)
+    params = SamplingParams(temperature=0, max_tokens=args.max_tokens, seed=17)
+    # One result line per repeat. Loading a 27B engine at TP=4 costs about three
+    # minutes and generating costs seconds, so the noise floor is far cheaper as
+    # a second generate call in this engine than as a second process.
+    for _ in range(max(1, args.repeats)):
+        outputs = llm.generate(prompts, params)
+        print(RESULT_PREFIX + json.dumps([list(o.outputs[0].token_ids) for o in outputs]), flush=True)
     return 0
 
 
@@ -179,7 +183,9 @@ def child_env(lane: str, max_model_len: int) -> dict[str, str]:
     return env
 
 
-def run_lane(lane: str, args: argparse.Namespace, log_dir: Path) -> tuple[list[list[int]], bool, str | None]:
+def run_lane(
+    lane: str, args: argparse.Namespace, log_dir: Path, repeats: int = 1
+) -> tuple[list[list[list[int]]], bool, str | None]:
     log_path = log_dir / f"{lane.replace(':', '-')}.log"
     env_for_lane = child_env(lane, args.max_model_len)
     cmd = [
@@ -202,6 +208,8 @@ def run_lane(lane: str, args: argparse.Namespace, log_dir: Path) -> tuple[list[l
         str(args.max_tokens),
         "--num-prompts",
         str(args.num_prompts or args.max_num_seqs),
+        "--repeats",
+        str(repeats),
     ]
     if not lane.startswith("baseline"):
         cmd.append("--adaptive")
@@ -254,12 +262,129 @@ def run_lane(lane: str, args: argparse.Namespace, log_dir: Path) -> tuple[list[l
     lines = [line for line in log.splitlines() if line.startswith(RESULT_PREFIX)]
     if not lines:
         raise RuntimeError(f"lane {lane} printed no result line; tail of {log_path}:\n{log[-12000:]}")
+    runs = [json.loads(line.removeprefix(RESULT_PREFIX)) for line in lines]
+    if len(runs) != repeats:
+        raise RuntimeError(f"lane {lane} printed {len(runs)} result lines, expected {repeats} ({log_path})")
     trimmed = any("kept=100.0%" not in line for line in data_lines)
     frozen = frozen_confidence(data_lines)
     print(f"=== lane {lane}: done in {elapsed:.0f}s{trimming_note(lane, data_lines)}", flush=True)
     if frozen:
         print(f"    FROZEN CONFIDENCE: {frozen}", flush=True)
-    return json.loads(lines[-1].removeprefix(RESULT_PREFIX)), trimmed, frozen
+    return runs, trimmed, frozen
+
+
+BASELINE_CACHE_DIR = Path("dspark_eager_av_baseline_cache")
+
+
+def _git_state() -> tuple[str, bool] | None:
+    """HEAD and whether any tracked file differs, or None outside a repo.
+
+    Untracked files are ignored on purpose: this script drops a log directory in
+    the working directory on every run, so counting those would make the cache
+    permanently unusable, while what actually changes the baseline is an edit to
+    a tracked file.
+    """
+    root = Path(__file__).resolve().parent.parent
+    try:
+        head = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True, text=True, timeout=30)
+        status = subprocess.run(
+            ["git", "-C", str(root), "status", "--porcelain", "--untracked-files=no"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if head.returncode or status.returncode:
+        return None
+    return head.stdout.strip(), bool(status.stdout.strip())
+
+
+def _baseline_cache_path(args: argparse.Namespace) -> Path | None:
+    """Where this baseline may be cached, or None when it must not be.
+
+    The baseline is fixed-K with no manager, so it depends on the engine
+    configuration and on the code -- and on nothing about the lane under test.
+    Keying on the commit means a pull re-measures it and an unchanged tree
+    reuses it, which is the behaviour that makes reuse safe rather than
+    convenient. A dirty tree is not cached at all: there is no key for "the
+    edits I have right now".
+    """
+    state = _git_state()
+    if state is None:
+        return None
+    head, dirty = state
+    if dirty:
+        return None
+    key = json.dumps(
+        [
+            head,
+            args.model,
+            args.draft,
+            args.tensor_parallel_size,
+            args.num_speculative_tokens,
+            args.max_model_len,
+            args.max_num_seqs,
+            args.max_tokens,
+            args.num_prompts or args.max_num_seqs,
+        ],
+        sort_keys=True,
+    )
+    return BASELINE_CACHE_DIR / f"{hashlib.sha256(key.encode()).hexdigest()[:16]}.json"
+
+
+def baseline_runs(args: argparse.Namespace, log_dir: Path) -> tuple[list[list[int]], list[list[int]]]:
+    """The fixed-K baseline and a second run of it, from cache when possible.
+
+    Two savings, both aimed at the same thing -- a 27B engine at TP=4 takes
+    about three minutes to load and seconds to generate, so the cost of this
+    script is the number of processes it starts, not the work they do.
+
+    The floor comes from a second ``generate`` call in the same engine rather
+    than a second process, which removes one launch. That floor is tighter than
+    the cross-process one: it exercises scheduling and reduce-order
+    nondeterminism, but not allocator layout or worker init order. Tighter is
+    the conservative direction for judging a lane, but it can also turn real
+    reference noise into a lane failure, so ``--floor cross-process`` restores
+    the old two-process measurement for confirming a marginal verdict.
+
+    The result is then cached against the commit, so iterating on lanes without
+    touching the code starts one process instead of three.
+    """
+    cache = None if args.refresh_baseline else _baseline_cache_path(args)
+    if cache is not None and cache.exists():
+        try:
+            cached = json.loads(cache.read_text())
+            first, second = cached["baseline"], cached["second"]
+        except (OSError, ValueError, KeyError):
+            print(f"=== baseline cache at {cache} unreadable; re-measuring", flush=True)
+        else:
+            print(
+                f"\n=== baseline: reused from {cache} (same commit and configuration), "
+                "skipping two engine launches. Use --refresh-baseline to re-measure.",
+                flush=True,
+            )
+            return first, second
+
+    if args.floor == "cross-process":
+        first, _, _ = run_lane("baseline", args, log_dir)
+        second, _, _ = run_lane("baseline2", args, log_dir)
+        first, second = first[0], second[0]
+    else:
+        runs, _, _ = run_lane("baseline", args, log_dir, repeats=2)
+        first, second = runs
+
+    target = _baseline_cache_path(args)
+    if target is not None:
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(json.dumps({"baseline": first, "second": second}))
+            print(f"=== baseline: cached to {target}", flush=True)
+        except OSError as exc:
+            print(f"=== baseline: not cached ({exc})", flush=True)
+    else:
+        print("=== baseline: not cached (no commit to key on, or tracked files are modified)", flush=True)
+    return first, second
 
 
 def frozen_confidence(data_lines: list[str]) -> str | None:
@@ -359,6 +484,28 @@ def main() -> int:
     parser.add_argument("--engine-child", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--adaptive", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--graph", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--repeats", type=int, default=1, help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--floor",
+        choices=("in-process", "cross-process"),
+        default="in-process",
+        help=(
+            "How to measure the baseline's own noise. 'in-process' (default) generates twice "
+            "in one engine, which costs one launch instead of two; it exercises scheduling and "
+            "reduce-order nondeterminism but not allocator layout or worker init order, so it "
+            "reads no higher than the cross-process floor and can turn real reference noise "
+            "into a lane failure. Use 'cross-process' to confirm a marginal verdict."
+        ),
+    )
+    parser.add_argument(
+        "--refresh-baseline",
+        action="store_true",
+        help=(
+            "Re-measure the baseline instead of reusing the cached one. The cache is keyed on "
+            "the commit and the engine configuration and is skipped entirely when tracked files "
+            "are modified, so this is only needed to re-measure the same code."
+        ),
+    )
     parser.add_argument("--model", default=os.getenv("VLLM_TEST_QWEN36_MODEL"))
     parser.add_argument("--draft", default=os.getenv("VLLM_TEST_DSPARK_MODEL"))
     parser.add_argument(
@@ -411,11 +558,10 @@ def main() -> int:
     log_dir.mkdir(parents=True, exist_ok=True)
     print(f"Logs: {log_dir.resolve()}")
 
-    baseline, _, _ = run_lane("baseline", args, log_dir)
-
-    # The noise floor. Without it a mismatch at concurrency cannot be attributed
-    # to a lane, and a match cannot be told apart from luck.
-    second, _, _ = run_lane("baseline2", args, log_dir)
+    # The baseline carries its own noise floor: without one, a mismatch at
+    # concurrency cannot be attributed to a lane and a match cannot be told
+    # apart from luck.
+    baseline, second = baseline_runs(args, log_dir)
     floor_count, floor_earliest, floor_detail = divergence(second, baseline)
     print(f"\n=== noise floor (baseline vs baseline): {floor_detail}", flush=True)
     if floor_count:
@@ -429,7 +575,8 @@ def main() -> int:
     inconclusive = []
     for lane in args.lanes:
         try:
-            tokens, trimmed, frozen = run_lane(lane, args, log_dir)
+            runs, trimmed, frozen = run_lane(lane, args, log_dir)
+            tokens = runs[0]
         except Exception as exc:  # noqa: BLE001 - report every lane, fail at the end
             failures.append(f"{lane}: {exc}")
             continue
