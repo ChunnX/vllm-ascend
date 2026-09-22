@@ -155,6 +155,55 @@ vllm serve /实际路径/Qwen3.6-27B \
 manager 并打一条 warning**，而不是让引擎起不来——那是这条路径成为默认之前那些配置本来会
 得到的行为。显式设了 `VLLM_ASCEND_DSPARK_EAGER_UPSTREAM_AV=1` 则报错，因为那是点名要求。
 
+## 收益测量：对齐 PR 15098 的方式
+
+正确性用上面的整网门槛，收益用另一个脚本，因为判据不同：
+
+```bash
+export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3
+python examples/dspark_adaptive_verify_throughput.py
+```
+
+它复现 15098 那张表的形状（每个 draft 数一行，定长 TPS / 接受率 对 动态 TPS / 接受率 /
+加速比），并补了两件本地踩出来的事。
+
+### 三件从 15098 表里读出来的东西
+
+| | 说明 |
+| --- | --- |
+| **扫 draft 数** | 15098 的收益是 +12.1%（K=9）/ +6.9%（K=7）/ +2.1%（K=5）。裁剪只能在有东西可裁的地方赚钱，所以收益随 K 增长。**此前所有测量都固定在 K=7**，说明不了别的 K。 |
+| **判据是 TPS 不是 TPOT** | AV 拿「每步接受更少 token」换「每步更便宜」，controller 的目标函数就是单位成本的接受 token —— 那是吞吐。单请求延迟只量到这笔交易的一边。 |
+| **接受率是上下文** | 它在 15098 自己的数据里也是降的（4.10 → 4.01）。降是特性在工作；**降了而吞吐没涨**才是要担心的，那说明 cost table 高估了裁剪的收益。 |
+
+另外 15098 两边都跑在 Target FULL 下，所以脚本把 `--cudagraph-mode` 同时施加给两条 lane，
+比的是「Target FULL」对「Target FULL + Dynamics」，不是两种图配置。
+
+### 两件本地加的
+
+**输出长度用 `ignore_eos` 钉死。** 之前那组 specbench 里不开 AV 的那次多生成了 6.5% 的
+token、输出长 7%，和被测效应同一个量级 —— 跨输出长度比 TPS 是在比不同的活儿。钉死之后每
+个配置都精确发出 `concurrency × output_len` 个 token，TPS 就是纯时间比较。脚本会校验这一
+点，对不上直接报错而不是给出不可读的表。
+
+**重复跑在同一个引擎里。** 27B TP=4 加载约 3 分钟、生成几秒，所以每个进程加载一次、把同
+一份 workload 计时多遍。表里带 spread，**差值小于两条 lane 自身波动的会标 `?`** —— 之前
+1.3% 的结论就死在这上面（两次同类配置在 math 上差 5.9%）。
+
+### 还会检查特性真的生效了
+
+动态 lane 如果一条预算决策都没打，或者全程 `kept=100%`，脚本报错而不是给数字：那种情况下
+它校验的宽度和定长 lane 一样，吞吐相等是同义反复。这和整网门槛里「相等不是证据」同一条
+规矩。
+
+跑一个 draft 数、多跑几遍：
+
+```bash
+python examples/dspark_adaptive_verify_throughput.py -k 9 --repeats 5
+```
+
+默认 `--concurrency 16`（你的硬件上限）、`--output-len 256`、`--repeats 3`，6 个进程
+（3 个 K × 2 条 lane）约 30 分钟。
+
 ## 运行时日志
 
 两个 lane 的裁剪决策以 **warning** 打印，按步数聚合，无需调 DEBUG：
