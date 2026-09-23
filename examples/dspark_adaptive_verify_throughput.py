@@ -95,6 +95,10 @@ DRAFT_ACCEPT_RE = re.compile(r"Avg Draft acceptance rate: ([\d.]+)%")
 AV_LOG_TAG = "[DSPARK-EAGER-AV"
 GRAPH_FIELD_RE = re.compile(r"graph=([A-Z_=,0-9]+)")
 KEPT_RE = re.compile(r"kept=([\d.]+)%")
+# Occupancy actually reached. The workload is submitted in full and the engine
+# schedules up to max_num_seqs of it, so the batch should sit near capacity --
+# but that is an inference about the scheduler, and the log states it.
+REQS_RE = re.compile(r"mean reqs=([\d.]+)")
 # A 27B load at TP=4, plus a warmup and several timed repeats.
 CHILD_TIMEOUT_S = 3600
 
@@ -460,6 +464,7 @@ def run_config(k: int, max_num_seqs: int, adaptive: bool, args: argparse.Namespa
         "draft_accept": statistics.fmean(draft_accept) if draft_accept else None,
         "dispatch": dispatch,
         "kept": [float(m) for line in av_lines for m in KEPT_RE.findall(line)],
+        "occupancy": [float(m) for line in av_lines for m in REQS_RE.findall(line)],
         "log": str(log_path),
     }
     elapsed = time.monotonic() - started
@@ -498,7 +503,8 @@ def report(results: list[dict], args: argparse.Namespace) -> int:
     )
     header = (
         f"{'Draft':>5} | {'Cap':>4} | {'Reqs':>5} | {'Fixed TPS':>18} | {'Fixed Acc':>9} | "
-        f"{'Dynamics TPS':>18} | {'Dyn Acc':>9} | {'Kept':>13} | {'NoGraph':>7} | {'Acceleration':>13}"
+        f"{'Dynamics TPS':>18} | {'Dyn Acc':>9} | {'Occ':>5} | {'Kept':>13} | {'NoGraph':>7} | "
+        f"{'Acceleration':>13}"
     )
     print(header)
     print("-" * len(header))
@@ -517,6 +523,8 @@ def report(results: list[dict], args: argparse.Namespace) -> int:
         # and crude is the right level for three repeats.
         decisive = abs(d_mean - f_mean) > (f_spread + d_spread)
         verdicts.append(((k, cap), gain, decisive))
+        occupancy = dyn.get("occupancy") or []
+        occ_text = f"{statistics.fmean(occupancy):.1f}" if occupancy else "n/a"
         kept = dyn["kept"]
         kept_text = f"{min(kept):.0f}-{max(kept):.0f}%" if kept else "n/a"
         total = sum(dyn["dispatch"].values())
@@ -525,7 +533,7 @@ def report(results: list[dict], args: argparse.Namespace) -> int:
             f"{k:>5} | {cap:>4} | {requests_for(cap, args):>5} | "
             f"{f_mean:>10.1f} +/-{f_spread:>5.1f} | {_fmt(fixed['accept']):>9} | "
             f"{d_mean:>10.1f} +/-{d_spread:>5.1f} | {_fmt(dyn['accept']):>9} | "
-            f"{kept_text:>13} | {no_graph:>7} | {gain:>+11.1f}%{'' if decisive else ' ?'}"
+            f"{occ_text:>5} | {kept_text:>13} | {no_graph:>7} | {gain:>+11.1f}%{'' if decisive else ' ?'}"
         )
     for row in unpaired:
         # Ran without its counterpart: a throughput number on its own is not an
@@ -535,6 +543,13 @@ def report(results: list[dict], args: argparse.Namespace) -> int:
             f"{row['lane']} alone: TPS {statistics.fmean(row['tps']):.1f} +/-{_spread(row['tps']):.1f}, "
             f"acceptance {_fmt(row['accept'])} -- no counterpart, so no acceleration"
         )
+    print(
+        "\nOcc is the mean number of requests actually in the batch. The whole workload is "
+        "submitted at once, so the engine should hold it near capacity; a figure well below "
+        "capacity means the measurement is not the saturated one it is meant to be. Note that a "
+        "saturated batch is the most favourable regime for this feature -- the cost table's spread "
+        "grows with the batch -- so a result here does not transfer to a lightly loaded server."
+    )
     print(
         "\nKept near 100% means the controller decided not to trim, which is a correct decision "
         "about a flat cost table, not a fault -- but it also means the feature is paying its "
