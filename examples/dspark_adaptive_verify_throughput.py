@@ -196,7 +196,21 @@ def load_dataset(path: str) -> list[str]:
     return prompts
 
 
-def build_prompts(count: int, dataset: str | None = None) -> list[str]:
+def _stride(pool: list[str], count: int) -> list[str]:
+    """`count` items spread evenly through `pool`, cycling if it is too small.
+
+    Evenly spaced rather than the first N: a 500-request workload out of Dolly's
+    15k records would otherwise be whatever sits at the top of the file, and in
+    an instruction set that is often one category -- which would set the
+    acceptance rate, and so the result, by accident.
+    """
+    if len(pool) >= count:
+        step = len(pool) / count
+        return [pool[int(i * step)] for i in range(count)]
+    return [pool[i % len(pool)] for i in range(count)]
+
+
+def build_prompts(count: int, dataset: str | None = None, fits=None) -> list[str]:
     """The workload: `count` prompts, deterministic and identical across lanes.
 
     Synthetic prompts are the fallback, not the intent. They are real text
@@ -207,17 +221,21 @@ def build_prompts(count: int, dataset: str | None = None) -> list[str]:
     """
     count = max(1, count)
     pool = load_dataset(dataset) if dataset else [f"{p} (variation {i})" for i, p in enumerate(_BASE_PROMPTS)]
-    if len(pool) >= count:
-        # Evenly spaced through the file, not the first N. A 32-request workload
-        # out of Dolly's 15k records would otherwise be whatever sits at the top
-        # of the file, and in an instruction set that is often one category --
-        # which would decide the acceptance rate, and so the result, by
-        # accident. Deterministic either way, so both lanes see the same
-        # workload.
-        step = len(pool) / count
-        return [pool[int(i * step)] for i in range(count)]
-    # Cycle when the file is smaller than the workload.
-    return [pool[i % len(pool)] for i in range(count)]
+    if fits is not None:
+        # ignore_eos stops a request ending early, but it cannot make room: a
+        # prompt within max_model_len of the limit emits fewer than output_len
+        # tokens and the totals no longer match. Dolly's long-context rows do
+        # exactly that. Over-sample, drop what cannot fit, then take the
+        # workload -- deterministic, so both lanes get the identical set.
+        candidates = _stride(pool, min(len(pool), count * 4))
+        kept = [prompt for prompt in candidates if fits(prompt)]
+        if len(kept) < count:
+            raise ValueError(
+                f"only {len(kept)} of {len(candidates)} sampled prompts leave room for "
+                f"{count} full-length outputs; raise --max-model-len or lower --output-len"
+            )
+        pool = kept
+    return _stride(pool, count)
 
 
 def draft_block_size(draft: str) -> int | None:
@@ -273,7 +291,15 @@ def run_engine(args: argparse.Namespace) -> int:
         },
     )
 
-    prompts = build_prompts(args.num_requests, args.dataset)
+    # Filter against the real tokenizer, not a character heuristic: what
+    # matters is whether prompt + output_len fits max_model_len.
+    tokenizer = llm.get_tokenizer()
+    room = args.max_model_len - args.output_len
+    prompts = build_prompts(
+        args.num_requests,
+        args.dataset,
+        fits=lambda text: len(tokenizer(text).input_ids) <= room,
+    )
     # ignore_eos is the point: every configuration then emits exactly
     # concurrency x output_len tokens, so TPS compares time and nothing else.
     params = SamplingParams(temperature=0, max_tokens=args.output_len, ignore_eos=True, seed=17)
@@ -364,9 +390,19 @@ def run_config(k: int, max_num_seqs: int, adaptive: bool, args: argparse.Namespa
     print(f"\n=== K={k} max_num_seqs={max_num_seqs} {lane}: starting, log -> {log_path}", flush=True)
     started = time.monotonic()
     with log_path.open("w") as stream:
-        result = subprocess.run(
-            cmd, env=child_env(), text=True, stdout=stream, stderr=subprocess.STDOUT, timeout=CHILD_TIMEOUT_S
-        )
+        try:
+            result = subprocess.run(
+                cmd, env=child_env(), text=True, stdout=stream, stderr=subprocess.STDOUT, timeout=CHILD_TIMEOUT_S
+            )
+        except subprocess.TimeoutExpired as exc:
+            # A worker that dies during startup can leave the parent process
+            # alive, so the timeout is reached with the real error sitting in
+            # the log an hour earlier. Report that instead of the timeout.
+            tail = log_path.read_text(errors="replace")[-12000:]
+            raise RuntimeError(
+                f"K={k} b={max_num_seqs} {lane} did not finish within {CHILD_TIMEOUT_S:.0f}s; "
+                f"tail of {log_path}:\n{tail}"
+            ) from exc
     log = log_path.read_text(errors="replace")
     if result.returncode != 0:
         raise RuntimeError(

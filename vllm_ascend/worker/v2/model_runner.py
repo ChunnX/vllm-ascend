@@ -1002,7 +1002,12 @@ def graph_manager_wrapper(model_runner):
                 # picks between the two on exactly this predicate); where
                 # splitting really was configured, leave the mode alone.
                 compilation = vllm_config.compilation_config
-                if not compilation.splitting_ops_contain_attention():
+                if envs_ascend.VLLM_ASCEND_DSPARK_AV_KEEP_PIECEWISE:
+                    logger.warning(
+                        "[DSPARK-AV] keeping FULL_AND_PIECEWISE by request; the ragged mode does "
+                        "not need the piecewise family, so this is for bisecting only."
+                    )
+                elif not compilation.splitting_ops_contain_attention():
                     cudagraph_mode = CUDAGraphMode.FULL_DECODE_ONLY
                     compilation.cudagraph_mode = cudagraph_mode
                     logger.warning(
