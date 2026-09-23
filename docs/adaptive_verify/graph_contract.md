@@ -1002,8 +1002,27 @@ dynamics 会因为一个与动态校验无关的原因显得更快——**把收
 457 对 441 那次 `KEEP_PIECEWISE` 是 0、降级生效,两边混合批都走 eager,**那个 +3.6% 是干净
 的**。所以默认改回 0:开 AV 不得改变引擎对非投机批的处理。
 
-想让混合批走 piecewise 是可以的,但要**给两条 lane 都配** `--cudagraph-mode
-FULL_AND_PIECEWISE`,那是配置选择,不是特性收益。
+### 项目决定:不使用 piecewise(2026-09-23)
+
+技术上可以给两条 lane 都配 `FULL_AND_PIECEWISE` 让混合批落到 piecewise,但**本项目不这么
+做**:那要多捕获一整族图,显存压力在 4×910B4 32G 上不可接受。
+
+所以配置定死为 `FULL_DECODE_ONLY`,**混合批落 eager**,开关 AV 两边一致。
+
+这同时确定了那 9% 的性质。此前以为是「piecewise → eager」,**错的**——崩溃那版配的也是
+`FULL_DECODE_ONLY`,piecewise 从头到尾没参与过。真实的账是:
+
+| | 混合批去哪 | TPS |
+| --- | --- | --- |
+| 崩溃版(无拒绝逻辑) | **ragged FULL 图(错误地)** | ~500 |
+| 现在 | **eager** | 457 |
+
+**是 FULL → eager,不是 piecewise → eager。** 那 9% 全部是把混合批请出它不该进的图的代价,
+在不用 piecewise 的前提下无法靠配置回收。
+
+唯一的回收途径是文章列为**将来方向**的那条——「后续若要优化混部……把 prefill 和 decode 拆成
+独立 microbatch,让 decode 子批继续回放 ragged FULL」。注意措辞是「后续若要」:**参考实现
+自己也没有做**,所以那不是抄作业,是新工作。
 
 **「只拒绝 FULL」这一半仍然保留**:配置里有 piecewise 就用它,没有就落 eager——和关 AV 时
 一致。这条改动不再决定任何事,它只是不越权。
