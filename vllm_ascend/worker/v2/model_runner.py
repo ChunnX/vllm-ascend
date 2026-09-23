@@ -928,6 +928,30 @@ class NPUModelRunner(GPUModelRunner):
 
         if num_padding_reqs == 0:
             if num_padding_tokens > 0:
+                if num_reqs_padded + 1 > self.max_num_reqs:
+                    # The padding tokens need a request row to live in, and
+                    # every slot is occupied. query_start_loc is allocated
+                    # max_num_reqs + 2 wide so it would take the row, but
+                    # seq_lens and the rest are exactly max_num_reqs, so the
+                    # batch would go on with its query boundaries describing one
+                    # more request than its lengths do -- which surfaces several
+                    # frames later as a tensor size mismatch of n against n+1.
+                    #
+                    # Reachable only under the ragged mode, which is what lets a
+                    # batch that is not uniform match a captured decode graph. A
+                    # trimmed batch holding every slot lands here whenever its
+                    # token count is not exactly a capture size.
+                    #
+                    # The fix is the request axis one row wider than the service
+                    # maximum (the article's B_fia = B_live + 1); only the
+                    # query_start_loc half of that is in place today.
+                    raise RuntimeError(
+                        f"FIA padding needs a {num_reqs_padded + 1}th request row for "
+                        f"{num_padding_tokens} padding token(s) but max_num_seqs is "
+                        f"{self.max_num_reqs}, so only query_start_loc could hold it. Run with "
+                        "VLLM_ASCEND_DSPARK_AV_GRAPH=uniform, which keeps batches like this out "
+                        "of the full-graph path, until the per-request buffers are one row wider."
+                    )
                 query_start_loc_np[num_reqs + 1] = num_tokens_padded
                 num_reqs_padded += 1
             return query_start_loc_np, num_reqs_padded

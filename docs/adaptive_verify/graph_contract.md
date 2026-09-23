@@ -713,6 +713,61 @@ stream——作为 eager 预演这个取舍是对的，作为出货路径它就�
 累加「变化过的步数」。`conf_moved=50/50` 表示 op 每步都在重算；`conf_moved=0/50` 表示
 buffer 冻结。这比指纹精确（逐步，不抽样），而且不需要任何同步。
 
+## 已知缺陷:FIA padding 在请求槽位全满时无处可放(2026-09-23)
+
+设备上 dynamics lane 推了约 107/500 条请求后崩:
+
+```txt
+RuntimeError: Worker failed with error 'The size of tensor a (16) must match
+the size of tensor b (17) at non-singleton dimension 0'
+```
+
+现场:`num_running_reqs=16`(= `max_num_seqs`)、`total_num_scheduled_tokens=127`、
+15 个 spec decode(每个 8 token)+ 1 个新请求 prefill(7 token)。
+
+### 为什么是 17
+
+`_pad_adaptive_query_start_loc_for_fia` 在**没有 padding 请求、只有 padding token** 时:
+
+```python
+if num_padding_reqs == 0:
+    if num_padding_tokens > 0:
+        query_start_loc_np[num_reqs + 1] = num_tokens_padded
+        num_reqs_padded += 1          # 16 -> 17
+```
+
+而缓冲宽度是不对称的:`query_start_loc` 是 **`max_num_reqs + 2`**(放得下第 17 行),
+`seq_lens` 等**只有 `max_num_reqs`**。于是 query 边界描述 17 个请求、长度只有 16 个,
+几帧之后炸成 `16 vs 17`。
+
+**这正是文章 `B_fia = B_live(+1)`(比服务上限宽一行)要解决的事。** 清单第 2 项当时记作
+「15098 已做」——**只做了 `query_start_loc` 那一半**,其余每请求缓冲没有跟着加宽。
+
+### 触发条件,以及它比看上去普遍
+
+三件事同时成立:
+
+1. `use_fia`(`VLLM_ASCEND_ENABLE_DSPARK_FIA_SINK=1`)
+2. `num_reqs == max_num_seqs`——槽位全满,所以没有 padding 请求可用
+3. token 数不落在捕获尺寸上,所以需要 padding token
+
+**和 prefill 无关**:任何在槽位全满时被裁剪、token 数又不在捕获边界上的批都会踩到。这一次
+prefill 只是让 token 数恰好是 127。
+
+只在 **ragged** 模式下可达——uniform 模式里不 uniform 的批根本进不了 FULL 路径。这也解释了
+为什么之前的测试都没撞上:早先的 benchmark 没开 FIA sink,而开了 FIA 的 serve 占用率只有
+2~6,从来没满过 16。
+
+### 现状
+
+`_pad_adaptive_query_start_loc_for_fia` 里加了显式检查,直接报出原因和绕法,而不是让它在
+几帧之外变成一个看不懂的 tensor 尺寸不匹配。**这是护栏,不是修复。**
+
+绕法:`VLLM_ASCEND_DSPARK_AV_GRAPH=uniform`,代价是裁剪批回落 PIECEWISE。
+
+真正的修复是把每请求缓冲加宽一行,使 padding 行始终存在。那动的是上游共享的
+`input_batch.py`,要在设备上验。
+
 ### 一个所有 MATCH 都排除不了的失效模式
 
 隔壁分支的 `f9542068c` 记录了这个:`compute_confidence` 被一个 Python
