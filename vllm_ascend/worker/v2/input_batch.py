@@ -50,10 +50,26 @@ class AscendInputBuffers(InputBuffers):
             device=device,
         )
 
+        # That padding is a request row, not only a query boundary. When a graph
+        # holds more tokens than the batch, full attention takes a dummy row to
+        # carry the difference -- B_fia = B_live + 1 -- and with every slot live
+        # B_live is max_num_reqs, so the row is the (max_num_reqs + 1)th. Only
+        # query_start_loc had been widened for it, so a saturated batch went on
+        # with its query boundaries describing one more request than its lengths
+        # did, and that surfaced several frames later as a size mismatch of
+        # max_num_reqs against max_num_reqs + 1.
+        del self.seq_lens
+        self.seq_lens: torch.Tensor = torch.zeros(max_num_reqs + 1, dtype=torch.int32, device=device)
+        if getattr(self, "dcp_local_seq_lens", None) is not None:
+            del self.dcp_local_seq_lens
+            self.dcp_local_seq_lens: torch.Tensor = torch.zeros(
+                max_num_reqs + 1, dtype=torch.int32, device=device
+            )
+
         # Create seq_lens_cpu and seq_lens_np.
         # npu's attention backend still needs seq_lens on CPU side.
         self.seq_lens_cpu: torch.Tensor = torch.zeros(
-            max_num_reqs,
+            max_num_reqs + 1,
             dtype=torch.int32,
             device="cpu",
         )

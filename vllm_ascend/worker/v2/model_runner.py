@@ -570,6 +570,15 @@ class NPUModelRunner(GPUModelRunner):
             self.input_buffers.positions,
             self.input_buffers.seq_lens,
         )
+        if num_reqs_padded > num_reqs:
+            # Padding rows must be inert. prepare_pos_seq_lens writes only the
+            # live rows, so a padding row otherwise keeps whatever length the
+            # request that last occupied that slot left behind, and attention
+            # reads a real sequence for a row that only carries padding tokens.
+            # The host mirror is cleared from num_reqs_padded below, which
+            # leaves exactly these rows, and the device side had nothing.
+            self.input_buffers.seq_lens[num_reqs:num_reqs_padded].zero_()
+            self.input_buffers.seq_lens_np[num_reqs:num_reqs_padded] = 0
         seq_lens = self.input_buffers.seq_lens[:num_reqs_padded]
         if adaptive_verification_active and (self.use_fia or self._av_reads_back_exact_bounds()):
             self.input_buffers.seq_lens_np[:num_reqs] = seq_lens[:num_reqs].cpu().numpy()
@@ -928,31 +937,18 @@ class NPUModelRunner(GPUModelRunner):
 
         if num_padding_reqs == 0:
             if num_padding_tokens > 0:
-                if num_reqs_padded + 1 > self.max_num_reqs:
-                    # The padding tokens need a request row to live in, and
-                    # every slot is occupied. query_start_loc is allocated
-                    # max_num_reqs + 2 wide so it would take the row, but
-                    # seq_lens and the rest are exactly max_num_reqs, so the
-                    # batch would go on with its query boundaries describing one
-                    # more request than its lengths do -- which surfaces several
-                    # frames later as a tensor size mismatch of n against n+1.
-                    #
-                    # Reachable only under the ragged mode, which is what lets a
-                    # batch that is not uniform match a captured decode graph. A
-                    # trimmed batch holding every slot lands here whenever its
-                    # token count is not exactly a capture size.
-                    #
-                    # The fix is the request axis one row wider than the service
-                    # maximum (the article's B_fia = B_live + 1); only the
-                    # query_start_loc half of that is in place today.
+                if num_reqs_padded + 1 > self.max_num_reqs + 1:
+                    # The per-request buffers are max_num_reqs + 1 wide so the
+                    # dummy row that carries token padding always exists. This
+                    # would mean asking for a second one, which no descriptor
+                    # should produce: B_fia is at most B_live + 1, and B_live is
+                    # bounded by max_num_reqs.
                     raise RuntimeError(
-                        f"FIA padding needs a {num_reqs_padded + 1}th request row for "
-                        f"{num_padding_tokens} padding token(s) but max_num_seqs is "
-                        f"{self.max_num_reqs}, so only query_start_loc could hold it. "
+                        f"FIA padding wants request row {num_reqs_padded + 1} for "
+                        f"{num_padding_tokens} padding token(s), past the max_num_reqs + 1 "
+                        f"({self.max_num_reqs + 1}) the buffers hold. "
                         f"num_reqs={num_reqs} num_tokens_padded={num_tokens_padded} "
-                        f"last_loc={last_loc}. Run with VLLM_ASCEND_DSPARK_AV_GRAPH=uniform, "
-                        "which keeps batches like this out of the full-graph path, until the "
-                        "per-request buffers are one row wider."
+                        f"last_loc={last_loc}"
                     )
                 query_start_loc_np[num_reqs + 1] = num_tokens_padded
                 num_reqs_padded += 1

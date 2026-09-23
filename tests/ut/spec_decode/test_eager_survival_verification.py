@@ -652,6 +652,70 @@ def test_zero_draft_decode_preserves_previous_accepted_selector(monkeypatch, pol
     np.testing.assert_array_equal(metadata.num_decode_draft_tokens_cpu.numpy(), [0, 1, -1])
 
 
+def _fia_padding():
+    """Extract the adaptive FIA padding method and bind it to a stub runner."""
+    import ast
+
+    path = ROOT / "vllm_ascend/worker/v2/model_runner.py"
+    tree = ast.parse(path.read_text())
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef))
+    fn = next(
+        n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "_pad_adaptive_query_start_loc_for_fia"
+    )
+    module = ast.Module(body=[fn], type_ignores=[])
+    ast.fix_missing_locations(module)
+    namespace = {"np": np}
+    exec(compile(module, str(path), "exec"), namespace)
+    return namespace["_pad_adaptive_query_start_loc_for_fia"]
+
+
+def test_fia_padding_row_exists_when_every_slot_is_live():
+    """The dummy row that carries token padding is the (max_num_reqs + 1)th.
+
+    With every request slot live there is no padding *request* to spread the
+    padding tokens across, so they need a row of their own -- B_fia = B_live + 1
+    with B_live at its maximum. The per-request buffers are allocated one wider
+    for exactly this row; before that they were not, and a saturated trimmed
+    batch went on with its query boundaries describing one more request than its
+    lengths did.
+    """
+    pad = _fia_padding()
+    runner = SimpleNamespace(max_num_reqs=16)
+    boundaries = np.zeros(18, dtype=np.int32)
+    boundaries[:17] = np.arange(0, 17) * 7  # 16 live requests, 112 tokens
+    out, padded = pad(runner, 120, 16, 16, boundaries)
+    assert padded == 17, "the padding tokens need their own row"
+    assert out[16] == 112, "the live boundary is untouched"
+    assert out[17] == 120, "and the dummy row absorbs the difference"
+
+    # Exactly on a capture size: no padding tokens, so no extra row.
+    out, padded = pad(runner, 112, 16, 16, boundaries.copy())
+    assert padded == 16
+
+
+def test_fia_padding_spreads_across_the_rows_the_descriptor_left():
+    pad = _fia_padding()
+    runner = SimpleNamespace(max_num_reqs=16)
+    boundaries = np.zeros(18, dtype=np.int32)
+    boundaries[:5] = np.arange(0, 5) * 10  # 4 live requests, 40 tokens
+    out, padded = pad(runner, 48, 8, 4, boundaries)
+    assert padded == 8, "pads out to the descriptor's request count"
+    # Eight tokens spread over four padding rows, two each.
+    assert list(out[5:9]) == [42, 44, 46, 48], list(out[5:9])
+
+
+def test_fia_padding_refuses_a_row_the_buffers_do_not_have():
+    # Not reachable from a descriptor -- B_fia cannot exceed B_live + 1 -- but
+    # if it ever is, failing here names the cause instead of surfacing as a
+    # tensor size mismatch several frames away.
+    pad = _fia_padding()
+    runner = SimpleNamespace(max_num_reqs=4)
+    boundaries = np.zeros(8, dtype=np.int32)
+    boundaries[:6] = np.arange(0, 6) * 7
+    with pytest.raises(RuntimeError, match="past the max_num_reqs"):
+        pad(runner, 60, 5, 5, boundaries)
+
+
 def _graph_factory(monkeypatch, mode, keep_piecewise=False):
     """Extract graph_manager_wrapper and run it against a stubbed graph mode."""
     import ast

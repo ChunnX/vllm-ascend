@@ -743,63 +743,51 @@ if num_padding_reqs == 0:
 **这正是文章 `B_fia = B_live(+1)`(比服务上限宽一行)要解决的事。** 清单第 2 项当时记作
 「15098 已做」——**只做了 `query_start_loc` 那一半**,其余每请求缓冲没有跟着加宽。
 
-### 触发条件
+### 两种 padding,互相独立
 
-```python
-use_fia and adaptive_verification_manager and batch_desc.cg_mode == FULL
-and num_padding_reqs == 0 and num_padding_tokens > 0
-and num_reqs_padded + 1 > max_num_reqs
-```
+| | 什么时候出现 |
+| --- | --- |
+| **请求 padding**(`num_padding_reqs`) | 描述符的请求行数 > 活跃请求数。**槽位满了就没有** |
+| **token padding**(`num_padding_tokens`) | 捕获图的 token 数 > 批的实际 token 数。**和槽位满不满无关** |
 
-`batch_desc.num_reqs` 是 `min(num_tokens_padded, max_num_seqs)`,所以中间那两条合起来就是
-**批正好占满所有请求槽位**;最后一条随之成立。再加上 token 数不落在捕获尺寸上。
+文章说「有 token padding 时 `B_fia = B_live + 1`」,直觉上会以为槽位满了就没有 padding——
+那是把两者混为一谈了。token padding 来自**裁剪**:16 个请求、K=7,不裁就是 `16×8 = 128`,
+正好是捕获尺寸;一裁变成比如 112,dispatcher 挑最小的 ≥112 的桶(120),于是有 8 个 padding
+token,却**一个 padding 请求都没有**。
 
-**和 prefill 无关**,这次那个 prefill 只是让 token 数恰好是 127;任何槽位全满、被裁剪、
-token 数不在捕获边界上的批都满足。只在 **ragged** 下可达——uniform 模式里不 uniform 的批
-进不了 FULL 路径。
+**槽位满恰恰是让 token padding 无处可放的原因。** 所以 `B_live = B_max` 时仍然需要第
+`B_max + 1` 行,缓冲必须按 `max_num_reqs + 1` 分配。
 
-### 勘误:`use_fia` 不是 fia_sink 的开关
+### 为什么 bs=4 那轮没踩到
 
-此前这里写「早先的 benchmark 没开 FIA sink 所以没撞上」。**错的。**
+2026-09-21 那轮 `mean reqs=3.40`、`max_num_seqs=4`:**多数步只有 3 个活跃请求**,于是
+`batch_desc.num_reqs = 4 > 3`,有 1 个 padding 请求,走的是「均分到 padding 行」那一支,
+根本不会 +1。
 
-```python
-# Only target-model layers determine whether FIA is in use.
-draft_layer_names = speculator.draft_attn_layer_names
-self.use_fia = any(
-    (group.backend is AscendAttentionBackend or group.backend is AscendMLABackend)
-    and any(layer_name not in draft_layer_names for layer_name in group.layer_names)
-    ...
-)
-```
+只有**正好 4 个活跃 + 恰好有 token padding** 的步才触发。那 5 步里 `trimmed_steps=4/5`,
+4 请求的那步很可能正是没裁的那一个(32 token 正好是捕获尺寸,无 token padding)。
 
-它问的是**目标模型**有没有层用 `AscendAttentionBackend` / `AscendMLABackend`,而且显式排除
-draft 层;而 `fia_sink_selected` 认 `use_non_causal`——按其注释,那是 draft-vs-target 的判
-别位,只路由**投机模型**的层。两者名字撞了,含义无关。
-`VLLM_ASCEND_ENABLE_DSPARK_FIA_SINK` 不改变 `use_fia`,它对 Qwen3.6-27B 一直是 True。
+**短跑里是巧合躲过,长跑里必然撞上**——这次 500 条请求跑了几千步。这比此前那条已被推翻的
+FIA 解释合理,不过仍是推断:直接证据要等护栏打出的 `num_reqs / num_tokens_padded / last_loc`。
 
-### 「为什么之前没发生」目前没有答案
+### 修复(2026-09-23)
 
-这条勘误把原来的解释一起推翻了。按上面的条件推，2026-09-21 的 bs=4 ragged 那轮
-（`mean reqs=3.40`、`max_num_seqs=4`、`kept=73.1%`、`graph=FULL=5`）只要某一步正好 4 个
-请求、token 数又不在捕获边界上，就应该踩到——**但它通过了**。
+按文章 §3.4.4 做了三件事:
 
-所以要么上面还有一条前提是错的，要么两次之间另有差别。唯一能指出的差别是这次传了
-`--max-num-batched-tokens 4096`，它改变分块 prefill 的行为、从而改变批多久满一次，但这是
-猜测，没有验证。
+1. **每请求缓冲加宽一行。** `AscendInputBuffers` 早就为这件事把 `query_start_loc` 加宽到
+   `max_num_reqs + 2`(注释直接指向 `_pad_query_start_loc_for_fia`),但 `seq_lens`、
+   `seq_lens_cpu/np`、`dcp_local_seq_lens` 都还是 `max_num_reqs`。现在都是 `+1`,dummy 行
+   始终存在。
+2. **padding 行置为惰性。** `prepare_pos_seq_lens` 只写活跃行,所以 padding 行会留着上一个
+   占用该槽位的请求的长度,full attention 会把它当成真实序列读。现在显式把
+   `[num_reqs, num_reqs_padded)` 的 device 和 host 两侧都清零——这是文章说的「零长度、
+   无效状态索引」,清单第 4 项当初只看到 numpy 尾部清零就记成了「已在树上」,和第 2 项同一个
+   错误。
+3. **护栏保留但降级。** 现在要求第 `max_num_reqs + 2` 行才会触发,而 `B_fia ≤ B_live + 1
+   ≤ B_max + 1`,所以它不该再发生;真发生了就是描述符和缓冲又对不上了。
 
-**在搞清楚之前，不要把先前 bs=4 的 MATCH 当成"这条路径已经验过"。** 下一步是在护栏里把
-触发时的 `num_reqs / num_tokens / batch_desc` 打出来，让下一次复现自己说明是哪一条前提不
-成立。
-
-### 现状
-
-`_pad_adaptive_query_start_loc_for_fia` 里加了显式检查,直接报出原因和绕法,而不是让它在
-几帧之外变成一个看不懂的 tensor 尺寸不匹配。**这是护栏,不是修复。**
-
-绕法:`VLLM_ASCEND_DSPARK_AV_GRAPH=uniform`,代价是裁剪批回落 PIECEWISE。
-
-真正的修复是把每请求缓冲加宽一行,使 padding 行始终存在。那动的是上游共享的
-`input_batch.py`,要在设备上验。
+三条 CPU 用例覆盖:槽位全满 + token padding 得到第 17 行、正好落在捕获尺寸上不加行、
+有 padding 请求时按均分走。
 
 ### 一个所有 MATCH 都排除不了的失效模式
 
