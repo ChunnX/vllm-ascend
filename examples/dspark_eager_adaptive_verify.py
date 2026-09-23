@@ -130,10 +130,17 @@ def child_env(lane: str, max_model_len: int) -> dict[str, str]:
     # the thing we are trying to tell apart from a real one.
     env.setdefault(PROFILE_CONTEXT_ENV, str(max_model_len))
     env["VLLM_USE_V2_MODEL_RUNNER"] = "1"
+    # A gate must compile what it checks. The cache key does not capture
+    # everything that decides the compiled graph -- the adaptive path rewrites
+    # cudagraph_mode after the configuration is settled -- so a lane can pick up
+    # an artifact built for a different one, which the graph compiler reports as
+    # an unpack-count mismatch rather than a cache miss. The throughput
+    # benchmark and the deployed serve configuration both set this.
     # A TP=4 engine spawns worker processes; the default fork start method
     # inherits the launcher's torch thread pool and aborts worker init with
     # "Invalid thread pool!". Spawn each worker fresh, and use the NPU allocator
     # and HCCL buffer settings the working four-card runs use.
+    env["VLLM_DISABLE_COMPILE_CACHE"] = "1"
     env["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
     env.setdefault("PYTORCH_NPU_ALLOC_CONF", "expandable_segments:True")
     env.setdefault("HCCL_BUFFSIZE", "2048")

@@ -653,6 +653,126 @@ def test_zero_draft_decode_preserves_previous_accepted_selector(monkeypatch, pol
     np.testing.assert_array_equal(metadata.num_decode_draft_tokens_cpu.numpy(), [0, 1, -1])
 
 
+def _engine_env_keys(relative: str) -> tuple[set[str], set[str]]:
+    """Environment keys a script's child_env sets, and the ones it clears."""
+    import ast
+
+    tree = ast.parse((ROOT / relative).read_text())
+    # One script writes these keys as literals and the other through module
+    # constants, so resolve the constants or the comparison reports a
+    # difference that is only spelling.
+    constants: dict[str, str] = {}
+    groups: dict[str, list[str]] = {}
+    for node in tree.body:
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if not isinstance(target, ast.Name):
+            continue
+        if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+            constants[target.id] = node.value.value
+        elif isinstance(node.value, ast.Tuple):
+            names = [
+                constants[e.id] if isinstance(e, ast.Name) and e.id in constants else e.value
+                for e in node.value.elts
+                if (isinstance(e, ast.Constant) and isinstance(e.value, str))
+                or (isinstance(e, ast.Name) and e.id in constants)
+            ]
+            if names:
+                groups[target.id] = names
+
+    def literals_in(node) -> list[str]:
+        """String keys in a loop's iterable, whether written out or named."""
+        if isinstance(node, ast.Name):
+            return groups.get(node.id, [])
+        if isinstance(node, (ast.Tuple, ast.List)):
+            out = []
+            for element in node.elts:
+                key = None
+                if isinstance(element, ast.Constant) and isinstance(element.value, str):
+                    key = element.value
+                elif isinstance(element, ast.Name):
+                    key = constants.get(element.id)
+                if key is not None:
+                    out.append(key)
+            return out
+        return []
+
+    def key_of(node) -> str | None:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.Name):
+            return constants.get(node.id)
+        return None
+
+    fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "child_env")
+    keys: set[str] = set()
+    cleared: set[str] = set()
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Subscript) and getattr(target.value, "id", None) == "env":
+                    key = key_of(target.slice)
+                    if key is not None:
+                        keys.add(key)
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "setdefault"
+            and getattr(node.func.value, "id", None) == "env"
+            and node.args
+        ):
+            key = key_of(node.args[0])
+            if key is not None:
+                keys.add(key)
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "pop"
+            and getattr(node.func.value, "id", None) == "env"
+            and node.args
+        ):
+            # A key a script deliberately clears is a lane knob, not engine
+            # setup -- the benchmark clears exactly the ones the gate sets per
+            # lane, so this is what separates the two kinds.
+            key = key_of(node.args[0])
+            if key is not None:
+                cleared.add(key)
+        elif isinstance(node, ast.For) and any(
+            isinstance(inner, ast.Call)
+            and isinstance(inner.func, ast.Attribute)
+            and inner.func.attr == "pop"
+            and getattr(inner.func.value, "id", None) == "env"
+            for inner in ast.walk(node)
+        ):
+            # `for key in (...): env.pop(key, None)` -- the keys are on the
+            # iterable, not on the call.
+            cleared.update(literals_in(node.iter))
+    return keys, cleared
+
+
+def test_both_scripts_build_the_same_engine():
+    """The gate and the benchmark must not drift apart in engine setup.
+
+    They construct engines independently, so an alignment made in one silently
+    does not apply to the other. That happened with the compile cache: the
+    benchmark disabled it after a stale artifact crashed a run, the gate did
+    not, and the same crash arrived there days later. Comparing the literal
+    keys means the next addition has to be made in both or fail here.
+    """
+    gate_set, _ = _engine_env_keys("examples/dspark_eager_adaptive_verify.py")
+    benchmark_set, lane_knobs = _engine_env_keys("examples/dspark_adaptive_verify_throughput.py")
+    gate = gate_set - lane_knobs
+    benchmark = benchmark_set - lane_knobs
+    assert gate, "no engine env found in the gate script"
+    assert lane_knobs, "no lane knobs found, so the two kinds cannot be told apart"
+    assert gate == benchmark, (
+        f"only in the gate: {sorted(gate - benchmark)}; only in the benchmark: {sorted(benchmark - gate)}"
+    )
+    # The one that caused it, named so a future removal is deliberate.
+    assert "VLLM_DISABLE_COMPILE_CACHE" in gate
+
+
 def test_every_per_request_buffer_has_the_padding_row():
     """The dummy row must exist in all of them, not just the one that crashed.
 

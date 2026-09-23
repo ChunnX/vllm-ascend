@@ -360,8 +360,14 @@ def decode_spread(outputs) -> dict | None:
     }
 
 
-def child_env() -> dict[str, str]:
+def child_env(max_model_len: int) -> dict[str, str]:
     env = os.environ.copy()
+    # Price the cost table at the context this run actually uses. The upstream
+    # default profiles at 8192 tokens and attention cost grows with context, so
+    # profiling long while serving short inflates the fixed part of every
+    # measurement and flattens the gradient the controller decides on -- the
+    # table would then argue against trimming for a reason the run never sees.
+    env.setdefault("VLLM_ADAPTIVE_VERIFICATION_PROFILE_CONTEXT_LEN", str(max_model_len))
     env["VLLM_USE_V2_MODEL_RUNNER"] = "1"
     # A benchmark must compile what it measures. The cache key does not capture
     # everything that decides the compiled graph -- the adaptive path rewrites
@@ -445,7 +451,12 @@ def run_config(
     with log_path.open("w") as stream:
         try:
             result = subprocess.run(
-                cmd, env=child_env(), text=True, stdout=stream, stderr=subprocess.STDOUT, timeout=CHILD_TIMEOUT_S
+                cmd,
+                env=child_env(args.max_model_len),
+                text=True,
+                stdout=stream,
+                stderr=subprocess.STDOUT,
+                timeout=CHILD_TIMEOUT_S,
             )
         except subprocess.TimeoutExpired as exc:
             # A worker that dies during startup can leave the parent process
