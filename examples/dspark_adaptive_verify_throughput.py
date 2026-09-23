@@ -490,9 +490,11 @@ def report(results: list[dict], args: argparse.Namespace) -> int:
     print(header)
     print("-" * len(header))
     verdicts = []
+    unpaired = []
     for k, cap in sorted({(r["k"], r["max_num_seqs"]) for r in results}):
         fixed, dyn = by_key.get((k, cap, "fixed")), by_key.get((k, cap, "dynamics"))
         if not (fixed and dyn):
+            unpaired.extend(r for r in (fixed, dyn) if r)
             continue
         f_mean, d_mean = statistics.fmean(fixed["tps"]), statistics.fmean(dyn["tps"])
         f_spread, d_spread = _spread(fixed["tps"]), _spread(dyn["tps"])
@@ -511,6 +513,14 @@ def report(results: list[dict], args: argparse.Namespace) -> int:
             f"{f_mean:>10.1f} +/-{f_spread:>5.1f} | {_fmt(fixed['accept']):>9} | "
             f"{d_mean:>10.1f} +/-{d_spread:>5.1f} | {_fmt(dyn['accept']):>9} | "
             f"{kept_text:>13} | {no_graph:>7} | {gain:>+11.1f}%{'' if decisive else ' ?'}"
+        )
+    for row in unpaired:
+        # Ran without its counterpart: a throughput number on its own is not an
+        # acceleration, so report it as a measurement and say what is missing.
+        print(
+            f"{row['k']:>5} | {row['max_num_seqs']:>4} | {requests_for(row['max_num_seqs'], args):>5} | "
+            f"{row['lane']} alone: TPS {statistics.fmean(row['tps']):.1f} +/-{_spread(row['tps']):.1f}, "
+            f"acceptance {_fmt(row['accept'])} -- no counterpart, so no acceleration"
         )
     print(
         "\nKept near 100% means the controller decided not to trim, which is a correct decision "
@@ -636,6 +646,17 @@ def main() -> int:
     )
     parser.add_argument("--prefix-caching", action="store_true")
     parser.add_argument("--async-scheduling", action="store_true")
+    parser.add_argument(
+        "--lanes",
+        nargs="+",
+        choices=("fixed", "dynamics"),
+        default=["fixed", "dynamics"],
+        help=(
+            "Which lanes to run. Both by default, since one alone cannot produce an acceleration. "
+            "Use one when bisecting a startup failure: it fails during engine construction, so the "
+            "other lane's twenty minutes buy nothing."
+        ),
+    )
     parser.add_argument("--engine-child", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--adaptive", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -664,8 +685,10 @@ def main() -> int:
     for k in args.num_speculative_tokens:
         for max_num_seqs in args.max_num_seqs:
             # Fixed first: if it fails, the dynamics number has nothing to compare to.
-            for adaptive in (False, True):
-                lane = "dynamics" if adaptive else "fixed"
+            for lane in ("fixed", "dynamics"):
+                if lane not in args.lanes:
+                    continue
+                adaptive = lane == "dynamics"
                 try:
                     results.append(run_config(k, max_num_seqs, adaptive, args, log_dir))
                 except Exception as exc:  # noqa: BLE001 - report every cell, fail at the end
