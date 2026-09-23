@@ -213,7 +213,11 @@ def run_lane(
     ]
     if not lane.startswith("baseline"):
         cmd.append("--adaptive")
-    if AV_GRAPH_ENV in env_for_lane:
+    # By the value, not by the key. Pinning every other lane to "none" made the
+    # key always present, so this once read as true for every lane -- including
+    # the baseline, which then ran with graphs instead of as the eager fixed-K
+    # reference the comparison is supposed to have.
+    if env_for_lane.get(AV_GRAPH_ENV, "none") != "none":
         cmd.append("--graph")
     print(f"\n=== lane {lane}: starting, log -> {log_path}", flush=True)
     started = time.monotonic()
