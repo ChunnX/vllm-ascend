@@ -5,6 +5,7 @@ Only vLLM device infrastructure is stubbed; policy, manager methods and their
 CPU/device tensor copies execute the production source with real CPU torch.
 """
 
+import dataclasses
 import importlib.util
 import logging
 import sys
@@ -687,6 +688,69 @@ def test_every_per_request_buffer_has_the_padding_row():
         assert widths.get(name) == "max_num_reqs + 1", (name, widths)
 
 
+def _impure_refusal():
+    """Extract the refusal helper; it must not depend on anything from vllm."""
+    import ast
+
+    path = ROOT / "vllm_ascend/worker/v2/model_runner.py"
+    tree = ast.parse(path.read_text())
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_refuse_graph_for_impure_batch")
+    module = ast.Module(body=[fn], type_ignores=[])
+    ast.fix_missing_locations(module)
+    namespace = {"dataclasses": dataclasses, "CUDAGraphMode": SimpleNamespace(NONE="none")}
+    exec(compile(module, str(path), "exec"), namespace)
+    return namespace["_refuse_graph_for_impure_batch"]
+
+
+@dataclasses.dataclass(frozen=True)
+class _Desc:
+    """Mirrors v0.28.0's BatchExecutionDescriptor: frozen, so replace() is the way."""
+
+    cg_mode: str
+    num_tokens: int
+    num_reqs: int | None
+    uniform_token_count: int | None = None
+    max_query_len: int | None = None
+
+
+def test_a_batch_with_a_prefill_does_not_get_the_ragged_graph():
+    """Completes the guard v0.28.0 already has.
+
+    That version documents max_query_len as what keeps a prefill batch out of a
+    varlen decode graph, and it works while the prefill is longer than the
+    decode width. Both device failures were a six or seven token prefill beside
+    eight-token decodes, so the batch's longest query was still eight and it
+    matched a captured decode graph whose geometry it did not share.
+    """
+    refuse = _impure_refusal()
+    # A graph the manager matched, padded up to a captured size.
+    matched = (_Desc(cg_mode="full", num_tokens=128, num_reqs=16, max_query_len=8), "dp")
+
+    pure = SimpleNamespace(
+        av_refuse_impure_batches=True,
+        model_runner=SimpleNamespace(av_batch_is_pure_spec_decode=True),
+    )
+    assert refuse(pure, 16, 127, matched) is matched, "a pure batch keeps its graph"
+
+    mixed = SimpleNamespace(
+        av_refuse_impure_batches=True,
+        model_runner=SimpleNamespace(av_batch_is_pure_spec_decode=False),
+    )
+    desc, rest = refuse(mixed, 16, 127, matched)
+    assert desc.cg_mode == "none"
+    # The padding existed to reach a captured size; there is no capture to reach.
+    assert desc.num_tokens == 127 and desc.num_reqs == 16
+    # Everything the manager set and this does not own survives untouched.
+    assert desc.max_query_len == 8 and rest == "dp"
+
+    # Off for any manager this repo did not mark, and for a descriptor that
+    # already refused.
+    unmarked = SimpleNamespace(model_runner=SimpleNamespace(av_batch_is_pure_spec_decode=False))
+    assert refuse(unmarked, 16, 127, matched) is matched
+    already = (_Desc(cg_mode="none", num_tokens=127, num_reqs=16), "dp")
+    assert refuse(mixed, 16, 127, already) is already
+
+
 def _fia_padding():
     """Extract the adaptive FIA padding method and bind it to a stub runner."""
     import ast
@@ -765,7 +829,7 @@ def _graph_factory(monkeypatch, mode, keep_piecewise=False):
 
     path = ROOT / "vllm_ascend/worker/v2/model_runner.py"
     tree = ast.parse(path.read_text())
-    wanted = ("_refuse_impure_batches", "graph_manager_wrapper")
+    wanted = ("graph_manager_wrapper",)
     functions = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in wanted]
     assert len(functions) == len(wanted), f"expected {wanted}, found {[f.name for f in functions]}"
     code = ast.Module(
@@ -928,15 +992,13 @@ def test_keep_piecewise_flag_leaves_the_forced_mode_alone(monkeypatch):
     assert args[2] == "full_decode_only", "the default still downgrades"
 
 
-def test_ragged_refuses_a_batch_that_is_not_pure_speculative_decode(monkeypatch):
-    """The capture contract is pure speculative decode, and nothing else sees it.
+def test_ragged_marks_the_manager_for_the_refusal(monkeypatch):
+    """The factory only flags the manager; the refusal itself lives elsewhere.
 
-    The compatibility test compares request counts, token counts and query
-    lengths; a batch carrying a real prefill satisfies all three against a
-    captured decode graph, so it matched one and ran with a geometry that graph
-    was not captured for. Two different device failures came from exactly that
-    batch shape. The boundary is deliberate -- the fix for the lost throughput
-    is separate microbatches, not a looser test.
+    It used to wrap the manager's dispatch, which meant restating a vllm
+    signature that differs between the tree here and the pinned deployment
+    version -- a startup crash. The flag is an attribute this repo owns and the
+    decision happens where the dispatch call is already intercepted.
     """
     wrapper, upstream = _graph_factory(monkeypatch, "ragged")
     config = SimpleNamespace(
@@ -944,19 +1006,15 @@ def test_ragged_refuses_a_batch_that_is_not_pure_speculative_decode(monkeypatch)
             cudagraph_mode="full_and_piecewise", splitting_ops_contain_attention=lambda: True
         )
     )
-    runner = SimpleNamespace(eager_survival_test=True, av_batch_is_pure_spec_decode=True)
-    with wrapper(runner):
+    with wrapper(runner := SimpleNamespace(eager_survival_test=True)):
         manager = upstream.ModelCudaGraphManager(config, "cpu", "full_and_piecewise", 8, runner, varlen_decode=True)
+    assert manager.av_refuse_impure_batches is True
 
-    # Pure speculative decode: the normal lookup runs.
-    assert manager.dispatch(16, 128, None, 0, 8)[0] == "delegated"
-
-    # A prefill sharing the batch: no graph, and the descriptor still describes
-    # the real batch so the caller can run it eagerly.
-    runner.av_batch_is_pure_spec_decode = False
-    desc = manager.dispatch(16, 127, None, 0, 8)
-    assert desc.cg_mode == "none"
-    assert desc.num_tokens == 127 and desc.num_reqs == 16
+    # Not marked under the other modes.
+    wrapper, upstream = _graph_factory(monkeypatch, "uniform")
+    with wrapper(runner := SimpleNamespace(eager_survival_test=True)):
+        manager = upstream.ModelCudaGraphManager(config, "cpu", "full_decode_only", 8, runner, varlen_decode=True)
+    assert not hasattr(manager, "av_refuse_impure_batches")
 
 
 def test_ragged_graph_mode_keeps_the_varlen_descriptor(monkeypatch):

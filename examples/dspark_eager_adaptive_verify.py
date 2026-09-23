@@ -85,6 +85,12 @@ def run_engine(args: argparse.Namespace) -> int:
     llm = LLM(
         model=args.model,
         enforce_eager=not args.graph,
+        # Match the deployment and the throughput benchmark. Left unset, vLLM
+        # resolves a mode with attention splitting ops, adaptive verification
+        # then forces FULL_AND_PIECEWISE on top, and the run captures a whole
+        # piecewise family the ragged mode has no use for -- so the gate would
+        # be measuring an engine nobody deploys.
+        **({"compilation_config": {"cudagraph_mode": args.cudagraph_mode}} if args.graph else {}),
         dtype="bfloat16",
         max_model_len=args.max_model_len,
         max_num_seqs=args.max_num_seqs,
@@ -210,6 +216,8 @@ def run_lane(
         str(args.num_prompts or args.max_num_seqs),
         "--repeats",
         str(repeats),
+        "--cudagraph-mode",
+        args.cudagraph_mode,
     ]
     if not lane.startswith("baseline"):
         cmd.append("--adaptive")
@@ -487,6 +495,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--engine-child", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--adaptive", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--cudagraph-mode",
+        default="FULL_DECODE_ONLY",
+        help=(
+            "Applied to the graph lanes, matching the deployed serve configuration. Leaving it to "
+            "vLLM captures a piecewise family as well, which the ragged mode does not use."
+        ),
+    )
     parser.add_argument("--graph", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--repeats", type=int, default=1, help=argparse.SUPPRESS)
     parser.add_argument(

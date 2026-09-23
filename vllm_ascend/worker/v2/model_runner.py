@@ -17,6 +17,7 @@
 # This file is a part of the vllm-ascend project.
 #
 
+import dataclasses
 from contextlib import AbstractContextManager, contextmanager
 from contextvars import ContextVar
 
@@ -975,51 +976,6 @@ class NPUModelRunner(GPUModelRunner):
         return query_start_loc_np, num_reqs_padded
 
 
-def _refuse_impure_batches(manager, model_runner) -> None:
-    """Keep batches that are not pure speculative decode out of the ragged graph.
-
-    The ragged graph's capture contract is pure speculative decode: with a real
-    prefill sharing the batch, full attention, the state metadata and the cost
-    table are no longer the geometry that was captured. Nothing in the
-    compatibility test can see that -- it compares request counts, token counts
-    and query lengths, all of which a mixed batch satisfies against a captured
-    decode graph -- so the refusal has to happen here.
-
-    Wraps the bound method on the instance rather than subclassing. A subclass
-    means writing the constructor call a second time, and writing it wrong is a
-    startup crash that nothing without a device would catch; there is no reason
-    to take that risk for a method override.
-    """
-    inner = manager.dispatch
-
-    def dispatch(
-        num_reqs: int,
-        num_tokens: int,
-        uniform_token_count: int | None,
-        num_active_loras: int,
-        max_query_len: int | None = None,
-        num_ubatches: int = 1,
-    ) -> BatchExecutionDescriptor:
-        if getattr(model_runner, "av_batch_is_pure_spec_decode", True):
-            return inner(
-                num_reqs,
-                num_tokens,
-                uniform_token_count,
-                num_active_loras,
-                max_query_len,
-                num_ubatches,
-            )
-        return BatchExecutionDescriptor(
-            cg_mode=CUDAGraphMode.NONE,
-            num_tokens=num_tokens,
-            num_reqs=num_reqs,
-            num_active_loras=manager._resolve_effective_loras(num_active_loras),
-            num_ubatches=num_ubatches,
-        )
-
-    manager.dispatch = dispatch
-
-
 @contextmanager
 def graph_manager_wrapper(model_runner):
     """Context manager to override graph manager."""
@@ -1124,7 +1080,10 @@ def graph_manager_wrapper(model_runner):
         # Short-circuited: GRAPH_MODE_RAGGED is imported inside the lane branch,
         # so a runner that is not on the lane must not reach the comparison.
         if mode_for_manager is not None and mode_for_manager == GRAPH_MODE_RAGGED:
-            _refuse_impure_batches(manager, model_runner)
+            # A plain attribute this repo owns, read back where the dispatch is
+            # already intercepted. Nothing here restates a signature or a field
+            # list belonging to vllm.
+            manager.av_refuse_impure_batches = True
         return manager
 
     try:
@@ -1152,7 +1111,53 @@ def _dispatch_pcp_and_sync_dp(cudagraph_manager, num_reqs, num_tokens, *args, **
     pcp_num_tokens = _PCP_DISPATCH_NUM_TOKENS.get()
     if pcp_num_tokens is not None:
         num_tokens = pcp_num_tokens
-    return dispatch_cg_and_sync_dp(cudagraph_manager, num_reqs, num_tokens, *args, **kwargs)
+    result = dispatch_cg_and_sync_dp(cudagraph_manager, num_reqs, num_tokens, *args, **kwargs)
+    return _refuse_graph_for_impure_batch(cudagraph_manager, num_reqs, num_tokens, result)
+
+
+def _refuse_graph_for_impure_batch(cudagraph_manager, num_reqs, num_tokens, result):
+    """Keep a batch that is not pure speculative decode out of the ragged graph.
+
+    The ragged graph's capture contract is pure speculative decode: with a real
+    prefill sharing the batch, full attention, the state metadata and the cost
+    table are no longer the geometry that was captured. The manager's
+    compatibility test cannot see that -- it compares request counts, token
+    counts and query lengths, all of which a mixed batch satisfies against a
+    captured decode graph -- so the refusal happens after it has answered.
+
+    v0.28.0 already means to do this. Its descriptor documents max_query_len as
+    "what keeps a prefill batch out of one", and a varlen decode graph is
+    captured at the decode query width, so a batch whose longest query exceeds
+    it is refused. That leaks for a prefill *shorter* than the decode width:
+    both device failures were a six or seven token prefill beside eight-token
+    decodes, so the batch's longest query was still eight and it matched. This
+    completes that guard rather than adding a second one.
+
+    Done here, on the result, rather than by wrapping the manager's own
+    dispatch: that method belongs to vllm and its signature differs between the
+    version in this tree and the one pinned for deployment, so restating it is a
+    startup crash waiting to happen. This touches the two fields it was given by
+    name and copies nothing else.
+    """
+    if not getattr(cudagraph_manager, "av_refuse_impure_batches", False):
+        return result
+    runner = getattr(cudagraph_manager, "model_runner", None)
+    if runner is None or getattr(runner, "av_batch_is_pure_spec_decode", True):
+        return result
+
+    batch_desc, *rest = result
+    if batch_desc.cg_mode == CUDAGraphMode.NONE:
+        return result
+    # num_tokens and num_reqs go back to what was asked for: the descriptor's
+    # are padded to reach a captured size, and there is no capture to reach.
+    fields = {"cg_mode": CUDAGraphMode.NONE, "num_tokens": num_tokens, "num_reqs": num_reqs}
+    if dataclasses.is_dataclass(batch_desc):
+        eager = dataclasses.replace(batch_desc, **fields)
+    elif hasattr(batch_desc, "_replace"):
+        eager = batch_desc._replace(**fields)
+    else:
+        raise TypeError(f"cannot build an eager descriptor from {type(batch_desc).__name__}")
+    return (eager, *rest)
 
 
 if vllm_version_is("0.28.0"):

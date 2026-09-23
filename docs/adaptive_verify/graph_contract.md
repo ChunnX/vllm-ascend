@@ -956,3 +956,39 @@ GDN 请求轴之所以是 ragged 前提的原因:进了图的 GDN 拿不到 repl
 
 284s vs baseline 184s（阶段 A 约 250s）。整个生成只有约 20 个 decode 步，模型加载 + 捕获
 主导总耗时，ragged 捕获的桶还更多。稳态收益要用接受率与 TPOT 在长跑上量，不是这张表。
+
+## 读 vLLM 源码必须用 `git show v0.28.0:`(2026-09-23)
+
+一天之内两次因为抄错 vLLM 签名而让设备白跑,根因是同一个:**本地 checkout 不是部署钉死的
+那个版本**。
+
+```txt
+本地 checkout: v0.28.1rc0-679-gce08bb5b34
+部署钉死:      v0.28.0                      ← 差 679 个提交
+```
+
+`CudaGraphManager.dispatch` 在本地有 `num_ubatches`,在 0.28.0 **没有**——照本地写的调用在
+设备上就是 `takes from 5 to 6 positional arguments but 7 were given`。
+
+**规矩:查 vLLM 的任何签名、字段、默认值,用 `git show v0.28.0:<path>`,不读工作区。**
+tag 在本地仓库里,不用改动工作区就能读。
+
+### 更好的做法是不抄
+
+签名会变,抄了就得跟着变。所以拒绝混合批的判断放在
+`_dispatch_pcp_and_sync_dp`——**本仓库自己的**拦截函数,`num_reqs` / `num_tokens` 是具名
+参数、其余 `*args, **kwargs` 原样透传;要改的两个字段用 `dataclasses.replace` 按名字改,
+其余字段原封不动。这样既不复述签名,也不复述字段表。
+
+同一条规矩也适用于构造:覆写一个方法却顺手重写构造调用,是这天第一次设备崩溃的原因。
+
+### 0.28.0 其实已经想挡住这件事
+
+`BatchExecutionDescriptor` 的字段注释:
+
+> `# Upper bound on per-request query length. Varlen decode graphs leave`
+> `# uniform_token_count unset, so this is what keeps a prefill batch out of one.`
+
+varlen decode 图按 decode 宽度捕获,批里最长 query 超过它就匹配不上。**但 prefill 比
+decode 宽度还短时会漏**:两次设备失败的 prefill 是 6 和 7 个 token,而 decode 是 8,批的
+最长 query 仍是 8,于是匹配成功。我们加的判断是**补上这个漏洞**,不是另起一套。
