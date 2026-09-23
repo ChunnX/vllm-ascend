@@ -743,20 +743,53 @@ if num_padding_reqs == 0:
 **这正是文章 `B_fia = B_live(+1)`(比服务上限宽一行)要解决的事。** 清单第 2 项当时记作
 「15098 已做」——**只做了 `query_start_loc` 那一半**,其余每请求缓冲没有跟着加宽。
 
-### 触发条件,以及它比看上去普遍
+### 触发条件
 
-三件事同时成立:
+```python
+use_fia and adaptive_verification_manager and batch_desc.cg_mode == FULL
+and num_padding_reqs == 0 and num_padding_tokens > 0
+and num_reqs_padded + 1 > max_num_reqs
+```
 
-1. `use_fia`(`VLLM_ASCEND_ENABLE_DSPARK_FIA_SINK=1`)
-2. `num_reqs == max_num_seqs`——槽位全满,所以没有 padding 请求可用
-3. token 数不落在捕获尺寸上,所以需要 padding token
+`batch_desc.num_reqs` 是 `min(num_tokens_padded, max_num_seqs)`,所以中间那两条合起来就是
+**批正好占满所有请求槽位**;最后一条随之成立。再加上 token 数不落在捕获尺寸上。
 
-**和 prefill 无关**:任何在槽位全满时被裁剪、token 数又不在捕获边界上的批都会踩到。这一次
-prefill 只是让 token 数恰好是 127。
+**和 prefill 无关**,这次那个 prefill 只是让 token 数恰好是 127;任何槽位全满、被裁剪、
+token 数不在捕获边界上的批都满足。只在 **ragged** 下可达——uniform 模式里不 uniform 的批
+进不了 FULL 路径。
 
-只在 **ragged** 模式下可达——uniform 模式里不 uniform 的批根本进不了 FULL 路径。这也解释了
-为什么之前的测试都没撞上:早先的 benchmark 没开 FIA sink,而开了 FIA 的 serve 占用率只有
-2~6,从来没满过 16。
+### 勘误:`use_fia` 不是 fia_sink 的开关
+
+此前这里写「早先的 benchmark 没开 FIA sink 所以没撞上」。**错的。**
+
+```python
+# Only target-model layers determine whether FIA is in use.
+draft_layer_names = speculator.draft_attn_layer_names
+self.use_fia = any(
+    (group.backend is AscendAttentionBackend or group.backend is AscendMLABackend)
+    and any(layer_name not in draft_layer_names for layer_name in group.layer_names)
+    ...
+)
+```
+
+它问的是**目标模型**有没有层用 `AscendAttentionBackend` / `AscendMLABackend`,而且显式排除
+draft 层;而 `fia_sink_selected` 认 `use_non_causal`——按其注释,那是 draft-vs-target 的判
+别位,只路由**投机模型**的层。两者名字撞了,含义无关。
+`VLLM_ASCEND_ENABLE_DSPARK_FIA_SINK` 不改变 `use_fia`,它对 Qwen3.6-27B 一直是 True。
+
+### 「为什么之前没发生」目前没有答案
+
+这条勘误把原来的解释一起推翻了。按上面的条件推，2026-09-21 的 bs=4 ragged 那轮
+（`mean reqs=3.40`、`max_num_seqs=4`、`kept=73.1%`、`graph=FULL=5`）只要某一步正好 4 个
+请求、token 数又不在捕获边界上，就应该踩到——**但它通过了**。
+
+所以要么上面还有一条前提是错的，要么两次之间另有差别。唯一能指出的差别是这次传了
+`--max-num-batched-tokens 4096`，它改变分块 prefill 的行为、从而改变批多久满一次，但这是
+猜测，没有验证。
+
+**在搞清楚之前，不要把先前 bs=4 的 MATCH 当成"这条路径已经验过"。** 下一步是在护栏里把
+触发时的 `num_reqs / num_tokens / batch_desc` 打出来，让下一次复现自己说明是哪一条前提不
+成立。
 
 ### 现状
 

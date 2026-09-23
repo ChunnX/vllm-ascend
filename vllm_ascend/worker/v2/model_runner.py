@@ -948,9 +948,11 @@ class NPUModelRunner(GPUModelRunner):
                     raise RuntimeError(
                         f"FIA padding needs a {num_reqs_padded + 1}th request row for "
                         f"{num_padding_tokens} padding token(s) but max_num_seqs is "
-                        f"{self.max_num_reqs}, so only query_start_loc could hold it. Run with "
-                        "VLLM_ASCEND_DSPARK_AV_GRAPH=uniform, which keeps batches like this out "
-                        "of the full-graph path, until the per-request buffers are one row wider."
+                        f"{self.max_num_reqs}, so only query_start_loc could hold it. "
+                        f"num_reqs={num_reqs} num_tokens_padded={num_tokens_padded} "
+                        f"last_loc={last_loc}. Run with VLLM_ASCEND_DSPARK_AV_GRAPH=uniform, "
+                        "which keeps batches like this out of the full-graph path, until the "
+                        "per-request buffers are one row wider."
                     )
                 query_start_loc_np[num_reqs + 1] = num_tokens_padded
                 num_reqs_padded += 1
