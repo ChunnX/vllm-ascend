@@ -957,6 +957,46 @@ GDN 请求轴之所以是 ragged 前提的原因:进了图的 GDN 拿不到 repl
 284s vs baseline 184s（阶段 A 约 250s）。整个生成只有约 20 个 decode 步，模型加载 + 捕获
 主导总耗时，ragged 捕获的桶还更多。稳态收益要用接受率与 TPOT 在长跑上量，不是这张表。
 
+## 混合批要落到 PIECEWISE,不是 eager(2026-09-23)
+
+第一次完整的吞吐对照跑出来是 **457.3 对 441.3 TPS,+3.6%**,噪声底 0.6%,这是决定性的。
+但和崩溃那版持续 500 toks/s 相比掉了约 **9%**,而那 9% 是我只抄了文章一半造成的。
+
+§4.5 的原文是:
+
+> 含真实 prefill 或不满足契约的 mixed batch:退出 ragged FULL,**按场景使用 eager 或原生
+> 安全组合路径**
+
+我实现了 "eager",没实现"原生安全组合路径",而且还做了另一件事把那条路堵死:
+
+| 改动 | 后果 |
+| --- | --- |
+| 拒绝混合批(`606c00e8f`) | 混合批退出 FULL |
+| `FULL_AND_PIECEWISE` 降级成 `FULL_DECODE_ONLY`(`2efffaa40`) | **PIECEWISE 那一族图没了** |
+
+两个叠加,16.8% 的步从图内掉到 eager。
+
+### PIECEWISE 恰恰是安全的
+
+0.28.0 自己写着:
+
+```txt
+num_reqs: int | None  # None means no request padding is needed (PIECEWISE graphs)
+# for PIECEWISE graphs there is no limit on requests when replaying
+```
+
+**没有请求 padding、没有请求数上限**——所以混合批走 PIECEWISE 时 `num_reqs_padded =
+num_reqs`,而 FIA padding 只在 `cg_mode == FULL` 时才跑。dummy 行那一整类问题根本不出现。
+
+所以拒绝逻辑从「不是 NONE 就降级」改成 **只拒绝 FULL**;`KEEP_PIECEWISE` 默认翻成 1,保留
+那一族图。降级当初测出来是中性的(16.086 对 16.130ms),**那是在拒绝逻辑存在之前**——当时
+确实没人需要 PIECEWISE,现在有了。
+
+### 一条方法论
+
+这次是「照着文章做了一半」。那一半单独看都对(拒绝是对的、降级当时也是中性的),**合起来才
+出问题**。文章把四条路径列在一起是有原因的,只取其中一条就会留下没人接的批。
+
 ## 读 vLLM 源码必须用 `git show v0.28.0:`(2026-09-23)
 
 一天之内两次因为抄错 vLLM 签名而让设备白跑,根因是同一个:**本地 checkout 不是部署钉死的

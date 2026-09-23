@@ -697,7 +697,10 @@ def _impure_refusal():
     fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_refuse_graph_for_impure_batch")
     module = ast.Module(body=[fn], type_ignores=[])
     ast.fix_missing_locations(module)
-    namespace = {"dataclasses": dataclasses, "CUDAGraphMode": SimpleNamespace(NONE="none")}
+    namespace = {
+        "dataclasses": dataclasses,
+        "CUDAGraphMode": SimpleNamespace(NONE="none", FULL="full", PIECEWISE="piecewise"),
+    }
     exec(compile(module, str(path), "exec"), namespace)
     return namespace["_refuse_graph_for_impure_batch"]
 
@@ -743,8 +746,14 @@ def test_a_batch_with_a_prefill_does_not_get_the_ragged_graph():
     # Everything the manager set and this does not own survives untouched.
     assert desc.max_query_len == 8 and rest == "dp"
 
-    # Off for any manager this repo did not mark, and for a descriptor that
-    # already refused.
+    # Piecewise is the native safe path, not something to refuse: v0.28.0
+    # documents it as carrying no request padding and no replay-time request
+    # limit, and the adaptive FIA padding only runs for FULL. Sending these to
+    # eager instead is what cost about nine percent of throughput.
+    piecewise = (_Desc(cg_mode="piecewise", num_tokens=128, num_reqs=None), "dp")
+    assert refuse(mixed, 16, 127, piecewise) is piecewise
+
+    # Off for any manager this repo did not mark, and for one already eager.
     unmarked = SimpleNamespace(model_runner=SimpleNamespace(av_batch_is_pure_spec_decode=False))
     assert refuse(unmarked, 16, 127, matched) is matched
     already = (_Desc(cg_mode="none", num_tokens=127, num_reqs=16), "dp")

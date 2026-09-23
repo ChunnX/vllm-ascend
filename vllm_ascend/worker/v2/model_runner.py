@@ -1045,8 +1045,9 @@ def graph_manager_wrapper(model_runner):
                 compilation = vllm_config.compilation_config
                 if envs_ascend.VLLM_ASCEND_DSPARK_AV_KEEP_PIECEWISE:
                     logger.warning(
-                        "[DSPARK-AV] keeping FULL_AND_PIECEWISE by request; the ragged mode does "
-                        "not need the piecewise family, so this is for bisecting only."
+                        "[DSPARK-AV] keeping FULL_AND_PIECEWISE: a batch that is not pure "
+                        "speculative decode is refused the ragged graph, and the piecewise family "
+                        "is where it lands instead of eager."
                     )
                 elif not compilation.splitting_ops_contain_attention():
                     cudagraph_mode = CUDAGraphMode.FULL_DECODE_ONLY
@@ -1146,7 +1147,15 @@ def _refuse_graph_for_impure_batch(cudagraph_manager, num_reqs, num_tokens, resu
         return result
 
     batch_desc, *rest = result
-    if batch_desc.cg_mode == CUDAGraphMode.NONE:
+    if batch_desc.cg_mode != CUDAGraphMode.FULL:
+        # Only the ragged full graph has the contract this batch breaks. v0.28.0
+        # documents a piecewise descriptor as carrying no request padding and no
+        # replay-time request limit, so a mixed batch is safe in one -- and the
+        # adaptive FIA padding, which is what the dummy-row trouble came from,
+        # only runs for FULL. The reference design says such a batch leaves the
+        # ragged graph "for eager or the native safe combined path"; this is
+        # that path, and sending it to eager instead cost throughput for
+        # nothing.
         return result
     # num_tokens and num_reqs go back to what was asked for: the descriptor's
     # are padded to reach a captured size, and there is no capture to reach.

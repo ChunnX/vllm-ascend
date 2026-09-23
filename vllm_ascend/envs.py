@@ -106,14 +106,16 @@ env_variables: dict[str, Callable[[], Any]] = {
     # Not sensitive.
     "VLLM_ASCEND_DSPARK_AV_TP_BROADCAST": lambda: bool(int(os.getenv("VLLM_ASCEND_DSPARK_AV_TP_BROADCAST", "0"))),
     # Keep the FULL_AND_PIECEWISE mode that v0.28 forces on any run with an
-    # adaptive-verification manager, instead of letting the ragged mode put it
-    # back to what was configured. The ragged mode does not need the piecewise
-    # family -- a trimmed batch replays the decode graph -- so the downgrade is
-    # normally right, but it mutates cudagraph_mode after the compilation
-    # config was settled, which is the kind of thing a graph compiler can
-    # object to. Set 1 to bisect a startup failure against it. Not sensitive.
+    # adaptive-verification manager, rather than putting it back to what was
+    # configured. Default 1, and the reason changed: the ragged mode does not
+    # need the piecewise family for its own batches, so dropping it looked free
+    # and measured neutral -- but a batch that is not pure speculative decode is
+    # now refused the ragged graph, and piecewise is where it is supposed to
+    # land. Without that family it lands on eager instead, which measured about
+    # nine percent of throughput with a sixth of the steps taking that path.
+    # Set 0 to drop the family and send refused batches to eager. Not sensitive.
     "VLLM_ASCEND_DSPARK_AV_KEEP_PIECEWISE": lambda: bool(
-        int(os.getenv("VLLM_ASCEND_DSPARK_AV_KEEP_PIECEWISE", "0"))
+        int(os.getenv("VLLM_ASCEND_DSPARK_AV_KEEP_PIECEWISE", "1"))
     ),
     # Stop making the host query/seq-length view exact for the eager AV lanes.
     # Both lanes currently read the trimmed boundaries back from device each
