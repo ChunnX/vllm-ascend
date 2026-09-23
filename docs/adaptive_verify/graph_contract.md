@@ -770,6 +770,36 @@ token,却**一个 padding 请求都没有**。
 **短跑里是巧合躲过,长跑里必然撞上**——这次 500 条请求跑了几千步。这比此前那条已被推翻的
 FIA 解释合理,不过仍是推断:直接证据要等护栏打出的 `num_reqs / num_tokens_padded / last_loc`。
 
+### 完整调用链(设备日志佐证)
+
+补充的 traceback 把链路走通了,两处改动各对应链上一环:
+
+```txt
+model_runner.py:672    seq_lens_np = self.input_buffers.seq_lens_np       ← 16 宽
+mamba_hybrid.py:324    build_attn_metadata(seq_lens_np=...)              ← 不传 upper_bound
+attn_utils.py:274      upper_bound = torch.from_numpy(seq_lens_np)[:17]  ← 只得 16
+gdn_attn_builder.py:82 (seq_lens[:17] == 0) & (draft_tokens < 0)         ← 16 vs 17
+```
+
+`draft_tokens` 按 `num_reqs_padded` 建,是 17;`seq_lens_cpu_upper_bound` 在 model_runner
+里确实是按 `num_reqs_padded` 新建的 17 长数组,**但 GDN 这条路没把它传下去**——
+`attn_utils.py:274` 于是回退到 `torch.from_numpy(seq_lens_np)[:num_reqs]`,而那个 buffer
+只有 `max_num_reqs` 宽。
+
+### 只修宽度会把崩溃变成静默错误
+
+出错那一行不是偶然的形状检查,它是契约本身。`_remove_spec_graph_padding_queries` 的
+docstring 写着:
+
+> FIA represents every padded graph request with a full K+1 query span.
+> **Those rows must be zero-length for the target's recurrent GDN state update.**
+
+也就是 GDN **靠 `seq_lens == 0` 认出 FIA padding 行**,再把 query 视图在第一个 inactive 行
+处截断。而 `prepare_pos_seq_lens` 只写活跃行,padding 行留着上一个占用该槽位的请求的长度。
+
+所以如果只把 buffer 加宽:切片不再报错,`inactive` 对那一行判成 **False**,FIA 的 dummy 行
+就被当成真实请求送进 GDN 的循环状态更新——**不报错,只出错**。宽度和清零必须一起改。
+
 ### 修复(2026-09-23)
 
 按文章 §3.4.4 做了三件事:
