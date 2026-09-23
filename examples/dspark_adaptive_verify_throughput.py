@@ -321,9 +321,43 @@ def run_engine(args: argparse.Namespace) -> int:
         outputs = llm.generate(prompts, params)
         elapsed = time.perf_counter() - started
         emitted = sum(len(o.outputs[0].token_ids) for o in outputs)
-        runs.append({"elapsed": elapsed, "output_tokens": emitted})
+        runs.append({"elapsed": elapsed, "output_tokens": emitted, "decode": decode_spread(outputs)})
         print(RESULT_PREFIX + json.dumps(runs[-1]), flush=True)
     return 0
+
+
+def decode_spread(outputs) -> dict | None:
+    """Per-request decode time, summarised.
+
+    Every request emits the same number of tokens, so a difference in decode
+    time is a difference in how many steps that request needed -- which is
+    exactly what per-request trimming changes: drafts that get cut mean fewer
+    tokens accepted per step and more steps to reach the same output.
+
+    The mean carries nothing: the workload is submitted at once and drained at
+    a fixed width, so mean completion is about half the elapsed time and
+    restates throughput. The spread does not, and it is the only place where
+    "throughput improved while some requests got slower" can show up.
+
+    first_token_ts and last_token_ts are both engine-core monotonic timestamps.
+    arrival_time is a frontend wall-clock one and is deliberately not mixed in.
+    """
+    samples = []
+    for output in outputs:
+        metrics = getattr(output, "metrics", None)
+        first = getattr(metrics, "first_token_ts", 0.0) or 0.0
+        last = getattr(metrics, "last_token_ts", 0.0) or 0.0
+        if first and last > first:
+            samples.append(last - first)
+    if len(samples) < 2:
+        return None
+    samples.sort()
+    return {
+        "p50": samples[len(samples) // 2],
+        "p99": samples[min(len(samples) - 1, int(len(samples) * 0.99))],
+        "max": samples[-1],
+        "n": len(samples),
+    }
 
 
 def child_env() -> dict[str, str]:
@@ -441,6 +475,7 @@ def run_config(k: int, max_num_seqs: int, adaptive: bool, args: argparse.Namespa
             )
 
     tps = [run["output_tokens"] / run["elapsed"] for run in runs]
+    decode = [run["decode"] for run in runs if run.get("decode")]
     accept = [float(m) for m in ACCEPT_RE.findall(log)]
     draft_accept = [float(m) for m in DRAFT_ACCEPT_RE.findall(log)]
     av_lines = [line for line in log.splitlines() if AV_LOG_TAG in line and " steps | " in line]
@@ -463,6 +498,9 @@ def run_config(k: int, max_num_seqs: int, adaptive: bool, args: argparse.Namespa
         "accept": statistics.fmean(accept) if accept else None,
         "draft_accept": statistics.fmean(draft_accept) if draft_accept else None,
         "dispatch": dispatch,
+        "decode": {key: statistics.fmean([d[key] for d in decode]) for key in ("p50", "p99", "max")}
+        if decode
+        else None,
         "kept": [float(m) for line in av_lines for m in KEPT_RE.findall(line)],
         "occupancy": [float(m) for line in av_lines for m in REQS_RE.findall(line)],
         "log": str(log_path),
@@ -542,6 +580,27 @@ def report(results: list[dict], args: argparse.Namespace) -> int:
             f"{row['k']:>5} | {row['max_num_seqs']:>4} | {requests_for(row['max_num_seqs'], args):>5} | "
             f"{row['lane']} alone: TPS {statistics.fmean(row['tps']):.1f} +/-{_spread(row['tps']):.1f}, "
             f"acceptance {_fmt(row['accept'])} -- no counterpart, so no acceleration"
+        )
+    paired = [(k, cap) for k, cap in sorted({(r["k"], r["max_num_seqs"]) for r in results})]
+    if any(by_key.get((k, cap, lane), {}).get("decode") for k, cap in paired for lane in ("fixed", "dynamics")):
+        print("\nPer-request decode time (seconds), same output length for every request:")
+        print(f"{'Draft':>5} | {'Cap':>4} | {'lane':>9} | {'p50':>7} | {'p99':>7} | {'max':>7}")
+        for k, cap in paired:
+            for lane in ("fixed", "dynamics"):
+                row = by_key.get((k, cap, lane))
+                spread = row and row.get("decode")
+                if spread:
+                    print(
+                        f"{k:>5} | {cap:>4} | {lane:>9} | {spread['p50']:>7.2f} | "
+                        f"{spread['p99']:>7.2f} | {spread['max']:>7.2f}"
+                    )
+        print(
+            "Mean is omitted on purpose: the workload is submitted at once and drained at a fixed "
+            "width, so mean completion is about half the elapsed time and restates throughput. The "
+            "spread does not. Trimming is per request, and a request whose drafts are cut accepts "
+            "fewer tokens per step, so it needs more steps for the same output -- which is how "
+            "throughput can improve while some requests get slower. A p99 that grows much faster "
+            "than p50 is that case."
         )
     print(
         "\nOcc is the mean number of requests actually in the batch. The whole workload is "
