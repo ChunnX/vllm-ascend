@@ -406,8 +406,10 @@ def requests_for(max_num_seqs: int, args: argparse.Namespace) -> int:
     return args.num_requests
 
 
-def run_config(k: int, max_num_seqs: int, adaptive: bool, args: argparse.Namespace, log_dir: Path) -> dict:
-    lane = "dynamics" if adaptive else "fixed"
+def run_config(
+    k: int, max_num_seqs: int, adaptive: bool, args: argparse.Namespace, log_dir: Path, label: str | None = None
+) -> dict:
+    lane = label or ("dynamics" if adaptive else "fixed")
     num_requests = requests_for(max_num_seqs, args)
     log_path = log_dir / f"k{k}-b{max_num_seqs}-{lane}.log"
     cmd = [
@@ -548,6 +550,7 @@ def report(results: list[dict], args: argparse.Namespace) -> int:
     print("-" * len(header))
     verdicts = []
     unpaired = []
+    floors: list = []
     for k, cap in sorted({(r["k"], r["max_num_seqs"]) for r in results}):
         fixed, dyn = by_key.get((k, cap, "fixed")), by_key.get((k, cap, "dynamics"))
         if not (fixed and dyn):
@@ -559,7 +562,15 @@ def report(results: list[dict], args: argparse.Namespace) -> int:
         # A gain smaller than the runs' own spread is not a gain. Comparing
         # against the summed spread is the crude version of a significance test,
         # and crude is the right level for three repeats.
-        decisive = abs(d_mean - f_mean) > (f_spread + d_spread)
+        #
+        # Those repeats share a process, so their spread misses everything that
+        # differs between engine loads. When a control run gives that figure,
+        # the difference has to beat it too.
+        control = by_key.get((k, cap, "control"))
+        floor = abs(statistics.fmean(control["tps"]) - f_mean) if control else 0.0
+        decisive = abs(d_mean - f_mean) > max(f_spread + d_spread, floor)
+        if control:
+            floors.append((k, cap, floor, floor / f_mean * 100))
         verdicts.append(((k, cap), gain, decisive))
         occupancy = dyn.get("occupancy") or []
         occ_text = f"{statistics.fmean(occupancy):.1f}" if occupancy else "n/a"
@@ -573,7 +584,14 @@ def report(results: list[dict], args: argparse.Namespace) -> int:
             f"{d_mean:>10.1f} +/-{d_spread:>5.1f} | {_fmt(dyn['accept']):>9} | "
             f"{occ_text:>5} | {kept_text:>13} | {no_graph:>7} | {gain:>+11.1f}%{'' if decisive else ' ?'}"
         )
+    for k, cap, floor, pct in floors:
+        print(
+            f"\nNoise floor at draft {k}, capacity {cap}: two separate runs of the fixed lane "
+            f"differ by {floor:.1f} TPS ({pct:.1f}%). A difference smaller than that is not a result."
+        )
     for row in unpaired:
+        if row["lane"] == "control":
+            continue
         # Ran without its counterpart: a throughput number on its own is not an
         # acceleration, so report it as a measurement and say what is missing.
         print(
@@ -630,6 +648,12 @@ def report(results: list[dict], args: argparse.Namespace) -> int:
     )
     if args.repeats < 2:
         print("\nWARNING: --repeats 1 gives no spread, so no difference here can be called decisive.")
+    if not floors:
+        print(
+            "\nNOTE: the spread above is between passes of one engine, which misses the "
+            "process-level variation that moved earlier measurements by several percent. For a "
+            "difference of a few percent, re-run with --control to measure that floor."
+        )
     undecided = [key for key, _, decisive in verdicts if not decisive]
     if undecided:
         print(
@@ -746,6 +770,16 @@ def main() -> int:
     parser.add_argument("--prefix-caching", action="store_true")
     parser.add_argument("--async-scheduling", action="store_true")
     parser.add_argument(
+        "--control",
+        action="store_true",
+        help=(
+            "Run the fixed lane a second time, in its own process, as a noise floor. The repeats "
+            "inside one engine only see drift between passes, not the process-level variation that "
+            "moved earlier measurements by several percent, so without this a small difference can "
+            "be marked decisive on a spread that understates the real one. Costs one more process."
+        ),
+    )
+    parser.add_argument(
         "--lanes",
         nargs="+",
         choices=("fixed", "dynamics"),
@@ -808,6 +842,15 @@ def main() -> int:
                 except Exception as exc:  # noqa: BLE001 - report every cell, fail at the end
                     failures.append(f"K={k} b={max_num_seqs} {lane}: {exc}")
                     print(f"=== K={k} max_num_seqs={max_num_seqs} {lane}: FAILED -- {exc}", flush=True)
+                if lane == "fixed" and args.control:
+                    # The same configuration in a second process. Whatever this
+                    # differs from the first by is noise, and a lane has to beat
+                    # it before a difference means anything.
+                    try:
+                        results.append(run_config(k, max_num_seqs, False, args, log_dir, label="control"))
+                    except Exception as exc:  # noqa: BLE001
+                        failures.append(f"K={k} b={max_num_seqs} control: {exc}")
+                        print(f"=== K={k} max_num_seqs={max_num_seqs} control: FAILED -- {exc}", flush=True)
 
     rc = report(results, args) if results else 1
     for line in failures:
