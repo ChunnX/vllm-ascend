@@ -652,7 +652,7 @@ def test_zero_draft_decode_preserves_previous_accepted_selector(monkeypatch, pol
     np.testing.assert_array_equal(metadata.num_decode_draft_tokens_cpu.numpy(), [0, 1, -1])
 
 
-def _graph_factory(monkeypatch, mode):
+def _graph_factory(monkeypatch, mode, keep_piecewise=False):
     """Extract graph_manager_wrapper and run it against a stubbed graph mode."""
     import ast
     from contextlib import contextmanager
@@ -680,6 +680,9 @@ def _graph_factory(monkeypatch, mode):
             NONE="none", FULL_AND_PIECEWISE="full_and_piecewise", FULL_DECODE_ONLY="full_decode_only"
         ),
         "logger": logging.getLogger("model_runner_stub"),
+        # The wrapper reads the keep-piecewise bisect flag; default it off so
+        # these tests exercise the shipping path.
+        "envs_ascend": SimpleNamespace(VLLM_ASCEND_DSPARK_AV_KEEP_PIECEWISE=keep_piecewise),
         "ModelAclGraphManager": lambda *args, **kwargs: (args, kwargs),
     }
     exec(compile(code, str(path), "exec"), namespace)
@@ -748,6 +751,33 @@ def test_ragged_drops_a_piecewise_family_that_cannot_be_piecewise(monkeypatch, c
         args, kwargs = upstream.ModelCudaGraphManager(config, "cpu", "full_and_piecewise", 8, varlen_decode=True)
     assert args[2] == "full_and_piecewise"
     assert split.cudagraph_mode == "full_and_piecewise"
+
+
+def test_keep_piecewise_flag_leaves_the_forced_mode_alone(monkeypatch):
+    """The escape hatch has to reach the decision it guards.
+
+    It exists to bisect a startup failure against the downgrade, which is
+    exactly the moment when a flag that silently does nothing costs the most.
+    So assert both states, not just that the default still downgrades.
+    """
+    unsplit = lambda: SimpleNamespace(  # noqa: E731 - a fresh config per call
+        cudagraph_mode="full_and_piecewise", splitting_ops_contain_attention=lambda: False
+    )
+
+    wrapper, upstream = _graph_factory(monkeypatch, "ragged", keep_piecewise=True)
+    config = SimpleNamespace(compilation_config=unsplit())
+    with wrapper(SimpleNamespace(eager_survival_test=True)):
+        args, kwargs = upstream.ModelCudaGraphManager(config, "cpu", "full_and_piecewise", 8, varlen_decode=True)
+    assert args[2] == "full_and_piecewise", "the flag must leave the forced mode alone"
+    assert config.compilation_config.cudagraph_mode == "full_and_piecewise"
+    # Turning the downgrade off must not also turn off what ragged needs.
+    assert kwargs["varlen_decode"] is True
+
+    wrapper, upstream = _graph_factory(monkeypatch, "ragged", keep_piecewise=False)
+    config = SimpleNamespace(compilation_config=unsplit())
+    with wrapper(SimpleNamespace(eager_survival_test=True)):
+        args, _ = upstream.ModelCudaGraphManager(config, "cpu", "full_and_piecewise", 8, varlen_decode=True)
+    assert args[2] == "full_decode_only", "the default still downgrades"
 
 
 def test_ragged_graph_mode_keeps_the_varlen_descriptor(monkeypatch):
