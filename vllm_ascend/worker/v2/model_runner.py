@@ -106,6 +106,9 @@ class NPUModelRunner(GPUModelRunner):
         # boundary and sequence length padding during FULL graph execution.
         self.use_fia = False
         self.eager_survival_test = False
+        # Assume pure until a scheduler output says otherwise, so a dispatch
+        # before the first step behaves as it did.
+        self.av_batch_is_pure_spec_decode = True
         # FusedMoE can be constructed by the parent initializer and reads this
         # capacity while setting up MC2 communication.
         set_potential_max_tokens(vllm_config)
@@ -356,6 +359,14 @@ class NPUModelRunner(GPUModelRunner):
             assert kv_connector_metadata is not None
             get_kv_transfer_group().handle_preemptions(kv_connector_metadata)
 
+        # The ragged graph's contract is pure speculative decode. A request that
+        # is prefilling appears in the scheduled tokens but not in the scheduled
+        # speculative tokens, so the two lengths disagree exactly when the batch
+        # is mixed -- which covers a new request and a chunked prefill alike.
+        scheduled = getattr(scheduler_output, "num_scheduled_tokens", None) or {}
+        spec = getattr(scheduler_output, "scheduled_spec_decode_tokens", None) or {}
+        self.av_batch_is_pure_spec_decode = bool(scheduled) and len(spec) == len(scheduled)
+
         self.model_state.kvpp_is_dummy_run = dummy_run or is_profile
         with pcp_dispatch_context():
             output = super().execute_model(
@@ -570,15 +581,16 @@ class NPUModelRunner(GPUModelRunner):
             self.input_buffers.positions,
             self.input_buffers.seq_lens,
         )
-        if num_reqs_padded > num_reqs:
-            # Padding rows must be inert. prepare_pos_seq_lens writes only the
-            # live rows, so a padding row otherwise keeps whatever length the
-            # request that last occupied that slot left behind, and attention
-            # reads a real sequence for a row that only carries padding tokens.
-            # The host mirror is cleared from num_reqs_padded below, which
-            # leaves exactly these rows, and the device side had nothing.
-            self.input_buffers.seq_lens[num_reqs:num_reqs_padded].zero_()
-            self.input_buffers.seq_lens_np[num_reqs:num_reqs_padded] = 0
+        # NOTE: padding rows are deliberately NOT zeroed here. Zeroing them is
+        # what makes _remove_spec_graph_padding_queries find them, and that
+        # function truncates the GDN query view at the first one -- which is the
+        # opposite of the contract the state operators are built for. The
+        # reference design keeps every empty row and makes it inert in place
+        # (zero length, invalid state index, operator skips it), so that the GDN
+        # request axis is B_max for every bucket. Truncating instead makes the
+        # axis follow the live count, which is exactly the varying-axis fault
+        # that produced garbled output while concurrency ramped. Attempted here
+        # on 2026-09-23 and it cost the whole-network gate its match.
         seq_lens = self.input_buffers.seq_lens[:num_reqs_padded]
         if adaptive_verification_active and (self.use_fia or self._av_reads_back_exact_bounds()):
             self.input_buffers.seq_lens_np[:num_reqs] = seq_lens[:num_reqs].cpu().numpy()
@@ -972,6 +984,7 @@ def graph_manager_wrapper(model_runner):
         lora_capture_cases: list[int] | None = None,
         varlen_decode: bool = False,
     ):
+        mode_for_manager = None
         if getattr(model_runner, "eager_survival_test", False):
             from vllm_ascend.worker.v2.spec_decode.dspark.eager_config import (
                 GRAPH_MODE_NONE,
@@ -981,6 +994,7 @@ def graph_manager_wrapper(model_runner):
             )
 
             mode = av_graph_mode()
+            mode_for_manager = mode
             if mode == GRAPH_MODE_NONE:
                 # v0.28 unconditionally upgrades AV to FULL_AND_PIECEWISE. With no
                 # graph mode selected the lane has no graph cost model and stays eager.
@@ -1047,6 +1061,63 @@ def graph_manager_wrapper(model_runner):
             # trimmed batch. What made that unsafe before is the geometry the
             # state operators see, and pinning the GDN request axis is the part
             # of the contract that addresses it.
+        # Short-circuited: GRAPH_MODE_RAGGED is imported inside the lane branch,
+        # so a runner that is not on the lane must not reach the comparison.
+        if mode_for_manager is not None and mode_for_manager == GRAPH_MODE_RAGGED:
+
+            class _PureSpecDecodeOnly(ModelAclGraphManager):
+                """Keep batches that are not pure speculative decode out of the graph.
+
+                Nothing in the compatibility test can see the difference. It
+                compares request counts, token counts and query lengths, and a
+                batch carrying a real prefill satisfies all three against a
+                captured decode graph -- so it matched one and ran with a
+                geometry full attention, the GDN metadata and the cost table
+                were not captured for. That produced two different device
+                failures a hundred requests into a run, both on a batch of
+                fifteen decodes and one prefill.
+
+                The reference design states this as a deliberate correctness
+                boundary rather than a limitation to engineer around: a batch
+                that does not meet the capture contract leaves the ragged graph,
+                and the way to win the lost throughput back is to split prefill
+                and decode into separate microbatches, not to widen the test.
+                """
+
+                def dispatch(
+                    self,
+                    num_reqs: int,
+                    num_tokens: int,
+                    uniform_token_count: int | None,
+                    num_active_loras: int,
+                    max_query_len: int | None = None,
+                    num_ubatches: int = 1,
+                ) -> BatchExecutionDescriptor:
+                    if not getattr(model_runner, "av_batch_is_pure_spec_decode", True):
+                        return BatchExecutionDescriptor(
+                            cg_mode=CUDAGraphMode.NONE,
+                            num_tokens=num_tokens,
+                            num_reqs=num_reqs,
+                            num_active_loras=self._resolve_effective_loras(num_active_loras),
+                            num_ubatches=num_ubatches,
+                        )
+                    return super().dispatch(
+                        num_reqs,
+                        num_tokens,
+                        uniform_token_count,
+                        num_active_loras,
+                        max_query_len,
+                        num_ubatches,
+                    )
+
+            return _PureSpecDecodeOnly(
+                vllm_config,
+                device,
+                cudagraph_mode,
+                decode_query_len,
+                lora_capture_cases,
+                varlen_decode=varlen_decode,
+            )
         return ModelAclGraphManager(
             vllm_config,
             device,

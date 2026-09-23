@@ -736,10 +736,32 @@ def _graph_factory(monkeypatch, mode, keep_piecewise=False):
         type_ignores=[],
     )
     ast.fix_missing_locations(code)
+
+    class _StubManager:
+        """Records its construction and can be subclassed by the factory.
+
+        Unpacks as (args, kwargs) so the tests that only care about what the
+        factory passed read the same as before.
+        """
+
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+
+        def __iter__(self):
+            return iter((self.args, self.kwargs))
+
+        def _resolve_effective_loras(self, num_active_loras):
+            return num_active_loras
+
+        def dispatch(self, *args, **kwargs):
+            return ("delegated", args, kwargs)
+
     upstream = SimpleNamespace(ModelCudaGraphManager=object())
     namespace = {
         "contextmanager": contextmanager,
         "vllm_model_runner": upstream,
+        "BatchExecutionDescriptor": lambda **fields: SimpleNamespace(**fields),
         "CUDAGraphMode": SimpleNamespace(
             NONE="none", FULL_AND_PIECEWISE="full_and_piecewise", FULL_DECODE_ONLY="full_decode_only"
         ),
@@ -747,7 +769,7 @@ def _graph_factory(monkeypatch, mode, keep_piecewise=False):
         # The wrapper reads the keep-piecewise bisect flag; default it off so
         # these tests exercise the shipping path.
         "envs_ascend": SimpleNamespace(VLLM_ASCEND_DSPARK_AV_KEEP_PIECEWISE=keep_piecewise),
-        "ModelAclGraphManager": lambda *args, **kwargs: (args, kwargs),
+        "ModelAclGraphManager": _StubManager,
     }
     exec(compile(code, str(path), "exec"), namespace)
     return namespace["graph_manager_wrapper"], upstream
@@ -842,6 +864,37 @@ def test_keep_piecewise_flag_leaves_the_forced_mode_alone(monkeypatch):
     with wrapper(SimpleNamespace(eager_survival_test=True)):
         args, _ = upstream.ModelCudaGraphManager(config, "cpu", "full_and_piecewise", 8, varlen_decode=True)
     assert args[2] == "full_decode_only", "the default still downgrades"
+
+
+def test_ragged_refuses_a_batch_that_is_not_pure_speculative_decode(monkeypatch):
+    """The capture contract is pure speculative decode, and nothing else sees it.
+
+    The compatibility test compares request counts, token counts and query
+    lengths; a batch carrying a real prefill satisfies all three against a
+    captured decode graph, so it matched one and ran with a geometry that graph
+    was not captured for. Two different device failures came from exactly that
+    batch shape. The boundary is deliberate -- the fix for the lost throughput
+    is separate microbatches, not a looser test.
+    """
+    wrapper, upstream = _graph_factory(monkeypatch, "ragged")
+    config = SimpleNamespace(
+        compilation_config=SimpleNamespace(
+            cudagraph_mode="full_and_piecewise", splitting_ops_contain_attention=lambda: True
+        )
+    )
+    runner = SimpleNamespace(eager_survival_test=True, av_batch_is_pure_spec_decode=True)
+    with wrapper(runner):
+        manager = upstream.ModelCudaGraphManager(config, "cpu", "full_and_piecewise", 8, varlen_decode=True)
+
+    # Pure speculative decode: the normal lookup runs.
+    assert manager.dispatch(16, 128, None, 0, 8)[0] == "delegated"
+
+    # A prefill sharing the batch: no graph, and the descriptor still describes
+    # the real batch so the caller can run it eagerly.
+    runner.av_batch_is_pure_spec_decode = False
+    desc = manager.dispatch(16, 127, None, 0, 8)
+    assert desc.cg_mode == "none"
+    assert desc.num_tokens == 127 and desc.num_reqs == 16
 
 
 def test_ragged_graph_mode_keeps_the_varlen_descriptor(monkeypatch):

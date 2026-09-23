@@ -800,7 +800,57 @@ docstring 写着:
 所以如果只把 buffer 加宽:切片不再报错,`inactive` 对那一行判成 **False**,FIA 的 dummy 行
 就被当成真实请求送进 GDN 的循环状态更新——**不报错,只出错**。宽度和清零必须一起改。
 
+### 勘误:修复方向是错的(2026-09-23 下午)
+
+重读文章 §4.5 之后,上面那套修法是**反的**。
+
+> **4.5 mixed batch 为什么没有强行进入 ragged FULL**
+>
+> ragged FULL 图的契约是纯 speculative decode。真实 prefill、普通 decode 和 speculative
+> decode 混在一起时,Full Attention、GDN metadata 和 cost model 都不再是同一种几何。
+>
+> - 纯 speculative decode:允许 ragged FULL
+> - **含真实 prefill 或不满足契约的 mixed batch:退出 ragged FULL**
+>
+> 这会让混部场景损失一部分性能,但**它是有意保留的正确性边界。不能为了命中图,强行把一个
+> 不符合捕获契约的 batch 塞进去。**
+
+两次设备失败的批都是 **15 decode + 1 prefill**。加宽缓冲是**让一个不合契约的批活下来**,
+正是这段明确反对的做法。
+
+而清零更糟。文章 §3.4.5 要求**保留空行**:
+
+> 即使当前只有 32 个请求,前 32 行保存真实请求,**后 64 行也作为零长度、无效状态索引的空行
+> 保留**。
+
+`_remove_spec_graph_padding_queries` 是**截掉**它们。清零之前 padding 行带着残留长度,
+`inactive` 恒为假,这个函数**从未真正执行过**;清零让它第一次生效,GDN 的请求轴于是从 B_max
+变成跟着活跃数走。这正是 §4.4 记录的故障:
+
+> 最终定位到:**不同 Q 使用了不同的 GDN 请求轴和 tiling**。把所有 bucket 的 GDN 轴固定为
+> B_max,并让空行成为确定性的零长度状态后,问题得到解决。
+
+所以整网门槛报 worse than noise 是这次清零造成的,**已撤销**。GDN 侧本来就实现了文章的契约
+(`spec_state_indices_tensor[spec_batch_size:].fill_(NULL_BLOCK_ID)`),空行保留、状态索引无效,
+不需要也不应该截断。
+
 ### 修复(2026-09-23)
+
+按文章 §4.5 做正确的那件事:**ragged 模式拒绝非纯 speculative decode 的批**。
+
+判据来自 scheduler output:正在 prefill 的请求出现在 `num_scheduled_tokens` 里、却不在
+`scheduled_spec_decode_tokens` 里,所以两者长度不等**恰好**等价于批是混合的——新请求和分块
+prefill 都覆盖到。崩溃那次是 16 对 15。
+
+`_is_compatible` 看不到这件事:它只比请求数、token 数和 query 长度,而带 prefill 的批对着
+捕获的 decode 图这三项全部满足。所以 ragged 模式下的 manager 覆写 `dispatch`,批不纯就直接
+返回 `cg_mode=NONE` 的描述符,让它 eager 跑。
+
+保留的是**加宽**(`B_fia = B_live + 1` 是独立且正确的,纯 spec decode 批在槽位全满且有
+token padding 时同样需要那一行);撤销的是**清零**。
+
+文章也说了后续方向:「优化混部的正确方向不是放宽判断,而是把 prefill 和 decode 拆成独立
+microbatch,让 decode 子批继续回放 ragged FULL。」
 
 按文章 §3.4.4 做了三件事:
 
