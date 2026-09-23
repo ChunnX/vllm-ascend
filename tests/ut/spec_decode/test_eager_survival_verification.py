@@ -652,6 +652,41 @@ def test_zero_draft_decode_preserves_previous_accepted_selector(monkeypatch, pol
     np.testing.assert_array_equal(metadata.num_decode_draft_tokens_cpu.numpy(), [0, 1, -1])
 
 
+def test_every_per_request_buffer_has_the_padding_row():
+    """The dummy row must exist in all of them, not just the one that crashed.
+
+    query_start_loc was widened for token padding long ago and the rest were
+    not, which is what let a saturated batch describe one more request than it
+    had lengths for. Read the widths out of the source so widening one and
+    forgetting another fails here rather than on a device.
+    """
+    import ast
+
+    path = ROOT / "vllm_ascend/worker/v2/input_batch.py"
+    tree = ast.parse(path.read_text())
+
+    widths: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign) and not isinstance(node, ast.AnnAssign):
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        name = next(
+            (t.attr for t in targets if isinstance(t, ast.Attribute) and isinstance(t.value, ast.Name)),
+            None,
+        )
+        if name is None or node.value is None or not isinstance(node.value, ast.Call):
+            continue
+        for arg in node.value.args + [kw.value for kw in node.value.keywords]:
+            if isinstance(arg, ast.BinOp) and isinstance(arg.left, ast.Name) and arg.left.id == "max_num_reqs":
+                widths[name] = f"max_num_reqs + {ast.literal_eval(arg.right)}"
+            elif isinstance(arg, ast.Name) and arg.id == "max_num_reqs":
+                widths.setdefault(name, "max_num_reqs")
+
+    assert widths.get("query_start_loc") == "max_num_reqs + 2", widths
+    for name in ("seq_lens", "seq_lens_cpu", "dcp_local_seq_lens"):
+        assert widths.get(name) == "max_num_reqs + 1", (name, widths)
+
+
 def _fia_padding():
     """Extract the adaptive FIA padding method and bind it to a stub runner."""
     import ast
@@ -730,23 +765,44 @@ def _graph_factory(monkeypatch, mode, keep_piecewise=False):
 
     path = ROOT / "vllm_ascend/worker/v2/model_runner.py"
     tree = ast.parse(path.read_text())
-    function = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "graph_manager_wrapper")
+    wanted = ("_refuse_impure_batches", "graph_manager_wrapper")
+    functions = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in wanted]
+    assert len(functions) == len(wanted), f"expected {wanted}, found {[f.name for f in functions]}"
     code = ast.Module(
-        body=[ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0), function],
+        body=[ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0), *functions],
         type_ignores=[],
     )
     ast.fix_missing_locations(code)
 
     class _StubManager:
-        """Records its construction and can be subclassed by the factory.
+        """Mirrors ModelAclGraphManager's real signature.
+
+        Positional up to model_runner, keyword after -- so a construction that
+        omits model_runner or passes lora_capture_cases into its place fails
+        here rather than as an AttributeError during engine start, which is what
+        happened on 2026-09-23 and cost a device run.
 
         Unpacks as (args, kwargs) so the tests that only care about what the
         factory passed read the same as before.
         """
 
-        def __init__(self, *args, **kwargs):
-            self.args = args
-            self.kwargs = kwargs
+        def __init__(
+            self,
+            vllm_config,
+            device,
+            cudagraph_mode,
+            decode_query_len,
+            model_runner,
+            lora_capture_cases=None,
+            varlen_decode=False,
+        ):
+            assert not isinstance(model_runner, list), (
+                "model_runner is the fifth positional argument; passing "
+                "lora_capture_cases there is the mistake this guards"
+            )
+            self.model_runner = model_runner
+            self.args = (vllm_config, device, cudagraph_mode, decode_query_len, model_runner)
+            self.kwargs = {"lora_capture_cases": lora_capture_cases, "varlen_decode": varlen_decode}
 
         def __iter__(self):
             return iter((self.args, self.kwargs))
@@ -779,8 +835,8 @@ def test_target_graph_factory_keeps_the_lane_eager_when_no_graph_mode_is_set(mon
     wrapper, upstream = _graph_factory(monkeypatch, "none")
     original = upstream.ModelCudaGraphManager
     config = SimpleNamespace(compilation_config=SimpleNamespace(cudagraph_mode="full_and_piecewise"))
-    with wrapper(SimpleNamespace(eager_survival_test=True)):
-        args, _ = upstream.ModelCudaGraphManager(config, "cpu", "full_and_piecewise", 8, varlen_decode=True)
+    with wrapper(runner := SimpleNamespace(eager_survival_test=True)):
+        args, _ = upstream.ModelCudaGraphManager(config, "cpu", "full_and_piecewise", 8, runner, varlen_decode=True)
         assert args[2] == "none"
         assert config.compilation_config.cudagraph_mode == "none"
     assert upstream.ModelCudaGraphManager is original
@@ -799,8 +855,8 @@ def test_uniform_graph_mode_keeps_the_graph_and_drops_the_varlen_descriptor(monk
     """
     wrapper, upstream = _graph_factory(monkeypatch, "uniform")
     config = SimpleNamespace(compilation_config=SimpleNamespace(cudagraph_mode="full_decode_only"))
-    with wrapper(SimpleNamespace(eager_survival_test=True)):
-        args, kwargs = upstream.ModelCudaGraphManager(config, "cpu", "full_decode_only", 8, varlen_decode=True)
+    with wrapper(runner := SimpleNamespace(eager_survival_test=True)):
+        args, kwargs = upstream.ModelCudaGraphManager(config, "cpu", "full_decode_only", 8, runner, varlen_decode=True)
         # The graph mode survives ...
         assert args[2] == "full_decode_only"
         assert config.compilation_config.cudagraph_mode == "full_decode_only"
@@ -822,8 +878,10 @@ def test_ragged_drops_a_piecewise_family_that_cannot_be_piecewise(monkeypatch, c
     wrapper, upstream = _graph_factory(monkeypatch, "ragged")
     unsplit = SimpleNamespace(cudagraph_mode="full_and_piecewise", splitting_ops_contain_attention=lambda: False)
     config = SimpleNamespace(compilation_config=unsplit)
-    with wrapper(SimpleNamespace(eager_survival_test=True)), caplog.at_level(logging.WARNING):
-        args, kwargs = upstream.ModelCudaGraphManager(config, "cpu", "full_and_piecewise", 8, varlen_decode=True)
+    with wrapper(runner := SimpleNamespace(eager_survival_test=True)), caplog.at_level(logging.WARNING):
+        args, kwargs = upstream.ModelCudaGraphManager(
+            config, "cpu", "full_and_piecewise", 8, runner, varlen_decode=True
+        )
     assert args[2] == "full_decode_only"
     assert unsplit.cudagraph_mode == "full_decode_only"
     # The varlen descriptor has to survive the downgrade, or ragged loses the
@@ -833,8 +891,10 @@ def test_ragged_drops_a_piecewise_family_that_cannot_be_piecewise(monkeypatch, c
 
     split = SimpleNamespace(cudagraph_mode="full_and_piecewise", splitting_ops_contain_attention=lambda: True)
     config = SimpleNamespace(compilation_config=split)
-    with wrapper(SimpleNamespace(eager_survival_test=True)):
-        args, kwargs = upstream.ModelCudaGraphManager(config, "cpu", "full_and_piecewise", 8, varlen_decode=True)
+    with wrapper(runner := SimpleNamespace(eager_survival_test=True)):
+        args, kwargs = upstream.ModelCudaGraphManager(
+            config, "cpu", "full_and_piecewise", 8, runner, varlen_decode=True
+        )
     assert args[2] == "full_and_piecewise"
     assert split.cudagraph_mode == "full_and_piecewise"
 
@@ -852,8 +912,10 @@ def test_keep_piecewise_flag_leaves_the_forced_mode_alone(monkeypatch):
 
     wrapper, upstream = _graph_factory(monkeypatch, "ragged", keep_piecewise=True)
     config = SimpleNamespace(compilation_config=unsplit())
-    with wrapper(SimpleNamespace(eager_survival_test=True)):
-        args, kwargs = upstream.ModelCudaGraphManager(config, "cpu", "full_and_piecewise", 8, varlen_decode=True)
+    with wrapper(runner := SimpleNamespace(eager_survival_test=True)):
+        args, kwargs = upstream.ModelCudaGraphManager(
+            config, "cpu", "full_and_piecewise", 8, runner, varlen_decode=True
+        )
     assert args[2] == "full_and_piecewise", "the flag must leave the forced mode alone"
     assert config.compilation_config.cudagraph_mode == "full_and_piecewise"
     # Turning the downgrade off must not also turn off what ragged needs.
@@ -861,8 +923,8 @@ def test_keep_piecewise_flag_leaves_the_forced_mode_alone(monkeypatch):
 
     wrapper, upstream = _graph_factory(monkeypatch, "ragged", keep_piecewise=False)
     config = SimpleNamespace(compilation_config=unsplit())
-    with wrapper(SimpleNamespace(eager_survival_test=True)):
-        args, _ = upstream.ModelCudaGraphManager(config, "cpu", "full_and_piecewise", 8, varlen_decode=True)
+    with wrapper(runner := SimpleNamespace(eager_survival_test=True)):
+        args, _ = upstream.ModelCudaGraphManager(config, "cpu", "full_and_piecewise", 8, runner, varlen_decode=True)
     assert args[2] == "full_decode_only", "the default still downgrades"
 
 
@@ -884,7 +946,7 @@ def test_ragged_refuses_a_batch_that_is_not_pure_speculative_decode(monkeypatch)
     )
     runner = SimpleNamespace(eager_survival_test=True, av_batch_is_pure_spec_decode=True)
     with wrapper(runner):
-        manager = upstream.ModelCudaGraphManager(config, "cpu", "full_and_piecewise", 8, varlen_decode=True)
+        manager = upstream.ModelCudaGraphManager(config, "cpu", "full_and_piecewise", 8, runner, varlen_decode=True)
 
     # Pure speculative decode: the normal lookup runs.
     assert manager.dispatch(16, 128, None, 0, 8)[0] == "delegated"
@@ -913,8 +975,10 @@ def test_ragged_graph_mode_keeps_the_varlen_descriptor(monkeypatch):
             cudagraph_mode="full_and_piecewise", splitting_ops_contain_attention=lambda: True
         )
     )
-    with wrapper(SimpleNamespace(eager_survival_test=True)):
-        args, kwargs = upstream.ModelCudaGraphManager(config, "cpu", "full_and_piecewise", 8, varlen_decode=True)
+    with wrapper(runner := SimpleNamespace(eager_survival_test=True)):
+        args, kwargs = upstream.ModelCudaGraphManager(
+            config, "cpu", "full_and_piecewise", 8, runner, varlen_decode=True
+        )
         assert args[2] == "full_and_piecewise"
         assert config.compilation_config.cudagraph_mode == "full_and_piecewise"
         assert kwargs["varlen_decode"] is True
@@ -924,7 +988,7 @@ def test_a_graph_mode_leaves_a_non_lane_runner_alone(monkeypatch):
     # The wrapper must not touch a run that is not using an adaptive lane.
     wrapper, upstream = _graph_factory(monkeypatch, "uniform")
     config = SimpleNamespace(compilation_config=SimpleNamespace(cudagraph_mode="full_decode_only"))
-    with wrapper(SimpleNamespace(eager_survival_test=False)):
-        args, kwargs = upstream.ModelCudaGraphManager(config, "cpu", "full_decode_only", 8, varlen_decode=True)
+    with wrapper(runner := SimpleNamespace(eager_survival_test=False)):
+        args, kwargs = upstream.ModelCudaGraphManager(config, "cpu", "full_decode_only", 8, runner, varlen_decode=True)
         assert args[2] == "full_decode_only"
         assert kwargs["varlen_decode"] is True

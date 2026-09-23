@@ -363,9 +363,13 @@ class NPUModelRunner(GPUModelRunner):
         # is prefilling appears in the scheduled tokens but not in the scheduled
         # speculative tokens, so the two lengths disagree exactly when the batch
         # is mixed -- which covers a new request and a chunked prefill alike.
-        scheduled = getattr(scheduler_output, "num_scheduled_tokens", None) or {}
-        spec = getattr(scheduler_output, "scheduled_spec_decode_tokens", None) or {}
-        self.av_batch_is_pure_spec_decode = bool(scheduled) and len(spec) == len(scheduled)
+        # Only from a real step. A dummy or profile run carries a synthetic
+        # scheduler output that would read as mixed and leave the flag set for
+        # whatever ran next, including graph capture.
+        if not dummy_run and not is_profile:
+            scheduled = getattr(scheduler_output, "num_scheduled_tokens", None) or {}
+            spec = getattr(scheduler_output, "scheduled_spec_decode_tokens", None) or {}
+            self.av_batch_is_pure_spec_decode = bool(scheduled) and len(spec) == len(scheduled)
 
         self.model_state.kvpp_is_dummy_run = dummy_run or is_profile
         with pcp_dispatch_context():
@@ -971,6 +975,51 @@ class NPUModelRunner(GPUModelRunner):
         return query_start_loc_np, num_reqs_padded
 
 
+def _refuse_impure_batches(manager, model_runner) -> None:
+    """Keep batches that are not pure speculative decode out of the ragged graph.
+
+    The ragged graph's capture contract is pure speculative decode: with a real
+    prefill sharing the batch, full attention, the state metadata and the cost
+    table are no longer the geometry that was captured. Nothing in the
+    compatibility test can see that -- it compares request counts, token counts
+    and query lengths, all of which a mixed batch satisfies against a captured
+    decode graph -- so the refusal has to happen here.
+
+    Wraps the bound method on the instance rather than subclassing. A subclass
+    means writing the constructor call a second time, and writing it wrong is a
+    startup crash that nothing without a device would catch; there is no reason
+    to take that risk for a method override.
+    """
+    inner = manager.dispatch
+
+    def dispatch(
+        num_reqs: int,
+        num_tokens: int,
+        uniform_token_count: int | None,
+        num_active_loras: int,
+        max_query_len: int | None = None,
+        num_ubatches: int = 1,
+    ) -> BatchExecutionDescriptor:
+        if getattr(model_runner, "av_batch_is_pure_spec_decode", True):
+            return inner(
+                num_reqs,
+                num_tokens,
+                uniform_token_count,
+                num_active_loras,
+                max_query_len,
+                num_ubatches,
+            )
+        return BatchExecutionDescriptor(
+            cg_mode=CUDAGraphMode.NONE,
+            num_tokens=num_tokens,
+            num_reqs=num_reqs,
+            num_active_loras=manager._resolve_effective_loras(num_active_loras),
+            num_ubatches=num_ubatches,
+        )
+
+    manager.dispatch = dispatch
+
+
 @contextmanager
 def graph_manager_wrapper(model_runner):
     """Context manager to override graph manager."""
@@ -1063,62 +1112,7 @@ def graph_manager_wrapper(model_runner):
             # of the contract that addresses it.
         # Short-circuited: GRAPH_MODE_RAGGED is imported inside the lane branch,
         # so a runner that is not on the lane must not reach the comparison.
-        if mode_for_manager is not None and mode_for_manager == GRAPH_MODE_RAGGED:
-
-            class _PureSpecDecodeOnly(ModelAclGraphManager):
-                """Keep batches that are not pure speculative decode out of the graph.
-
-                Nothing in the compatibility test can see the difference. It
-                compares request counts, token counts and query lengths, and a
-                batch carrying a real prefill satisfies all three against a
-                captured decode graph -- so it matched one and ran with a
-                geometry full attention, the GDN metadata and the cost table
-                were not captured for. That produced two different device
-                failures a hundred requests into a run, both on a batch of
-                fifteen decodes and one prefill.
-
-                The reference design states this as a deliberate correctness
-                boundary rather than a limitation to engineer around: a batch
-                that does not meet the capture contract leaves the ragged graph,
-                and the way to win the lost throughput back is to split prefill
-                and decode into separate microbatches, not to widen the test.
-                """
-
-                def dispatch(
-                    self,
-                    num_reqs: int,
-                    num_tokens: int,
-                    uniform_token_count: int | None,
-                    num_active_loras: int,
-                    max_query_len: int | None = None,
-                    num_ubatches: int = 1,
-                ) -> BatchExecutionDescriptor:
-                    if not getattr(model_runner, "av_batch_is_pure_spec_decode", True):
-                        return BatchExecutionDescriptor(
-                            cg_mode=CUDAGraphMode.NONE,
-                            num_tokens=num_tokens,
-                            num_reqs=num_reqs,
-                            num_active_loras=self._resolve_effective_loras(num_active_loras),
-                            num_ubatches=num_ubatches,
-                        )
-                    return super().dispatch(
-                        num_reqs,
-                        num_tokens,
-                        uniform_token_count,
-                        num_active_loras,
-                        max_query_len,
-                        num_ubatches,
-                    )
-
-            return _PureSpecDecodeOnly(
-                vllm_config,
-                device,
-                cudagraph_mode,
-                decode_query_len,
-                lora_capture_cases,
-                varlen_decode=varlen_decode,
-            )
-        return ModelAclGraphManager(
+        manager = ModelAclGraphManager(
             vllm_config,
             device,
             cudagraph_mode,
@@ -1127,6 +1121,11 @@ def graph_manager_wrapper(model_runner):
             lora_capture_cases=lora_capture_cases,
             varlen_decode=varlen_decode,  # type: ignore[call-arg]
         )
+        # Short-circuited: GRAPH_MODE_RAGGED is imported inside the lane branch,
+        # so a runner that is not on the lane must not reach the comparison.
+        if mode_for_manager is not None and mode_for_manager == GRAPH_MODE_RAGGED:
+            _refuse_impure_batches(manager, model_runner)
+        return manager
 
     try:
         vllm_model_runner.ModelCudaGraphManager = factory
