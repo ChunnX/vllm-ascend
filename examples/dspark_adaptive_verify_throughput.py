@@ -280,6 +280,8 @@ def run_engine(args: argparse.Namespace) -> int:
         async_scheduling=args.async_scheduling,
         tensor_parallel_size=args.tensor_parallel_size,
         compilation_config={"cudagraph_mode": args.cudagraph_mode},
+        **({"max_num_batched_tokens": args.max_num_batched_tokens} if args.max_num_batched_tokens else {}),
+        **({"block_size": args.block_size} if args.block_size else {}),
         # The acceptance column comes from the periodic stat logger, which the
         # offline entrypoint disables by default.
         disable_log_stats=False,
@@ -323,6 +325,13 @@ def run_engine(args: argparse.Namespace) -> int:
 def child_env() -> dict[str, str]:
     env = os.environ.copy()
     env["VLLM_USE_V2_MODEL_RUNNER"] = "1"
+    # A benchmark must compile what it measures. The cache key does not capture
+    # everything that decides the compiled graph -- the adaptive path rewrites
+    # cudagraph_mode after the configuration was settled -- so a cell can pick
+    # up an artifact built for a different configuration, which surfaces from
+    # the graph compiler as an unpack-count mismatch rather than as a cache
+    # miss. The deployed serve configuration sets this for the same reason.
+    env["VLLM_DISABLE_COMPILE_CACHE"] = "1"
     # A TP=4 engine spawns workers; the default fork start method inherits the
     # launcher's torch thread pool and aborts worker init.
     env["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
@@ -382,6 +391,10 @@ def run_config(k: int, max_num_seqs: int, adaptive: bool, args: argparse.Namespa
         cmd.append("--adaptive")
     if args.dataset:
         cmd += ["--dataset", args.dataset]
+    if args.max_num_batched_tokens:
+        cmd += ["--max-num-batched-tokens", str(args.max_num_batched_tokens)]
+    if args.block_size:
+        cmd += ["--block-size", str(args.block_size)]
     if args.prefix_caching:
         cmd.append("--prefix-caching")
     if args.async_scheduling:
@@ -644,6 +657,18 @@ def main() -> int:
             "as in PR 15098 rather than a comparison of two graph configurations."
         ),
     )
+    parser.add_argument(
+        "--max-num-batched-tokens",
+        type=int,
+        default=None,
+        help="Match the deployment. It bounds a scheduler step, so it shapes the prefill/decode mix.",
+    )
+    parser.add_argument(
+        "--block-size",
+        type=int,
+        default=None,
+        help="Match the deployment; the KV block size is not a neutral choice for a hybrid model.",
+    )
     parser.add_argument("--prefix-caching", action="store_true")
     parser.add_argument("--async-scheduling", action="store_true")
     parser.add_argument(
@@ -680,6 +705,21 @@ def main() -> int:
     log_dir = Path(f"dspark_av_tput_{time.strftime('%Y%m%d-%H%M%S')}")
     log_dir.mkdir(parents=True, exist_ok=True)
     print(f"Logs: {log_dir.resolve()}", flush=True)
+    # These change what engine is built. A benchmark whose engine differs from
+    # the deployed one measures something nobody runs, and the difference is
+    # invisible unless it is printed.
+    shaping = {
+        name: os.environ.get(name)
+        for name in (
+            "VLLM_ASCEND_ENABLE_DSPARK_FIA_SINK",
+            "VLLM_ASCEND_KV_GROUP_MIN_SIZE",
+            "VLLM_ASCEND_DSPARK_AV_GRAPH",
+            "VLLM_ASCEND_DSPARK_AV_KEEP_PIECEWISE",
+            "VLLM_ASCEND_DSPARK_AV_TP_BROADCAST",
+            "VLLM_ASCEND_DSPARK_AV_ADAPT",
+        )
+    }
+    print("Engine-shaping env: " + ", ".join(f"{k}={v or 'unset'}" for k, v in shaping.items()), flush=True)
 
     results, failures = [], []
     for k in args.num_speculative_tokens:
