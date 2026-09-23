@@ -988,9 +988,25 @@ num_reqs: int | None  # None means no request padding is needed (PIECEWISE graph
 **没有请求 padding、没有请求数上限**——所以混合批走 PIECEWISE 时 `num_reqs_padded =
 num_reqs`,而 FIA padding 只在 `cg_mode == FULL` 时才跑。dummy 行那一整类问题根本不出现。
 
-所以拒绝逻辑从「不是 NONE 就降级」改成 **只拒绝 FULL**;`KEEP_PIECEWISE` 默认翻成 1,保留
-那一族图。降级当初测出来是中性的(16.086 对 16.130ms),**那是在拒绝逻辑存在之前**——当时
-确实没人需要 PIECEWISE,现在有了。
+所以拒绝逻辑从「不是 NONE 就降级」改成 **只拒绝 FULL**。
+
+### 但不能让 AV 自己去改图模式(勘误)
+
+一度把 `KEEP_PIECEWISE` 默认翻成 1 来保住那一族图。**那是错的。**
+
+关 AV 时配置是 `FULL_DECODE_ONLY = (FULL, NONE)`,没有 AV manager 就没有强制升级,
+`mixed_mode()` 是 **NONE** —— 混合批走 **eager**。如果开 AV 就留在 `FULL_AND_PIECEWISE`,
+混合批走 **PIECEWISE**,而 piecewise 比 eager 快。**两条 lane 对同一种批的处理就不一样了**,
+dynamics 会因为一个与动态校验无关的原因显得更快——**把收益测高**。
+
+457 对 441 那次 `KEEP_PIECEWISE` 是 0、降级生效,两边混合批都走 eager,**那个 +3.6% 是干净
+的**。所以默认改回 0:开 AV 不得改变引擎对非投机批的处理。
+
+想让混合批走 piecewise 是可以的,但要**给两条 lane 都配** `--cudagraph-mode
+FULL_AND_PIECEWISE`,那是配置选择,不是特性收益。
+
+**「只拒绝 FULL」这一半仍然保留**:配置里有 piecewise 就用它,没有就落 eager——和关 AV 时
+一致。这条改动不再决定任何事,它只是不越权。
 
 ### 一条方法论
 

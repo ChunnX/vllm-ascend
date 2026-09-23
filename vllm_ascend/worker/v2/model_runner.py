@@ -1053,10 +1053,11 @@ def graph_manager_wrapper(model_runner):
                     cudagraph_mode = CUDAGraphMode.FULL_DECODE_ONLY
                     compilation.cudagraph_mode = cudagraph_mode
                     logger.warning(
-                        "[DSPARK-AV] cudagraph_mode FULL_AND_PIECEWISE -> FULL_DECODE_ONLY: "
-                        "no attention splitting ops are configured, so the piecewise family "
-                        "would be a second set of unsplit captures, and the ragged mode does "
-                        "not need it to catch trimmed batches."
+                        "[DSPARK-AV] cudagraph_mode FULL_AND_PIECEWISE -> FULL_DECODE_ONLY, "
+                        "restoring what was configured: adaptive verification must not change "
+                        "how the engine treats batches that are not speculative decode. "
+                        "Configure FULL_AND_PIECEWISE to put those on piecewise -- both lanes "
+                        "then get it."
                     )
             # Ragged mode otherwise leaves varlen_decode alone, which is the whole
             # change it needs on this side. The manager then captures a decode graph per
@@ -1152,10 +1153,15 @@ def _refuse_graph_for_impure_batch(cudagraph_manager, num_reqs, num_tokens, resu
         # documents a piecewise descriptor as carrying no request padding and no
         # replay-time request limit, so a mixed batch is safe in one -- and the
         # adaptive FIA padding, which is what the dummy-row trouble came from,
-        # only runs for FULL. The reference design says such a batch leaves the
-        # ragged graph "for eager or the native safe combined path"; this is
-        # that path, and sending it to eager instead cost throughput for
-        # nothing.
+        # only runs for FULL. The reference design calls this "the native safe
+        # combined path".
+        #
+        # Whether that path exists is the configured mode's business, not this
+        # feature's. FULL_DECODE_ONLY has no piecewise family, so such a batch
+        # lands on eager -- exactly where it lands with the feature off. Turning
+        # the feature on must not quietly upgrade the mode and start handling
+        # these batches better, or the measurement credits it for a
+        # configuration choice.
         return result
     # num_tokens and num_reqs go back to what was asked for: the descriptor's
     # are padded to reach a captured size, and there is no capture to reach.
