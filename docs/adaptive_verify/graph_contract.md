@@ -312,12 +312,22 @@ FULL，PIECEWISE 不是它平的原因。
 因此 ragged FULL 的价值是**让裁剪后的批不掉出图，即消除一个惩罚，而不是创造一个
 梯度**。在这个规模下那个惩罚本身也很小。
 
-#### 一个会系统性压平曲线的偏差
+#### 勘误：profiling context 不是压平曲线的原因
 
-`VLLM_ADAPTIVE_VERIFICATION_PROFILE_CONTEXT_LEN` 上游默认 **8192**，而门槛跑的是
-`max_model_len=2048`。attention 成本随 context 增长，所以「长 context 计时、短
-context 服务」会抬高每次测量里的固定部分，把 Q 的梯度按比例压小。门槛脚本现在把它
-默认对齐到 `--max-model-len`（显式 export 仍然优先）。
+这里原先写：`VLLM_ADAPTIVE_VERIFICATION_PROFILE_CONTEXT_LEN` 上游默认 **8192**，而门槛
+跑 `max_model_len=2048`、吞吐跑 4096，于是「长 context 计时、短 context 服务」把 Q 的梯度
+压平了。**这是错的，两个方向都错。**
+
+v0.28.0 的 `set_dummy_context`（`vllm/v1/worker/gpu/input_batch.py:223`）第一步就是
+`context_len = max(min(context_len, max_model_len - query_len), 0)`，所以请求值**只在
+`max_model_len - query_len` 以下生效**。两个脚本的 `max_model_len` 都低于 8192，profiling
+context 一直等于 `max_model_len - query_len`，也就是现在显式设进去的那个值。
+
+因此两个脚本里的 `setdefault` 在**当前配置下是 no-op**；保留它的理由只是与上游文档的用法
+一致（上游示例就是按部署 context 显式 export），并且在 `max_model_len > 8192` 时才真正起
+作用——而那种情况下偏差方向恰好相反，是**计时短、服务长**，低估 attention 成本。
+
+结论：**2026-09-23 那组 457.3 vs 441.3 TPS 不受这一项影响，不需要因此重测。**
 
 #### A″ 实测：服务规模下曲线确实有梯度
 

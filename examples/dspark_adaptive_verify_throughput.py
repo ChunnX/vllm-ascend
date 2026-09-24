@@ -362,11 +362,12 @@ def decode_spread(outputs) -> dict | None:
 
 def child_env(max_model_len: int) -> dict[str, str]:
     env = os.environ.copy()
-    # Price the cost table at the context this run actually uses. The upstream
-    # default profiles at 8192 tokens and attention cost grows with context, so
-    # profiling long while serving short inflates the fixed part of every
-    # measurement and flattens the gradient the controller decides on -- the
-    # table would then argue against trimming for a reason the run never sees.
+    # Price the cost table at the context this run serves, the way upstream's own
+    # documentation does (its example exports the deployment's context).
+    # Below 8192 this is a no-op: set_dummy_context clamps the requested context
+    # to max_model_len - query_len, so a 4096-token run already profiled there
+    # before this line existed. It starts to matter above 8192, where the
+    # upstream default profiles short while the run serves long.
     env.setdefault("VLLM_ADAPTIVE_VERIFICATION_PROFILE_CONTEXT_LEN", str(max_model_len))
     env["VLLM_USE_V2_MODEL_RUNNER"] = "1"
     # A benchmark must compile what it measures. The cache key does not capture

@@ -123,11 +123,11 @@ def run_engine(args: argparse.Namespace) -> int:
 
 def child_env(lane: str, max_model_len: int) -> dict[str, str]:
     env = os.environ.copy()
-    # Price the cost table at the context this run actually uses. The upstream
-    # default profiles at 8192 tokens of context, and attention cost grows with
-    # it, so profiling long while serving short inflates the fixed part of every
-    # measurement and flattens whatever gradient Q has. A flat curve is exactly
-    # the thing we are trying to tell apart from a real one.
+    # Price the cost table at the context this run serves, the way upstream's own
+    # documentation does. Below 8192 this is a no-op: set_dummy_context clamps
+    # the requested context to max_model_len - query_len, so a 2048-token gate
+    # already profiled there. It starts to matter above 8192, where the upstream
+    # default profiles short while the run serves long.
     env.setdefault(PROFILE_CONTEXT_ENV, str(max_model_len))
     env["VLLM_USE_V2_MODEL_RUNNER"] = "1"
     # A gate must compile what it checks. The cache key does not capture
