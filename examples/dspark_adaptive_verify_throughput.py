@@ -289,6 +289,22 @@ def run_engine(args: argparse.Namespace) -> int:
         # The acceptance column comes from the periodic stat logger, which the
         # offline entrypoint disables by default.
         disable_log_stats=False,
+        # Set only when profiling, because declaring it registers the collector
+        # and the timed numbers then are not the ones this script reports.
+        # torch_profiler_with_stack inflates the trace enough to matter at TP=4
+        # over a 27B model, and the question here is which kernels run, not
+        # which Python line launched them.
+        **(
+            {}
+            if not args.profile_dir
+            else {
+                "profiler_config": {
+                    "profiler": "torch",
+                    "torch_profiler_dir": args.profile_dir,
+                    "torch_profiler_with_stack": False,
+                }
+            }
+        ),
         speculative_config={
             "method": "dspark",
             "model": args.draft,
@@ -314,6 +330,28 @@ def run_engine(args: argparse.Namespace) -> int:
     # profiling and every lazy allocation, none of which recur -- charging them
     # to the first timed repeat would make the mean depend on the repeat count.
     llm.generate(prompts[: args.max_num_seqs], SamplingParams(temperature=0, max_tokens=8, ignore_eos=True))
+
+    if args.profile_dir:
+        # A trace of the whole workload would be far too large to open, so
+        # profile one wave, after a warm-up has absorbed capture, cost-table
+        # profiling and the lazy allocations. Nothing is timed: collection
+        # perturbs exactly the number this script otherwise reports.
+        #
+        # The window necessarily starts with this wave's prefill, because an
+        # offline generate cannot be joined once it is running. That is worth
+        # having rather than worth hiding: a mixed batch leaves the graph for
+        # eager, so those steps are part of the cost this run is explaining.
+        # They are the long ones at the front of the trace.
+        window = prompts[: args.max_num_seqs]
+        profile_params = SamplingParams(
+            temperature=0, max_tokens=args.profile_steps, ignore_eos=True, seed=17
+        )
+        llm.generate(window, profile_params)
+        llm.start_profile()
+        llm.generate(window, profile_params)
+        llm.stop_profile()
+        print(f"=== profile written under {args.profile_dir}", flush=True)
+        return 0
 
     runs = []
     for _ in range(max(1, args.repeats)):
@@ -432,8 +470,13 @@ def run_config(
         "--num-requests", str(num_requests),
         "--output-len", str(args.output_len),
         "--repeats", str(args.repeats),
+        "--profile-steps", str(args.profile_steps),
         "--cudagraph-mode", args.cudagraph_mode,
     ]  # fmt: skip
+    if args.profile_dir:
+        # One directory per cell. The point of profiling both lanes is to
+        # subtract them, which needs the traces kept apart.
+        cmd += ["--profile-dir", str(Path(args.profile_dir).resolve() / f"k{k}-b{max_num_seqs}-{lane}")]
     if adaptive:
         cmd.append("--adaptive")
     if args.dataset:
@@ -473,6 +516,10 @@ def run_config(
         raise RuntimeError(
             f"K={k} b={max_num_seqs} {lane} exited {result.returncode}; tail of {log_path}:\n{log[-12000:]}"
         )
+
+    if args.profile_dir:
+        print(f"=== K={k} b={max_num_seqs} {lane}: profile only, no timing reported", flush=True)
+        return {"lane": lane, "k": k, "max_num_seqs": max_num_seqs, "profile_only": True}
 
     runs = [json.loads(line.removeprefix(RESULT_PREFIX)) for line in log.splitlines() if line.startswith(RESULT_PREFIX)]
     if not runs:
@@ -760,6 +807,25 @@ def main() -> int:
         help="Timed passes per engine. Repeats are in-process: the load dominates, and one pass cannot resolve 1%%.",
     )
     parser.add_argument(
+        "--profile-dir",
+        default=None,
+        help=(
+            "Collect an Ascend PyTorch profile instead of timing anything. Each cell writes its "
+            "own subdirectory, so the lanes can be subtracted. Collection perturbs step time, "
+            "which is why a profiling run reports no TPS at all rather than a disclaimed one."
+        ),
+    )
+    parser.add_argument(
+        "--profile-steps",
+        type=int,
+        default=64,
+        help=(
+            "Output tokens in the profiled wave -- about a third as many decode steps at this "
+            "acceptance length. Long enough that decode outweighs the wave's own prefill, short "
+            "enough that the trace still opens."
+        ),
+    )
+    parser.add_argument(
         "--cudagraph-mode",
         default="FULL_DECODE_ONLY",
         help=(
@@ -854,7 +920,7 @@ def main() -> int:
                 except Exception as exc:  # noqa: BLE001 - report every cell, fail at the end
                     failures.append(f"K={k} b={max_num_seqs} {lane}: {exc}")
                     print(f"=== K={k} max_num_seqs={max_num_seqs} {lane}: FAILED -- {exc}", flush=True)
-                if lane == "fixed" and args.control:
+                if lane == "fixed" and args.control and not args.profile_dir:
                     # The same configuration in a second process. Whatever this
                     # differs from the first by is noise, and a lane has to beat
                     # it before a difference means anything.
@@ -863,6 +929,13 @@ def main() -> int:
                     except Exception as exc:  # noqa: BLE001
                         failures.append(f"K={k} b={max_num_seqs} control: {exc}")
                         print(f"=== K={k} max_num_seqs={max_num_seqs} control: FAILED -- {exc}", flush=True)
+
+    if args.profile_dir:
+        # Nothing to tabulate: a profiling run reports no timing on purpose.
+        print(f"\n==== profiles ====\nWritten under {Path(args.profile_dir).resolve()}")
+        for line in failures:
+            print(f"FAIL {line}")
+        return 1 if failures else 0
 
     rc = report(results, args) if results else 1
     for line in failures:
