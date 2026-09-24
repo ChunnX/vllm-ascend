@@ -606,7 +606,7 @@ def main() -> int:
     parser.add_argument("--draft", default=os.getenv("VLLM_TEST_DSPARK_MODEL"))
     parser.add_argument(
         "--lanes",
-        nargs="+",
+        nargs="*",
         default=["upstream", "upstream+ub", "upstream+graph", "upstream+ragged"],
         help=(
             "Lanes to compare against the baseline. 'upstream' runs the "
@@ -623,7 +623,10 @@ def main() -> int:
             "-- e.g. 'upstream+graph+axis'. The lane 'baseline2' runs the "
             "baseline a second time and compares it to the first, which checks "
             "that the comparison itself is reproducible before any mismatch is "
-            "attributed to a lane."
+            "attributed to a lane. Pass no lane at all to measure only the "
+            "reference's own variation, which is what decides whether token "
+            "equality is an instrument in this configuration -- one engine, so "
+            "'--lanes --floor-repeats 8' characterises it for one launch."
         ),
     )
     parser.add_argument("--tensor-parallel-size", type=int, default=4)
@@ -668,6 +671,15 @@ def main() -> int:
             "further than this can be called a defect.",
             flush=True,
         )
+
+    if not args.lanes:
+        distinct = {json.dumps(run) for run in passes}
+        print(
+            f"\n==== reference only ====\n{len(passes)} passes produced {len(distinct)} distinct "
+            "output(s). One means token equality is an instrument in this configuration; more "
+            "means it is not, and a lane can only be judged against the set."
+        )
+        return 0
 
     failures = []
     inconclusive = []
