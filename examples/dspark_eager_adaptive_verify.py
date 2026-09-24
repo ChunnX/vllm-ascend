@@ -82,6 +82,26 @@ def run_engine(args: argparse.Namespace) -> int:
     """Child mode: build one engine, generate greedily, print the token ids."""
     from vllm import LLM, SamplingParams
 
+    # None drops speculation entirely, which is what partitions the reference's
+    # own nondeterminism: either the target model alone reproduces itself pass to
+    # pass and the variation belongs to the speculative path, or it does not and
+    # no comparison of sampled tokens is a correctness instrument here, for any
+    # lane. EngineArgs types this field as optional, so None is its own default.
+    spec = None
+    if not args.no_spec:
+        spec = {
+            "method": "dspark",
+            "model": args.draft,
+            "num_speculative_tokens": args.num_speculative_tokens,
+            "enforce_eager": not args.graph,
+            # Off for the baseline. With it on and no lane selected the upstream
+            # factory refuses to start at all: GDN is an SSM backend, so it opts
+            # out of the device/CPU query-length mismatch adaptive verification
+            # relies on. The baseline is therefore fixed-K without a manager,
+            # which is exactly the behaviour these lanes have to preserve.
+            "enable_adaptive_verification": args.adaptive,
+        }
+
     llm = LLM(
         model=args.model,
         enforce_eager=not args.graph,
@@ -97,18 +117,7 @@ def run_engine(args: argparse.Namespace) -> int:
         enable_prefix_caching=False,
         async_scheduling=False,
         tensor_parallel_size=args.tensor_parallel_size,
-        speculative_config={
-            "method": "dspark",
-            "model": args.draft,
-            "num_speculative_tokens": args.num_speculative_tokens,
-            "enforce_eager": not args.graph,
-            # Off for the baseline. With it on and no lane selected the upstream
-            # factory refuses to start at all: GDN is an SSM backend, so it opts
-            # out of the device/CPU query-length mismatch adaptive verification
-            # relies on. The baseline is therefore fixed-K without a manager,
-            # which is exactly the behaviour these lanes have to preserve.
-            "enable_adaptive_verification": args.adaptive,
-        },
+        speculative_config=spec,
     )
     prompts = build_prompts(args.num_prompts or args.max_num_seqs)
     params = SamplingParams(temperature=0, max_tokens=args.max_tokens, seed=17)
@@ -226,6 +235,8 @@ def run_lane(
         "--cudagraph-mode",
         args.cudagraph_mode,
     ]
+    if args.no_spec:
+        cmd.append("--no-spec")
     if not lane.startswith("baseline"):
         cmd.append("--adaptive")
     # By the value, not by the key. Pinning every other lane to "none" made the
@@ -351,6 +362,7 @@ def _baseline_cache_path(args: argparse.Namespace) -> Path | None:
             # identity, not of the run that reads it.
             args.floor_repeats,
             args.floor,
+            args.no_spec,
         ],
         sort_keys=True,
     )
@@ -571,6 +583,16 @@ def main() -> int:
     parser.add_argument("--graph", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--repeats", type=int, default=1, help=argparse.SUPPRESS)
     parser.add_argument(
+        "--no-spec",
+        action="store_true",
+        help=(
+            "Build the engine with no speculative config at all, so the passes measure the "
+            "target model's own reproducibility. Takes no lane: it answers whether sampled-token "
+            "equality can be a correctness instrument in this configuration before any lane is "
+            "judged by it."
+        ),
+    )
+    parser.add_argument(
         "--floor-repeats",
         type=int,
         default=3,
@@ -647,6 +669,11 @@ def main() -> int:
     parser.add_argument("--log-dir", default="")
     args = parser.parse_args()
 
+    if args.no_spec and args.lanes:
+        raise SystemExit(
+            "--no-spec measures the target model alone, which no lane runs on. Pass '--lanes' "
+            "with no value to measure only the reference."
+        )
     if args.floor_repeats < 2:
         raise SystemExit("--floor-repeats must be at least 2: one pass cannot disagree with itself")
     if not args.model or not args.draft:
