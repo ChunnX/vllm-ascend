@@ -346,26 +346,32 @@ def _baseline_cache_path(args: argparse.Namespace) -> Path | None:
             args.max_num_seqs,
             args.max_tokens,
             args.num_prompts or args.max_num_seqs,
+            # The cached value is a reference *set*, so how many passes it holds
+            # and whether they came from one engine or two are part of its
+            # identity, not of the run that reads it.
+            args.floor_repeats,
+            args.floor,
         ],
         sort_keys=True,
     )
     return BASELINE_CACHE_DIR / f"{hashlib.sha256(key.encode()).hexdigest()[:16]}.json"
 
 
-def baseline_runs(args: argparse.Namespace, log_dir: Path) -> tuple[list[list[int]], list[list[int]]]:
-    """The fixed-K baseline and a second run of it, from cache when possible.
+def baseline_runs(args: argparse.Namespace, log_dir: Path) -> list[list[list[int]]]:
+    """Every pass of the fixed-K baseline, from cache when possible.
 
     Two savings, both aimed at the same thing -- a 27B engine at TP=4 takes
     about three minutes to load and seconds to generate, so the cost of this
     script is the number of processes it starts, not the work they do.
 
-    The floor comes from a second ``generate`` call in the same engine rather
-    than a second process, which removes one launch. That floor is tighter than
-    the cross-process one: it exercises scheduling and reduce-order
-    nondeterminism, but not allocator layout or worker init order. Tighter is
-    the conservative direction for judging a lane, but it can also turn real
-    reference noise into a lane failure, so ``--floor cross-process`` restores
-    the old two-process measurement for confirming a marginal verdict.
+    The passes are repeated ``generate`` calls in one engine rather than one
+    process each, which removes a launch per pass -- so the reference set can be
+    wide for almost nothing. That floor is tighter than the cross-process one: it
+    exercises scheduling and reduce-order nondeterminism, but not allocator
+    layout or worker init order. Tighter is the conservative direction for
+    judging a lane, but it can also turn real reference noise into a lane
+    failure, so ``--floor cross-process`` restores the two-process measurement
+    for confirming a marginal verdict.
 
     The result is then cached against the commit, so iterating on lanes without
     touching the code starts one process instead of three.
@@ -373,37 +379,40 @@ def baseline_runs(args: argparse.Namespace, log_dir: Path) -> tuple[list[list[in
     cache = None if args.refresh_baseline else _baseline_cache_path(args)
     if cache is not None and cache.exists():
         try:
-            cached = json.loads(cache.read_text())
-            first, second = cached["baseline"], cached["second"]
-        except (OSError, ValueError, KeyError):
-            print(f"=== baseline cache at {cache} unreadable; re-measuring", flush=True)
+            passes = json.loads(cache.read_text())["passes"]
+            if not isinstance(passes, list) or len(passes) < 2:
+                raise ValueError("a reference set needs at least two passes")
+        except (OSError, TypeError, ValueError, KeyError) as exc:
+            print(f"=== baseline cache at {cache} unusable ({exc}); re-measuring", flush=True)
         else:
             print(
-                f"\n=== baseline: reused from {cache} (same commit and configuration), "
-                "skipping two engine launches. Use --refresh-baseline to re-measure.",
+                f"\n=== baseline: reused from {cache} ({len(passes)} passes, same commit and "
+                "configuration), skipping an engine launch. Use --refresh-baseline to re-measure.",
                 flush=True,
             )
-            return first, second
+            return passes
 
     if args.floor == "cross-process":
+        # Two processes with one pass each. This mode exists to add allocator
+        # layout and worker init order to the reference's own variation, and a
+        # third launch buys less of that than a third in-process pass buys.
         first, _, _ = run_lane("baseline", args, log_dir)
         second, _, _ = run_lane("baseline2", args, log_dir)
-        first, second = first[0], second[0]
+        passes = [first[0], second[0]]
     else:
-        runs, _, _ = run_lane("baseline", args, log_dir, repeats=2)
-        first, second = runs
+        passes, _, _ = run_lane("baseline", args, log_dir, repeats=args.floor_repeats)
 
     target = _baseline_cache_path(args)
     if target is not None:
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(json.dumps({"baseline": first, "second": second}))
+            target.write_text(json.dumps({"passes": passes}))
             print(f"=== baseline: cached to {target}", flush=True)
         except OSError as exc:
             print(f"=== baseline: not cached ({exc})", flush=True)
     else:
         print("=== baseline: not cached (no commit to key on, or tracked files are modified)", flush=True)
-    return first, second
+    return passes
 
 
 def frozen_confidence(data_lines: list[str]) -> str | None:
@@ -488,6 +497,55 @@ def divergence(tokens: list[list[int]], reference: list[list[int]]) -> tuple[int
     return len(differing), earliest, detail
 
 
+def _worse(count: int, earliest: int | None, ref_count: int, ref_earliest: int | None) -> bool:
+    """Whether one divergence is worse than another: earlier, or over more prompts.
+
+    One definition, used for the floor and for every lane verdict, so a lane can
+    never be judged by a rule the floor was not measured with.
+    """
+    if earliest is None:
+        return False  # identical is never worse than anything.
+    if ref_earliest is None:
+        return count > 0  # the reference agreed with itself; any drift is worse.
+    return earliest < ref_earliest or count > ref_count
+
+
+def baseline_spread(passes: list[list[list[int]]]) -> tuple[int, int | None, str]:
+    """How far the reference drifts from itself, over every pair of its passes.
+
+    Not just the first two: with more passes the earliest-diverging pair is the
+    honest floor, and anything narrower would call a lane a defect for landing
+    where the reference itself lands.
+    """
+    worst: tuple[int, int | None, str] = (0, None, "identical")
+    for i in range(len(passes)):
+        for j in range(i + 1, len(passes)):
+            count, earliest, detail = divergence(passes[j], passes[i])
+            if _worse(count, earliest, worst[0], worst[1]):
+                worst = (count, earliest, f"passes {i + 1} and {j + 1} differ -- {detail}")
+    return worst
+
+
+def closest(tokens: list[list[int]], passes: list[list[list[int]]]) -> tuple[int, int, int | None, str]:
+    """The baseline pass this output is nearest to, and how far off it is.
+
+    A reference that disagrees with itself has no single right answer, so the
+    question exact equality can still settle is whether the lane produced one of
+    the continuations the baseline itself produces. That is a stronger result
+    than drifting less than the floor from whichever pass ran first, and unlike
+    exact equality against one pass it stays available when the floor is not zero.
+    """
+    best: tuple[int, int, int | None, str] | None = None
+    for idx, reference in enumerate(passes):
+        count, earliest, detail = divergence(tokens, reference)
+        if count == 0:
+            return idx, 0, None, "identical"
+        if best is None or _worse(best[1], best[2], count, earliest):
+            best = (idx, count, earliest, detail)
+    assert best is not None, "a reference set is never empty"
+    return best
+
+
 def check_devices(expected: int) -> None:
     raw = os.getenv("ASCEND_RT_VISIBLE_DEVICES", "")
     devices = [d.strip() for d in raw.split(",") if d.strip()]
@@ -512,6 +570,17 @@ def main() -> int:
     )
     parser.add_argument("--graph", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--repeats", type=int, default=1, help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--floor-repeats",
+        type=int,
+        default=3,
+        help=(
+            "Baseline generate passes in one engine, and the size of the reference set: a lane "
+            "that reproduces any pass exactly is a match. Cheap -- a pass costs seconds against "
+            "minutes for the load -- so a wider reference costs almost nothing. Ignored by "
+            "'--floor cross-process', which is two processes of one pass."
+        ),
+    )
     parser.add_argument(
         "--floor",
         choices=("in-process", "cross-process"),
@@ -575,6 +644,8 @@ def main() -> int:
     parser.add_argument("--log-dir", default="")
     args = parser.parse_args()
 
+    if args.floor_repeats < 2:
+        raise SystemExit("--floor-repeats must be at least 2: one pass cannot disagree with itself")
     if not args.model or not args.draft:
         raise SystemExit("Set VLLM_TEST_QWEN36_MODEL and VLLM_TEST_DSPARK_MODEL, or pass --model/--draft")
     if args.engine_child:
@@ -588,9 +659,9 @@ def main() -> int:
     # The baseline carries its own noise floor: without one, a mismatch at
     # concurrency cannot be attributed to a lane and a match cannot be told
     # apart from luck.
-    baseline, second = baseline_runs(args, log_dir)
-    floor_count, floor_earliest, floor_detail = divergence(second, baseline)
-    print(f"\n=== noise floor (baseline vs baseline): {floor_detail}", flush=True)
+    passes = baseline_runs(args, log_dir)
+    floor_count, floor_earliest, floor_detail = baseline_spread(passes)
+    print(f"\n=== noise floor ({len(passes)} baseline passes): {floor_detail}", flush=True)
     if floor_count:
         print(
             "    The reference disagrees with itself here, so only a lane that drifts "
@@ -600,6 +671,7 @@ def main() -> int:
 
     failures = []
     inconclusive = []
+    exact = []
     for lane in args.lanes:
         try:
             runs, trimmed, frozen = run_lane(lane, args, log_dir)
@@ -610,20 +682,24 @@ def main() -> int:
         if frozen:
             failures.append(f"{lane}: {frozen}")
             continue
-        count, earliest, detail = divergence(tokens, baseline)
+        which, count, earliest, detail = closest(tokens, passes)
         bare = lane.removesuffix("+axis").removesuffix("+graph").removesuffix("+ragged").removesuffix("+ub")
-        no_worse = count <= floor_count and (earliest is None or floor_earliest is None or earliest >= floor_earliest)
-        if no_worse:
-            print(f"=== lane {lane}: {'MATCH' if count == 0 else f'WITHIN NOISE ({detail})'}", flush=True)
-            # threshold:0.0 is supposed to keep everything; for any other lane a
-            # match without trimming means the run never exercised the path it
-            # was supposed to check.
-            if not trimmed and bare not in ("threshold:0.0", "baseline2"):
-                inconclusive.append(lane)
+        nearest = f"pass {which + 1} of {len(passes)}"
+        if count == 0:
+            exact.append(lane)
+            print(f"=== lane {lane}: MATCH (exact against baseline {nearest})", flush=True)
+        elif not _worse(count, earliest, floor_count, floor_earliest):
+            print(f"=== lane {lane}: WITHIN NOISE (nearest {nearest}: {detail})", flush=True)
+        else:
+            detail = f"nearest {nearest}: {detail} | noise floor: {floor_detail}"
+            failures.append(f"{lane}: {detail}")
+            print(f"=== lane {lane}: WORSE THAN NOISE -- {detail}", flush=True)
             continue
-        detail = f"{detail} | noise floor: {floor_detail}"
-        failures.append(f"{lane}: {detail}")
-        print(f"=== lane {lane}: WORSE THAN NOISE -- {detail}", flush=True)
+        # threshold:0.0 is supposed to keep everything; for any other lane a
+        # match without trimming means the run never exercised the path it was
+        # supposed to check.
+        if not trimmed and bare not in ("threshold:0.0", "baseline2"):
+            inconclusive.append(lane)
 
     print("\n==== summary ====")
     for line in failures:
@@ -636,15 +712,24 @@ def main() -> int:
         )
     if failures or inconclusive:
         return 1
-    qualifier = "matched" if not floor_count else "stayed within the baseline's own noise against"
+    all_exact = len(exact) == len(args.lanes)
+    qualifier = "matched" if all_exact else "stayed within the baseline's own noise against"
     print(f"All {len(args.lanes)} lane(s) {qualifier} the fixed-K baseline, and each trimming lane did trim.")
     if floor_count:
         print(f"Noise floor was non-zero: {floor_detail}")
-        print(
-            "A non-zero floor means this configuration cannot prove exact equality; it can "
-            "only show a lane adds no drift of its own. Use a concurrency where the floor "
-            "is zero for the correctness claim."
-        )
+        if all_exact:
+            print(
+                f"Every lane still reproduced one of the {len(passes)} baseline passes exactly. "
+                "A reference that disagrees with itself cannot make exact equality mean 'the "
+                "only correct output', but producing an output the baseline itself produces is "
+                "a stronger result than drifting less than the floor."
+            )
+        else:
+            print(
+                "No lane reproduced a baseline pass exactly, so this run shows only that the "
+                "lanes add no drift of their own. Widen the reference with --floor-repeats, "
+                "which is cheap: a pass costs seconds and the engine load costs minutes."
+            )
     return 0
 
 
