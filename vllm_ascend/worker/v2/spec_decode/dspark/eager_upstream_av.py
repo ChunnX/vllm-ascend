@@ -317,7 +317,7 @@ class AscendEagerUpstreamAVManager(AdaptiveVerificationManager):
         nothing to optimise however good its confidence is. Printing it turns
         that from an assumption into a number.
         """
-        _, verify_ms = self.cost_tables
+        draft_ms, verify_ms = self.cost_tables
         measured = sorted({int(s.num_target_tokens) for s in samples})
         measured = [q for q in measured if q < len(verify_ms)]
         if not measured:
@@ -349,6 +349,24 @@ class AscendEagerUpstreamAVManager(AdaptiveVerificationManager):
             )
             return
         spread = verify_ms[reachable[-1]] - verify_ms[reachable[0]]
+        # What share of a step trimming can even reach. The budget only changes
+        # how many tokens are verified: the drafter runs all K positions for
+        # every request whatever the budget says, because the confidences the
+        # budget is computed from are produced by that same drafting. So the
+        # draft cost and the verify curve's own floor are both fixed, and the
+        # spread is the whole of what any trimming policy could win. Printing
+        # the ratio keeps "the feature is only worth a few percent" from being
+        # read as "the feature is not working".
+        reach = ""
+        batch = self.req_states.max_num_reqs
+        if batch < len(draft_ms):
+            full_step = float(draft_ms[batch]) + float(verify_ms[reachable[-1]])
+            if full_step > 0:
+                reach = (
+                    f" | draft@B={batch}:{draft_ms[batch]:.2f}ms, verify floor="
+                    f"{verify_ms[reachable[0]]:.2f}ms, so trimming can reach at most "
+                    f"{100.0 * spread / full_step:.0f}% of a draft+verify step"
+                )
         verdict = (
             "flat: trimming cannot pay at this scale, and declining to trim is the correct decision"
             if abs(spread) < _FLAT_COST_TOLERANCE_MS
@@ -356,13 +374,14 @@ class AscendEagerUpstreamAVManager(AdaptiveVerificationManager):
         )
         logger.warning(
             "[DSPARK-EAGER-AV/upstream] cost table (%d samples, graph_limit=%d): %s | "
-            "reachable Q<=%d spread=%.2fms (%s)",
+            "reachable Q<=%d spread=%.2fms (%s)%s",
             len(samples),
             self._cudagraph_limit,
             points,
             reachable_max,
             spread,
             verdict,
+            reach,
         )
 
     def reallocate_drafts(self, req_ids, idx_mapping):
