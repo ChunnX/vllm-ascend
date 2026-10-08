@@ -27,6 +27,7 @@ from vllm.v1.worker.gpu.spec_decode.dspark.speculator import (
     DSparkSpeculator,
 )
 
+from vllm_ascend.spec_decode.vocab_mapping import settle_reduced_vocab_lm_head
 from vllm_ascend.utils import (
     get_rotation_path,
     vllm_version_is,
@@ -51,6 +52,20 @@ class AscendDSparkSpeculator(DSparkSpeculator):
         target_model: torch.nn.Module,
         target_attn_layer_names: set[str],
     ) -> torch.nn.Module:
+        """Load the draft, then settle its LM head when the vocabulary is reduced.
+
+        Upstream shares the target's LM head with any draft that did not ship one
+        of its own, which is right for a full-vocabulary draft and wrong for a
+        pruned one: the shared head spans the target vocabulary while the draft's
+        logits processor is ``draft_vocab_size`` wide, so it would slice the first
+        K columns instead of the K the mapping keeps -- plausible tokens, wrong
+        ones, and nothing raises. The draft model blocks that share for a reduced
+        vocabulary; what is left is to check the mapping and fill the head that
+        the checkpoint left empty.
+
+        The sequential Markov sampling itself already reads the mapping upstream,
+        so nothing on the hot path changes here.
+        """
         # Upstream replaces quant_config with None for a BF16 draft. Pass only
         # the target QuaRot path so the draft's existing load_weights can fold
         # input inverse rotation into FC (W @ R) and align fallback embedding /
@@ -62,6 +77,7 @@ class AscendDSparkSpeculator(DSparkSpeculator):
         model = super().load_draft_model(target_model, target_attn_layer_names)
         if hasattr(model, "configure_target_aux_hidden_capture"):
             model.configure_target_aux_hidden_capture(target_model)
+        settle_reduced_vocab_lm_head(model, target_model, self.vllm_config.model_config.get_vocab_size())
 
         return model
 
