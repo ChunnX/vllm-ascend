@@ -22,9 +22,11 @@ Ascend:
    about a tenth of TPOT while changing accepted length by two percent -- a cost
    of the instrumentation, not of adaptive verification.
 
-Both diagnostics therefore accumulate on device and are read once per logging
-window: a per-step copy to count them would reintroduce exactly the stall this
-lane just removed.
+Both diagnostics therefore stay off that path entirely: they accumulate on
+device, their copies are enqueued without blocking, and each logging window
+reads the copy the previous window enqueued. A blocking read would reintroduce
+exactly the stall described above -- not for its own size, but because it waits
+for everything already queued ahead of it.
 """
 
 import numpy as np
@@ -111,11 +113,24 @@ class AscendEagerUpstreamAVManager(AdaptiveVerificationManager):
         for slot in self._stale_confidences:
             slot.np.fill(1.0)
         self._async_confidence = self._setup_async_confidence(device)
-        # [rows repaired, steps whose leading confidence row moved]. Both live on
-        # device and are accumulated with device ops, so counting them costs no
-        # synchronisation; the logging window reads the pair once.
-        self._health = torch.zeros(2, dtype=torch.int64, device=device)
+        # [rows repaired, steps whose leading confidence row moved]. Accumulated
+        # on device with device ops, then staged through pinned memory exactly
+        # like the confidence table itself, so no step pays a synchronisation to
+        # count them -- see _accumulate_health for why a blocking read of these
+        # two integers is expensive out of all proportion to their size.
+        self._health = CpuGpuBuffer(2, dtype=torch.int64, device=device)
+        self._health_event = torch.cuda.Event(blocking=True)
+        # Steps covered by the copy currently in flight; 0 means none.
+        self._health_in_flight = 0
         self._health_steps = 0
+        # The reported per-request capacities travel the same way, for the same
+        # reason: they are the other thing a logging step used to read back
+        # mid-pipeline. Only the pinned host half is used -- the device side of
+        # this pair is _batch_draft_capacity, which the inherited budget owns.
+        self._capacity_stage = CpuGpuBuffer(max_num_reqs, dtype=torch.int32, device=device)
+        self._capacity_event = torch.cuda.Event(blocking=True)
+        # Requests covered by the copy currently in flight; 0 means none.
+        self._capacity_in_flight = 0
         # NaN compares unequal to everything, so the first step counts as moved.
         self._last_row = torch.full((self.num_speculative_steps,), float("nan"), dtype=torch.float32, device=device)
 
@@ -270,22 +285,68 @@ class AscendEagerUpstreamAVManager(AdaptiveVerificationManager):
           decided on numbers that stopped moving -- invisible to any output
           comparison, and visible here as a row that never changes.
 
-        Both accumulate into one device tensor with device ops, and the logging
-        window reads the pair in a single copy.
+        Both accumulate into one device tensor with device ops, and the pair
+        leaves the device the way the confidence table does: a copy enqueued
+        without blocking, read a window later once it has landed.
+
+        That staging is the whole point. These are two integers, but reading
+        them with a blocking copy waits for every kernel already queued ahead of
+        it -- and this runs before ``_record_async``, right after the step's
+        draft and confidence forward went in. Async scheduling and this lane's
+        own double buffer both work to keep the host that far ahead of the
+        device, so a blocking read hands all of it back at once: about one
+        decode step, tens of milliseconds at TP=4 on 27B, for sixteen bytes. It
+        would also be the one place the host waits on the drafter it just
+        launched, which is exactly what ``_record_async`` is built to avoid.
+
+        The price is that each line's health numbers describe the previous
+        window rather than the one just closed, and the first line carries none.
+        For "did the signal move over the last N steps" that is immaterial.
         """
         if not raw.numel():
             return
         self._health_steps += 1
-        self._health[0] += (~torch.isfinite(raw)).any(dim=1).sum()
-        self._health[1] += (raw[0] != self._last_row).any()
+        self._health.gpu[0] += (~torch.isfinite(raw)).any(dim=1).sum()
+        self._health.gpu[1] += (raw[0] != self._last_row).any()
         self._last_row.copy_(raw[0])
         if not self._log.sampling():
             return
-        repaired, moved = (int(v) for v in self._health.cpu())
-        self._untrusted_rows += repaired
-        self._log.note_confidence_steps(moved=moved, steps=self._health_steps)
-        self._health.zero_()
-        self._health_steps = 0
+        # The copy being read here was enqueued a whole window ago, so it has
+        # long since landed and the wait is free -- the same bargain
+        # _record_async strikes with its two-step-old event.
+        if self._health_in_flight:
+            with gpu_sync_allowed():
+                self._health_event.synchronize()
+            repaired, moved = (int(v) for v in self._health.np)
+            self._untrusted_rows += repaired
+            self._log.note_confidence_steps(moved=moved, steps=self._health_in_flight)
+        self._health.copy_to_cpu()
+        self._health_event.record()
+        # Stream-ordered behind the copy, so it clears counters already read.
+        self._health.gpu.zero_()
+        self._health_in_flight, self._health_steps = self._health_steps, 0
+
+    def _stage_capacities(self, num_reqs: int) -> list[int] | None:
+        """Return the previous window's capacities and enqueue this window's.
+
+        Called only on a logging step, so the copy being read was enqueued a
+        whole window ago and has landed. Reading the one enqueued here instead
+        would block on the budget kernels just launched -- the same queue drain
+        _accumulate_health describes, and on the same steps, so leaving either
+        one blocking keeps the whole stall.
+
+        Copies straight into the pinned host half: the device-side source is
+        ``_batch_draft_capacity``, written in place by the inherited budget.
+        """
+        previous = None
+        if self._capacity_in_flight:
+            with gpu_sync_allowed():
+                self._capacity_event.synchronize()
+            previous = self._capacity_stage.np[: self._capacity_in_flight].tolist()
+        self._capacity_stage.cpu[:num_reqs].copy_(self._batch_draft_capacity[:num_reqs], non_blocking=True)
+        self._capacity_event.record()
+        self._capacity_in_flight = num_reqs
+        return previous
 
     def note_graph_mode(self, cg_mode) -> None:
         """Report the cudagraph mode the runner dispatched this step under."""
@@ -395,8 +456,10 @@ class AscendEagerUpstreamAVManager(AdaptiveVerificationManager):
 
         The split is only readable by copying it back, so ask ``sampling()``
         first -- it is true exactly on the steps that print -- and skip the copy
-        on every other step. ``_batch_budget`` is read before the inherited call
-        consumes it.
+        on every other step. On the steps that do print, the copy is enqueued
+        without blocking and collected a window later; see ``_stage_capacities``
+        for why reading it immediately was the expensive half of this line.
+        ``_batch_budget`` is read before the inherited call consumes it.
         """
         sampling = self._log.sampling()
         num_drafts_per_req, num_non_draft_tokens_per_req, draft_budget = self._batch_budget
@@ -412,7 +475,7 @@ class AscendEagerUpstreamAVManager(AdaptiveVerificationManager):
             scheduled_drafts=scheduled_drafts,
             admitted_drafts=draft_budget,
             verify_tokens=verify_tokens,
-            capacities=(self._batch_draft_capacity[: len(req_ids)].cpu().tolist() if sampling else None),
+            capacities=self._stage_capacities(len(req_ids)) if sampling else None,
             untrusted_rows=self._untrusted_rows,
         )
         self._untrusted_rows = 0
