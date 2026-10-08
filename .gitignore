@@ -237,3 +237,7 @@ csrc/third_party/
 
 # local build cache
 .vllm_ascend/
+
+# Whole-network adaptive-verification gate: run logs and the baseline cache.
+dspark_eager_av_*/
+dspark_eager_av_baseline_cache/
