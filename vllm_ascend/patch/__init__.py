@@ -1693,3 +1693,17 @@
 #       Remove this patch when upstream provides a backend capability hook for
 #       enabling MoE sequence parallelism with DP=1.
 #
+
+# Eager DSpark adaptive verification (opt-in):
+#   worker/patch_v2/patch_adaptive_verification.py wraps
+#   maybe_create_adaptive_verification_manager to select one of two eager lanes.
+#   Default adaptive verification keeps the upstream factory, and a lane named
+#   explicitly without a confidence head raises rather than downgrading. No
+#   graph capability is promoted: the lanes report which graph mode each step
+#   actually earned.
+#
+#   vLLM 0.30 no longer refuses adaptive verification on an eager run -- the
+#   unsupported-feature entry this work once had to waive is gone, and
+#   resolve_adaptive_cudagraph_mode replaces it. What is still missing upstream
+#   is a cost table for a run that never captures, which is why lane B installs
+#   a synthetic curve. Remove these lanes once upstream prices an eager run.

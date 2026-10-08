@@ -87,6 +87,70 @@ env_variables: dict[str, Callable[[], Any]] = {
     # (safe for Ascend 910B/A3). Set to a positive value to override when
     # auto-detection is unavailable or for debugging UB overflow issues.
     "VLLM_ASCEND_ROPE_UB_SIZE_KB": lambda: int(os.getenv("VLLM_ASCEND_ROPE_UB_SIZE_KB") or 0),
+    # Explicit diagnostic policy: None preserves upstream AV. [0,1] selects
+    # synchronous survival-prefix trimming, requiring DSpark AV and eager target
+    # and draft. Not sensitive. This path intentionally pays D2H synchronization.
+    "VLLM_ASCEND_DSPARK_EAGER_SURVIVAL_THRESHOLD": lambda: (
+        float(os.environ["VLLM_ASCEND_DSPARK_EAGER_SURVIVAL_THRESHOLD"])
+        if "VLLM_ASCEND_DSPARK_EAGER_SURVIVAL_THRESHOLD" in os.environ
+        else None
+    ),
+    # Opt-in eager lane B: run the real upstream AdaptiveVerificationManager
+    # (cost-argmax budget + device survival top-k + async D2H double buffer) with
+    # an injected synthetic cost curve, since eager has no cudagraph profiling to
+    # price a real one. Requires DSpark AV and an eager target/draft. Default 0
+    # (off). Not sensitive. Mutually exclusive with the survival-threshold lane.
+    "VLLM_ASCEND_DSPARK_EAGER_UPSTREAM_AV": lambda: bool(int(os.getenv("VLLM_ASCEND_DSPARK_EAGER_UPSTREAM_AV", "0"))),
+    # Pin the GDN speculative request axis to max_num_seqs for every graph
+    # bucket, instead of letting it follow the batch. The fixed axis is the
+    # contract ragged full graphs need -- a per-bucket axis gives each capture
+    # size its own stateful tiling, which fails while concurrency ramps -- but it
+    # only holds together with the attention-side axis and the padding cleanup in
+    # the persistent seq_lens mirror, both of which the upstream FIA padding path
+    # already provides. VLLM_ASCEND_DSPARK_AV_GRAPH=ragged therefore pins the axis
+    # on its own and this variable is only for pinning it under the other modes,
+    # to bisect the axis apart from the capture geometry. Default 0 (the
+    # per-bucket axis). Not sensitive. See docs/adaptive_verify/README.md.
+    "VLLM_ASCEND_DSPARK_GDN_FIXED_AXIS": lambda: bool(int(os.getenv("VLLM_ASCEND_DSPARK_GDN_FIXED_AXIS", "0"))),
+    # Which graph mode the DSpark adaptive-verification lane runs under. Unset
+    # is the default and means "ragged", except under the lane A threshold
+    # below: its exact host boundaries are the opposite of what a captured graph
+    # can do, so that lane stays eager unless a mode is named here explicitly.
+    #   none    -- force CUDAGraphMode.NONE and stay eager.
+    #   uniform -- allow graphs, but capture the decode descriptor at the uniform
+    #              verify width. A trimmed batch is not uniform and matches no
+    #              descriptor, so it falls back to piecewise instead of replaying
+    #              the wrong shape -- correct, with no trimming benefit in graph.
+    #   ragged  -- keep the variable-length descriptor, so a trimmed batch replays
+    #              too. Selecting this pins the GDN request axis, because the axis
+    #              is what makes replaying a different per-request split safe for
+    #              the state operators.
+    # Not sensitive. See docs/adaptive_verify/README.md.
+    "VLLM_ASCEND_DSPARK_AV_GRAPH": lambda: os.getenv("VLLM_ASCEND_DSPARK_AV_GRAPH", ""),
+    # Opt out of this repo's adaptive-verification adaptation entirely and run
+    # upstream's own manager, for comparing against stock behaviour. Default 1
+    # (adapt). Setting 0 leaves enable_adaptive_verification working, just
+    # without the ragged plumbing and the graph modes above. Not sensitive.
+    "VLLM_ASCEND_DSPARK_AV_ADAPT": lambda: bool(int(os.getenv("VLLM_ASCEND_DSPARK_AV_ADAPT", "1"))),
+    # Broadcast each step's confidence from rank 0 before deciding the budget.
+    # Upstream does not: it broadcasts the cost curves once at setup and then
+    # trusts every rank to compute identical confidences, which they do because
+    # the confidence head's output is already reduced across the group. This was
+    # added as insurance against ranks disagreeing on a survival tie and so
+    # building different metadata, but insurance priced per step at TP=4 is a
+    # synchronising collective on every decode step. Default 0 (upstream
+    # behaviour); 1 restores it if ranks are ever seen to diverge -- the
+    # whole-network gate at a zero noise floor is what would show that.
+    # Not sensitive.
+    "VLLM_ASCEND_DSPARK_AV_TP_BROADCAST": lambda: bool(int(os.getenv("VLLM_ASCEND_DSPARK_AV_TP_BROADCAST", "0"))),
+    # Stop making the host query/seq-length view exact for the eager AV lanes.
+    # Both lanes currently read the trimmed boundaries back from device each
+    # step, which a captured graph cannot do. With this set the host keeps the
+    # evenly-distributed upper bound upstream produces and only the device view
+    # is exact -- upstream's own contract, and the precondition for GDN to claim
+    # supports_device_cpu_query_lens_mismatch. Default 0 (keep the readback).
+    # Not sensitive. Eager-only switch; the graph phase makes it unconditional.
+    "VLLM_ASCEND_DSPARK_AV_CPU_UPPER_BOUND": lambda: bool(int(os.getenv("VLLM_ASCEND_DSPARK_AV_CPU_UPPER_BOUND", "0"))),
     # Steps between the eager adaptive-verification lanes' aggregated warn
     # lines. Warn level so the trimming decisions are visible in an ordinary
     # serve log; aggregated so a long run stays readable. Not sensitive.
