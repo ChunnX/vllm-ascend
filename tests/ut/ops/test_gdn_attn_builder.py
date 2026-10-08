@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
+import ast
 from dataclasses import dataclass
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -134,12 +136,15 @@ def _make_vllm_config(
     num_speculative_tokens: int = 0,
     mamba_cache_mode: str = "none",
     cudagraph_mode: CUDAGraphMode = CUDAGraphMode.NONE,
+    enable_adaptive_verification: bool = False,
+    max_cudagraph_capture_size: int | None = None,
 ):
     speculative_config = None
     if num_speculative_tokens > 0:
         speculative_config = SimpleNamespace(
             num_speculative_tokens=num_speculative_tokens,
             parallel_drafting=False,
+            enable_adaptive_verification=enable_adaptive_verification,
         )
 
     model_config = SimpleNamespace(max_model_len=max_model_len)
@@ -149,7 +154,7 @@ def _make_vllm_config(
         cache_config=SimpleNamespace(mamba_cache_mode=mamba_cache_mode),
         compilation_config=SimpleNamespace(
             cudagraph_mode=cudagraph_mode,
-            max_cudagraph_capture_size=None,
+            max_cudagraph_capture_size=max_cudagraph_capture_size,
         ),
         speculative_config=speculative_config,
         scheduler_config=SimpleNamespace(
@@ -175,12 +180,18 @@ def _make_builder(
     block_size: int = 16,
     num_speculative_blocks: int = 0,
     cudagraph_mode: CUDAGraphMode = CUDAGraphMode.NONE,
+    max_num_seqs: int = 16,
+    enable_adaptive_verification: bool = False,
+    max_cudagraph_capture_size: int | None = None,
 ):
     vllm_config = _make_vllm_config(
         num_heads=num_heads,
+        max_num_seqs=max_num_seqs,
         num_speculative_tokens=num_speculative_tokens,
         mamba_cache_mode=mamba_cache_mode,
         cudagraph_mode=cudagraph_mode,
+        enable_adaptive_verification=enable_adaptive_verification,
+        max_cudagraph_capture_size=max_cudagraph_capture_size,
     )
     spec = MambaSpec(
         block_size=block_size,
@@ -1120,3 +1131,410 @@ def test_spec_graph_real_prefill_is_not_treated_as_padding():
 
     assert runtime.num_spec_decodes == 1
     assert runtime.num_prefills == 1
+
+
+class TestSharedBatchPlan:
+    """A hybrid model spreads its Mamba layers over several KV cache groups, so
+    ``build`` runs once per group with metadata that differs only in the block
+    table. The plan is the batch-shape half of that work, computed once and
+    reused; anything that actually varies per group must stay outside it.
+    """
+
+    @staticmethod
+    def _make_plan_builder():
+        builder = AscendGDNAttentionMetadataBuilder.__new__(AscendGDNAttentionMetadataBuilder)
+        builder.num_spec = 3
+        builder.use_spec_decode = True
+        return builder
+
+    @staticmethod
+    def _make_group_metadatas(num_groups, num_reqs=4):
+        """Mirror how build_attn_metadata feeds the group loop.
+
+        It builds one AscendCommonAttentionMetadata per KV cache group from the
+        same batch tensors, varying only the block table and slot mapping. The
+        plan key reads tensor addresses, so a test that rebuilt the batch
+        tensors per group would miss the cache for a reason production never
+        hits.
+        """
+        query_start_loc = torch.tensor([0, 4, 8, 12, 16], dtype=torch.int32)
+        query_start_loc_cpu = torch.tensor([0, 4, 8, 12, 16], dtype=torch.int32)
+        seq_lens = torch.tensor([9, 9, 9, 9], dtype=torch.int32)
+        return [
+            SimpleNamespace(
+                num_reqs=num_reqs,
+                num_actual_tokens=16,
+                query_start_loc=query_start_loc,
+                query_start_loc_cpu=query_start_loc_cpu,
+                seq_lens=seq_lens[:num_reqs],
+                block_table_tensor=torch.full((num_reqs, 8), gid, dtype=torch.int32),
+            )
+            for gid in range(num_groups)
+        ]
+
+    def test_key_ignores_the_only_per_group_field(self):
+        """block_table is what build_attn_metadata varies per group, so every
+        group in one batch must land on the same key."""
+        builder = self._make_plan_builder()
+        groups = self._make_group_metadatas(10)
+
+        keys = {builder._shared_batch_plan_key(m, None, None) for m in groups}
+
+        assert len(keys) == 1
+
+    def test_key_separates_different_batches(self):
+        builder = self._make_plan_builder()
+        first = self._make_group_metadatas(1)[0]
+        second = self._make_group_metadatas(1)[0]
+        second.num_reqs = 3
+
+        assert builder._shared_batch_plan_key(first, None, None) != builder._shared_batch_plan_key(second, None, None)
+
+    def test_plan_is_computed_once_and_reused(self):
+        builder = self._make_plan_builder()
+        cache = {}
+        sentinel = object()
+        calls = []
+
+        def fake_compute(m, num_accepted_tokens, num_decode_draft_tokens_cpu):
+            calls.append(m)
+            return sentinel
+
+        builder._compute_shared_batch_plan = fake_compute
+
+        # Qwen3.6 + DSpark puts 10 Mamba groups in one invocation.
+        for m in self._make_group_metadatas(10):
+            got = builder._get_shared_batch_plan(m, None, None, cache)
+            assert got is sentinel
+
+        assert len(calls) == 1
+
+    def test_no_cache_means_no_reuse(self):
+        """Callers that pass no cache (mrv1, direct unit tests) keep the
+        original one-build-one-compute behaviour."""
+        builder = self._make_plan_builder()
+        calls = []
+        builder._compute_shared_batch_plan = lambda *a: calls.append(1)
+
+        for m in self._make_group_metadatas(2):
+            builder._get_shared_batch_plan(m, None, None, None)
+
+        assert len(calls) == 2
+
+    def test_a_key_miss_only_costs_speed(self):
+        """If a caller ever rebuilds the batch tensors per group the key stops
+        matching. That must degrade to today's recompute-per-group, never to a
+        reused plan built from someone else's batch."""
+        builder = self._make_plan_builder()
+        cache = {}
+        calls = []
+        builder._compute_shared_batch_plan = lambda *a: (calls.append(1), object())[1]
+
+        for _ in range(3):
+            fresh = self._make_group_metadatas(1)[0]
+            builder._get_shared_batch_plan(fresh, None, None, cache)
+
+        assert len(calls) == 3
+        assert len(cache) == 3
+
+    def test_state_indices_follow_this_group_block_table(self):
+        """The derived indices are the whole reason each group still calls
+        build: they must track the group's own block table."""
+        builder = self._make_plan_builder()
+        plan = SimpleNamespace(
+            state_index_mode=ascend_gdn_attn_builder._STATE_INDEX_NON_SPEC,
+            spec_sequence_indices=None,
+            non_spec_sequence_indices=None,
+        )
+        block_table = torch.tensor([[10, 11], [20, 21]], dtype=torch.int32)
+
+        spec, non_spec, conv1d = builder._derive_group_state_indices(plan, block_table)
+
+        assert spec is None
+        assert torch.equal(non_spec, torch.tensor([10, 20], dtype=torch.int32))
+        assert torch.equal(conv1d, block_table)
+
+    def test_state_indices_spec_mixed_selects_both_sides(self):
+        builder = self._make_plan_builder()
+        plan = SimpleNamespace(
+            state_index_mode=ascend_gdn_attn_builder._STATE_INDEX_SPEC_MIXED,
+            spec_sequence_indices=torch.tensor([0], dtype=torch.int32),
+            non_spec_sequence_indices=torch.tensor([1], dtype=torch.int32),
+        )
+        block_table = torch.tensor([[10, 11, 12, 13, 14], [20, 21, 22, 23, 24]], dtype=torch.int32)
+
+        spec, non_spec, conv1d = builder._derive_group_state_indices(plan, block_table)
+
+        assert torch.equal(spec, torch.tensor([[10, 11, 12, 13]], dtype=torch.int32))
+        assert torch.equal(non_spec, torch.tensor([20], dtype=torch.int32))
+        assert conv1d is non_spec
+
+    def test_state_indices_spec_only_has_no_non_spec_side(self):
+        builder = self._make_plan_builder()
+        plan = SimpleNamespace(
+            state_index_mode=ascend_gdn_attn_builder._STATE_INDEX_SPEC_ONLY,
+            spec_sequence_indices=torch.tensor([1], dtype=torch.int32),
+            non_spec_sequence_indices=None,
+        )
+        block_table = torch.tensor([[10, 11, 12, 13, 14], [20, 21, 22, 23, 24]], dtype=torch.int32)
+
+        spec, non_spec, conv1d = builder._derive_group_state_indices(plan, block_table)
+
+        assert torch.equal(spec, torch.tensor([[20, 21, 22, 23]], dtype=torch.int32))
+        assert non_spec is None
+        assert conv1d is None
+
+    def test_group_independence_check_catches_a_varying_field(self):
+        """The debug cross-check exists because a field that secretly varies
+        per group would otherwise corrupt results silently."""
+        make = lambda tokens: ascend_gdn_attn_builder._GDNSharedBatchPlan(  # noqa: E731
+            state_index_mode=ascend_gdn_attn_builder._STATE_INDEX_NON_SPEC,
+            num_prefills=0,
+            num_decodes=4,
+            num_decode_tokens=tokens,
+            num_prefill_tokens=0,
+            num_spec_decodes=0,
+            num_spec_decode_tokens=0,
+            spec_sequence_masks=None,
+            spec_sequence_indices=None,
+            non_spec_sequence_indices=None,
+            spec_token_indx=None,
+            non_spec_token_indx=None,
+            spec_query_start_loc=None,
+            non_spec_query_start_loc=None,
+            num_accepted_tokens=None,
+            has_initial_state=None,
+            prefill_has_initial_state=None,
+            prefill_query_start_loc=None,
+            chunk_indices=None,
+            chunk_offsets=None,
+            non_spec_chunked_prefill_metadata=None,
+            nums_dict=None,
+            batch_ptr=None,
+            token_chunk_offset_ptr=None,
+        )
+
+        AscendGDNAttentionMetadataBuilder._assert_plan_is_group_independent(make(4), make(4))
+
+        with pytest.raises(AssertionError, match="num_decode_tokens"):
+            AscendGDNAttentionMetadataBuilder._assert_plan_is_group_independent(make(4), make(5))
+
+
+def test_gdn_builder_defines_build_once_and_routes_through_the_local_view() -> None:
+    """A second ``build`` definition silently shadowed the first one.
+
+    The shadowed definition held the only calls to
+    ``_remove_spec_graph_padding_queries`` and
+    ``_treat_single_token_prefills_with_state_as_decodes``, so both corrections
+    were unreachable while still reading as present. Nothing raises in that
+    state, so guard the structure rather than only the behaviour.
+    """
+    tree = ast.parse(Path(ascend_gdn_attn_builder.__file__).read_text())
+    (class_node,) = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "AscendGDNAttentionMetadataBuilder"
+    ]
+    builds = [node for node in class_node.body if isinstance(node, ast.FunctionDef) and node.name == "build"]
+    assert len(builds) == 1, "a shadowed build() definition is dead code"
+
+    assert "_get_gdn_local_metadata" in {
+        node.func.attr
+        for node in ast.walk(builds[0])
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+
+    (view,) = [
+        node
+        for node in class_node.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_compute_gdn_local_metadata"
+    ]
+    assert {
+        "_remove_spec_graph_padding_queries",
+        "_treat_single_token_prefills_with_state_as_decodes",
+    } <= {node.func.id for node in ast.walk(view) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)}
+
+
+def test_gdn_local_view_zeroes_padding_rows_and_keeps_each_group_block_table() -> None:
+    """Inactive graph rows must be zero-length; the block table must stay local.
+
+    The FIA-padded query boundary gives padding requests a positive length
+    whenever the token count lands inside a graph bucket. Those rows classify
+    as non-speculative, so they fold into ``num_prefills`` and cost the batch
+    its pure-spec persistent graph buffers.
+
+    The correction is computed once per invocation, because it rebuilds
+    ``query_start_loc`` and the plan cache identifies a batch by tensor address.
+    What must NOT be shared is the metadata object around it: it carries the
+    block table this group addresses, and ``build`` derives this group's conv
+    and recurrent state indices from it, so one shared object sends every Mamba
+    group to the first group's state slots.
+    """
+    batch_spec = BatchSpec(
+        seq_lens=[64, 64, 0, 0],
+        query_lens=[8, 8, 1, 1],
+        name="spec_rows_plus_positive_length_padding",
+    )
+    common_attn_metadata = create_common_attn_metadata(
+        batch_spec=batch_spec,
+        block_size=16,
+        device=torch.device("cpu"),
+    )
+    builder = _make_builder(
+        device=torch.device("cpu"),
+        num_heads=32,
+        num_speculative_tokens=7,
+        cudagraph_mode=CUDAGraphMode.FULL_DECODE_ONLY,
+    )
+    num_decode_draft_tokens_cpu = torch.tensor([7, 7, -1, -1], dtype=torch.int32)
+
+    batch_shared_cache: dict = {}
+    # build_attn_metadata varies exactly two fields per KV cache group.
+    group0 = common_attn_metadata
+    group1 = common_attn_metadata.replace(
+        block_table_tensor=common_attn_metadata.block_table_tensor + 1000,
+    )
+
+    view0 = builder._get_gdn_local_metadata(group0, num_decode_draft_tokens_cpu, batch_shared_cache)
+    view1 = builder._get_gdn_local_metadata(group1, num_decode_draft_tokens_cpu, batch_shared_cache)
+
+    # The padding rows keep their slot but lose their tokens.
+    assert torch.equal(view0.query_start_loc_cpu, torch.tensor([0, 8, 16, 16, 16], dtype=torch.int32))
+    assert view0.num_actual_tokens == 16
+    assert view0.num_reqs == batch_spec.batch_size
+
+    # One correction for the whole invocation: the second group presents the
+    # same tensors, so the plan key still identifies a single batch.
+    assert view1.query_start_loc_cpu is view0.query_start_loc_cpu
+    assert view1.query_start_loc is view0.query_start_loc
+    assert view1.num_actual_tokens == view0.num_actual_tokens
+
+    # Each group still addresses its own block table.
+    assert view0.block_table_tensor is group0.block_table_tensor
+    assert view1.block_table_tensor is group1.block_table_tensor
+
+    # Without a cache every caller recomputes, so nothing is shared.
+    uncached = builder._get_gdn_local_metadata(group0, num_decode_draft_tokens_cpu, None)
+    assert uncached.query_start_loc_cpu is not view0.query_start_loc_cpu
+
+
+_SPEC_AXIS_NUM_SPEC = 7
+
+
+def _full_graph_spec_metadata(
+    *, max_num_seqs: int, live_reqs: int, adaptive: bool, fixed_axis: bool = True, **builder_kwargs
+):
+    """Build pure-speculative FULL-graph metadata for a partly filled batch.
+
+    Every request queries num_spec + 1 tokens, which is what makes the batch
+    pure speculative decode, and the block table is given exactly num_spec + 1
+    columns because the speculative state indices select that many candidate
+    state rows per request.
+    """
+    width = _SPEC_AXIS_NUM_SPEC + 1
+    batch_spec = BatchSpec(
+        seq_lens=[width] * live_reqs,
+        query_lens=[width] * live_reqs,
+        name=f"spec_{live_reqs}of{max_num_seqs}",
+    )
+    common_attn_metadata = create_common_attn_metadata(
+        batch_spec=batch_spec,
+        block_size=16,
+        device=torch.device("cpu"),
+    )
+    common_attn_metadata.block_table_tensor = torch.arange(10, 10 + live_reqs * width, dtype=torch.int32).view(
+        live_reqs, width
+    )
+    with patch.object(ascend_gdn_attn_builder.envs_ascend, "VLLM_ASCEND_DSPARK_GDN_FIXED_AXIS", fixed_axis):
+        builder = _make_builder(
+            device=torch.device("cpu"),
+            num_heads=32,
+            num_speculative_tokens=_SPEC_AXIS_NUM_SPEC,
+            cudagraph_mode=CUDAGraphMode.FULL_DECODE_ONLY,
+            max_num_seqs=max_num_seqs,
+            enable_adaptive_verification=adaptive,
+            **builder_kwargs,
+        )
+    metadata = builder.build(
+        common_prefix_len=0,
+        common_attn_metadata=common_attn_metadata,
+        num_accepted_tokens=torch.ones(live_reqs, dtype=torch.int32),
+        num_decode_draft_tokens_cpu=torch.full((live_reqs,), _SPEC_AXIS_NUM_SPEC, dtype=torch.int32),
+    )
+    return builder, metadata
+
+
+def test_ragged_spec_decode_pins_the_gdn_request_axis_to_max_num_seqs() -> None:
+    """A ragged bucket must present the service-maximum request axis, not its own.
+
+    With the axis following the bucket, each capture size carries its own
+    stateful tiling and request axis. That survives steady concurrency and fails
+    while concurrency ramps, because a shape change is only a speed question for
+    a stateless operator -- for a stateful one it changes the state read/write
+    contract. So every bucket is given B_max rows, and the rows past the live
+    ones have to be inert: zero length and an invalid state index, or an empty
+    row reads and writes state that now belongs to another request.
+    """
+    max_num_seqs, live = 16, 4
+    builder, metadata = _full_graph_spec_metadata(max_num_seqs=max_num_seqs, live_reqs=live, adaptive=True)
+
+    assert builder.ragged_spec_decode is True
+    assert builder.gdn_request_axis == max_num_seqs
+    assert metadata.spec_state_indices_tensor.shape[0] == max_num_seqs
+    assert metadata.spec_sequence_masks.shape[0] == max_num_seqs
+    assert metadata.num_accepted_tokens.shape[0] == max_num_seqs
+    assert metadata.spec_query_start_loc.shape[0] == max_num_seqs + 1
+
+    # The padded rows carry no tokens ...
+    query_lens = torch.diff(metadata.spec_query_start_loc)
+    assert torch.all(query_lens[live:] == 0)
+    # ... and address no state.
+    assert torch.all(metadata.spec_state_indices_tensor[live:] == NULL_BLOCK_ID)
+    assert not metadata.spec_sequence_masks[live:].any()
+
+
+def test_fixed_k_spec_decode_keeps_the_per_bucket_request_axis() -> None:
+    # Without adaptive verification the batch is not ragged: Q and the request
+    # count move together, so the per-bucket axis carries no ambiguity and is
+    # left alone rather than paying B_max metadata clearing for every bucket.
+    max_num_seqs, live = 16, 4
+    builder, metadata = _full_graph_spec_metadata(max_num_seqs=max_num_seqs, live_reqs=live, adaptive=False)
+
+    assert builder.ragged_spec_decode is False
+    assert metadata.spec_state_indices_tensor.shape[0] == live
+
+
+def test_ragged_spec_decode_refuses_full_graph_when_the_axis_cannot_fit() -> None:
+    """A capture cap below max_num_seqs leaves the graph buffers too narrow.
+
+    Falling back to a per-bucket axis there would reintroduce exactly the shape
+    this pins down, so the full-graph metadata path is declined instead.
+    """
+    # One live request of num_spec + 1 tokens, so the pre-existing width gates
+    # (num_spec_decodes and num_spec_decode_tokens against decode_cudagraph_max_bs)
+    # both pass and the refusal can only come from the axis not fitting.
+    builder, metadata = _full_graph_spec_metadata(
+        max_num_seqs=16,
+        live_reqs=1,
+        adaptive=True,
+        max_cudagraph_capture_size=_SPEC_AXIS_NUM_SPEC + 1,
+    )
+    assert builder.decode_cudagraph_max_bs == _SPEC_AXIS_NUM_SPEC + 1
+    assert builder.gdn_request_axis == 16
+    assert builder.gdn_request_axis_fits_graph is False
+    # Declined: the metadata keeps the live width instead of a fixed axis.
+    assert metadata.spec_state_indices_tensor.shape[0] == 1
+
+
+def test_the_fixed_gdn_axis_is_opt_in() -> None:
+    """Off by default, because only half the fixed-axis contract is in place.
+
+    Pinning the GDN axis creates padding rows that GDN itself treats as inert,
+    while the attention request axis and the persistent seq_lens mirror still
+    follow the batch. It is also a no-op wherever max_num_seqs equals the live
+    request count, which is why it looked harmless where it was introduced -- so
+    the default has to be the shape that has actually been validated.
+    """
+    builder, metadata = _full_graph_spec_metadata(max_num_seqs=16, live_reqs=4, adaptive=True, fixed_axis=False)
+    assert builder.ragged_spec_decode is False
+    assert metadata.spec_state_indices_tensor.shape[0] == 4

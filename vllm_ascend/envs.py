@@ -143,6 +143,18 @@ env_variables: dict[str, Callable[[], Any]] = {
     # whole-network gate at a zero noise floor is what would show that.
     # Not sensitive.
     "VLLM_ASCEND_DSPARK_AV_TP_BROADCAST": lambda: bool(int(os.getenv("VLLM_ASCEND_DSPARK_AV_TP_BROADCAST", "0"))),
+    # Keep the FULL_AND_PIECEWISE mode that v0.28 forces on any run with an
+    # adaptive-verification manager, rather than putting it back to what was
+    # configured. Default 0, which restores the configured mode, and the reason
+    # is that turning adaptive verification on must not change how the engine
+    # treats anything other than speculative decode. FULL_DECODE_ONLY sends a
+    # mixed batch to eager; letting the feature quietly upgrade to a mode that
+    # sends it to piecewise instead would make the feature look faster by
+    # handling that batch better, which is a configuration choice and not the
+    # feature. To put mixed batches on piecewise, configure FULL_AND_PIECEWISE
+    # for the run -- both lanes then get it. Set 1 to bisect the override
+    # itself. Not sensitive.
+    "VLLM_ASCEND_DSPARK_AV_KEEP_PIECEWISE": lambda: bool(int(os.getenv("VLLM_ASCEND_DSPARK_AV_KEEP_PIECEWISE", "0"))),
     # Stop making the host query/seq-length view exact for the eager AV lanes.
     # Both lanes currently read the trimmed boundaries back from device each
     # step, which a captured graph cannot do. With this set the host keeps the
