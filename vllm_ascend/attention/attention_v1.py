@@ -318,41 +318,23 @@ class AscendAttentionMetadataBuilder(AttentionMetadataBuilder[AscendMetadata]):
         """
         return {}
 
-    def build(
+    def _build_fia_seq_inputs(
         self,
-        common_prefix_len: int,
         common_attn_metadata: AscendCommonAttentionMetadata,
-        fast_build: bool = False,
-    ) -> AscendMetadata:
-        expanded_slot_mapping = common_attn_metadata.slot_mapping if self.pcp_enabled else None
-        num_reqs = common_attn_metadata.num_reqs
-        num_actual_tokens = common_attn_metadata.num_actual_tokens
-        query_start_loc_cpu = common_attn_metadata.query_start_loc_cpu[: num_reqs + 1]
+        num_reqs: int,
+        query_start_loc_cpu: torch.Tensor,
+        seq_lens: torch.Tensor,
+        block_table: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, list[int] | None, list[int] | None, torch.Tensor, torch.Tensor | None]:
+        """Build the sequence inputs FIA reads, and the padding it needs.
 
-        num_decodes, num_prefills, num_decode_tokens, num_prefill_tokens = self._split_decodes_and_prefills(
-            common_attn_metadata
-        )
-
-        block_table = common_attn_metadata.block_table_tensor
-
-        # TODO: This will be moved to propose and deleted after fia ops fixed.
-        seq_lens = _select_seq_lens(
-            common_attn_metadata,
-            kv_cache_spec=self.kv_cache_spec,
-            speculative_config=self.speculative_config,
-            vllm_config=self.vllm_config,
-        )
-        slot_mapping = common_attn_metadata.slot_mapping[:num_actual_tokens]
-        # this slot_mapping override doesn't work since vllm will override it again. We should fix it vllm.
-        # see: https://github.com/vllm-project/vllm/blob/ce88756b967c2c5006746a424c15dd59a284ed8c/vllm/model_executor/layers/attention/cross_attention.py#L117
-        if isinstance(self.kv_cache_spec, CrossAttentionSpec):
-            slot_mapping = common_attn_metadata.slot_mapping.to(torch.int32)
-
-        attn_state = common_attn_metadata.attn_state
-
-        # Get attn_mask from singleton AttentionMaskBuilder
-        attn_mask = self.attn_mask_builder.get_attention_mask(common_attn_metadata.causal, self.model_config)
-
+        Split out of ``build`` so a backend whose operator takes device-side
+        lengths can keep them there: see
+        ``AscendFIASinkMetadataBuilder._build_fia_seq_inputs``. Returns
+        ``(query_start_loc, actual_seq_lengths_q, seq_lens_list, seq_lens,
+        block_table)`` -- the last two because the padding below has to grow
+        them together with the host-side list.
+        """
         # TODO: Yet another unnecessary H2D while we already have a query_start_loc on device
         query_start_loc = query_start_loc_cpu.pin_memory().to(self.device, non_blocking=True)
 
@@ -391,6 +373,50 @@ class AscendAttentionMetadataBuilder(AttentionMetadataBuilder[AscendMetadata]):
                 ],
                 dim=0,
             )
+        return query_start_loc, actual_seq_lengths_q, seq_lens_list, seq_lens, block_table
+
+    def build(
+        self,
+        common_prefix_len: int,
+        common_attn_metadata: AscendCommonAttentionMetadata,
+        fast_build: bool = False,
+    ) -> AscendMetadata:
+        expanded_slot_mapping = common_attn_metadata.slot_mapping if self.pcp_enabled else None
+        num_reqs = common_attn_metadata.num_reqs
+        num_actual_tokens = common_attn_metadata.num_actual_tokens
+        query_start_loc_cpu = common_attn_metadata.query_start_loc_cpu[: num_reqs + 1]
+
+        num_decodes, num_prefills, num_decode_tokens, num_prefill_tokens = self._split_decodes_and_prefills(
+            common_attn_metadata
+        )
+
+        block_table = common_attn_metadata.block_table_tensor
+
+        # TODO: This will be moved to propose and deleted after fia ops fixed.
+        seq_lens = _select_seq_lens(
+            common_attn_metadata,
+            kv_cache_spec=self.kv_cache_spec,
+            speculative_config=self.speculative_config,
+            vllm_config=self.vllm_config,
+        )
+        slot_mapping = common_attn_metadata.slot_mapping[:num_actual_tokens]
+        # this slot_mapping override doesn't work since vllm will override it again. We should fix it vllm.
+        # see: https://github.com/vllm-project/vllm/blob/ce88756b967c2c5006746a424c15dd59a284ed8c/vllm/model_executor/layers/attention/cross_attention.py#L117
+        if isinstance(self.kv_cache_spec, CrossAttentionSpec):
+            slot_mapping = common_attn_metadata.slot_mapping.to(torch.int32)
+
+        attn_state = common_attn_metadata.attn_state
+
+        # Get attn_mask from singleton AttentionMaskBuilder
+        attn_mask = self.attn_mask_builder.get_attention_mask(common_attn_metadata.causal, self.model_config)
+
+        query_start_loc, actual_seq_lengths_q, seq_lens_list, seq_lens, block_table = self._build_fia_seq_inputs(
+            common_attn_metadata,
+            num_reqs,
+            query_start_loc_cpu,
+            seq_lens,
+            block_table,
+        )
 
         backend_metadata = self._build_backend_metadata(
             common_attn_metadata,
