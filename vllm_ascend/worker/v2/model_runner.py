@@ -43,6 +43,7 @@ from vllm.v1.worker.gpu.model_runner import (
     GPUModelRunner,
 )
 
+import vllm_ascend.envs as envs_ascend
 from vllm_ascend.ascend_config import get_ascend_config
 from vllm_ascend.ascend_forward_context import (
     MoECommType,
@@ -99,6 +100,7 @@ class NPUModelRunner(GPUModelRunner):
         # Adaptive verification uses this flag to apply FIA-specific query
         # boundary and sequence length padding during FULL graph execution.
         self.use_fia = False
+        self.eager_survival_test = False
         # FusedMoE can be constructed by the parent initializer and reads this
         # capacity while setting up MC2 communication.
         set_potential_max_tokens(vllm_config)
@@ -249,6 +251,32 @@ class NPUModelRunner(GPUModelRunner):
             self.pp_handler.broadcast_drafts()
         return output
 
+    def _av_reads_back_exact_bounds(self) -> bool:
+        """Whether an eager AV lane still copies the trimmed boundaries to host.
+
+        The lanes were built that way so the host view matched the device one
+        exactly, which let the GDN builder keep planning off host query lengths.
+        A captured graph cannot pay a per-step copy, so the graph phase has to
+        leave the host view as the evenly-distributed upper bound upstream
+        produces and take every exact boundary from device -- which is what
+        ``supports_device_cpu_query_lens_mismatch`` asserts about a backend.
+
+        So the readback follows the graph mode rather than a switch of its own:
+        any mode that captures cannot do it, and the eager mode is where it was
+        rehearsed away. The environment variable stays only to drop the readback
+        while still eager, which is how the contract was first validated.
+        """
+        if not getattr(self, "eager_survival_test", False):
+            return False
+        from vllm_ascend.worker.v2.spec_decode.dspark.eager_config import (
+            GRAPH_MODE_NONE,
+            av_graph_mode,
+        )
+
+        if av_graph_mode() != GRAPH_MODE_NONE:
+            return False
+        return not envs_ascend.VLLM_ASCEND_DSPARK_AV_CPU_UPPER_BOUND
+
     def initialize_kv_cache(
         self,
         kv_cache_config: KVCacheConfig,
@@ -258,6 +286,11 @@ class NPUModelRunner(GPUModelRunner):
         # vLLM 0.29 already fixes wrapped Mamba block-table sizing upstream.
         if vllm_version_is("0.28.0"):
             kv_cache_config = unwrap_mamba_kv_cache_groups(kv_cache_config)
+        from vllm_ascend.worker.v2.spec_decode.dspark.eager_config import eager_adaptive_lane_active
+
+        # True for either eager AV lane (survival-threshold or upstream manager);
+        # both share the ragged-decode plumbing this flag gates.
+        self.eager_survival_test = eager_adaptive_lane_active(self.vllm_config)
         with graph_manager_wrapper(self):
             # vLLM 0.28 GPUModelRunner.initialize_kv_cache does not accept
             # kv_cache_allocation_context. Gate it the same way as other
@@ -429,6 +462,18 @@ class NPUModelRunner(GPUModelRunner):
         )
         num_scheduled_tokens_upper_bound = num_scheduled_tokens_np
         if adaptive_verification_active:
+            if getattr(self, "eager_survival_test", False):
+                # Which graph, if any, this batch's shape earned. A trimmed batch
+                # matches no uniform descriptor and runs eager by design, so this
+                # is the only way the aggregated line can tell a replayed graph
+                # from one that was captured and never entered.
+                adaptive_verification_manager.note_graph_mode(batch_desc.cg_mode)
+            # prepare_request_order belongs to the survival-threshold manager only;
+            # the upstream manager (lane B) does not need it.
+            if getattr(self, "eager_survival_test", False) and hasattr(
+                adaptive_verification_manager, "prepare_request_order"
+            ):
+                adaptive_verification_manager.prepare_request_order(req_ids)
             num_scheduled_tokens_np, cu_num_logits_np = adaptive_verification_manager.compact_batch(
                 num_draft_tokens_per_req, num_scheduled_tokens_np, cu_num_logits_np
             )
@@ -464,7 +509,7 @@ class NPUModelRunner(GPUModelRunner):
             total_num_logits = num_reqs * num_bonus_tokens + total_num_draft_tokens
 
             # Non-fia backends skip padding query boundary when using adaptive verification
-            if self.use_fia:
+            if self.use_fia or self._av_reads_back_exact_bounds():
                 query_start_loc_np[: num_reqs + 1] = query_start_loc[: num_reqs + 1].cpu().numpy()
                 query_start_loc_np[num_reqs + 1 :] = int(query_start_loc_np[num_reqs])
 
@@ -510,7 +555,7 @@ class NPUModelRunner(GPUModelRunner):
             self.input_buffers.seq_lens,
         )
         seq_lens = self.input_buffers.seq_lens[:num_reqs_padded]
-        if adaptive_verification_active and self.use_fia:
+        if adaptive_verification_active and (self.use_fia or self._av_reads_back_exact_bounds()):
             self.input_buffers.seq_lens_np[:num_reqs] = seq_lens[:num_reqs].cpu().numpy()
 
         # Pad for full CUDA graph mode.
