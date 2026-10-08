@@ -39,6 +39,7 @@ from vllm_ascend.distributed.kv_transfer.kv_p2p.sfa_pd_rd2h.dspark_context impor
     DSparkContextChunk,
     initialize_draft_context_chunk,
 )
+from vllm_ascend.spec_decode.vocab_mapping import settle_reduced_vocab_lm_head
 from vllm_ascend.utils import lmhead_tp_enable, lmhead_tp_max_num_logits
 from vllm_ascend.worker.dcp_utils import DCPManager
 from vllm_ascend.worker.v2.aclgraph_utils import _get_graph_update_backend
@@ -98,6 +99,11 @@ class AscendDSparkSpeculator(LmheadTPDraftSamplingMixin, DSparkSpeculator):
             model.post_process(self.vllm_config)
         if hasattr(model, "configure_target_aux_hidden_capture"):
             model.configure_target_aux_hidden_capture(target_model)
+        # After post_process, which leaves a pruned draft's own head in place.
+        # What is left is to check the mapping and fill the head the checkpoint
+        # shipped empty, from the target rows the mapping keeps. A
+        # full-vocabulary draft has no mapping and takes the no-op path.
+        settle_reduced_vocab_lm_head(model, target_model, self.vllm_config.model_config.get_vocab_size())
 
         self._lmhead_tp_wrap_draft_logits(model)
 

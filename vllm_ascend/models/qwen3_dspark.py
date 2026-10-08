@@ -1,3 +1,5 @@
+from collections.abc import Iterable
+
 import torch
 from vllm.config import VllmConfig
 from vllm.distributed import get_pp_group
@@ -74,6 +76,24 @@ def align_draft_weights(model, projection, vllm_config):
 
 
 class AscendQwen3DSparkForCausalLM(Qwen3DSparkForCausalLM):
+    #: Whether the checkpoint actually carried a ``d2t`` vocabulary mapping.
+    #:
+    #: A draft declaring ``draft_vocab_size`` allocates ``draft_id_to_target_id``
+    #: zero-filled, and the loader skips the parameter when the checkpoint has no
+    #: ``d2t``. Its contents therefore cannot tell "nothing was loaded" apart from
+    #: the legitimate mapping that keeps target ids ``0..K-1``, since both are all
+    #: zeros -- training resolves the same ambiguity with ``t2d``, which serving
+    #: drops. Only the weight stream can tell them apart.
+    has_draft_id_mapping: bool = False
+
+    #: Whether the checkpoint carried ``lm_head`` weights of its own.
+    #:
+    #: Kept separately from ``has_own_lm_head`` because the two answer different
+    #: questions once the vocabulary is reduced: this one is "were the weights
+    #: loaded", while ``has_own_lm_head`` decides "may the target head replace
+    #: it" -- and for a reduced vocabulary the answer to the second is always no.
+    has_own_lm_head_weights: bool = False
+
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = "") -> None:
         super().__init__(vllm_config=vllm_config, prefix=prefix)
 
@@ -96,6 +116,30 @@ class AscendQwen3DSparkForCausalLM(Qwen3DSparkForCausalLM):
                 set_capture_mode = getattr(get_language_model(), "set_dspark_aux_capture_materialized", None)
         if set_capture_mode is not None:
             set_capture_mode(True)
+
+    def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]):
+        """Load, recording which optional keys the checkpoint carried.
+
+        The loaded contents cannot answer that question for ``d2t``, so the
+        weight stream is the only place that can, and this is the only point
+        that sees it.
+
+        Setting ``has_own_lm_head`` here is what keeps a pruned draft's head.
+        ``align_draft_weights`` treats that flag as an instruction -- true means
+        "this model already owns one, leave it alone" -- and otherwise replaces
+        the head with one built over the target vocabulary. For a reduced
+        vocabulary that replacement is always wrong: the draft's logits
+        processor is ``draft_vocab_size`` wide, so it would slice the leading K
+        columns of a full-vocabulary head instead of the K the mapping keeps --
+        plausible tokens, wrong ones, and nothing raises.
+        """
+        all_weights = list(weights)
+        included = {name for name, _ in all_weights}
+        self.has_draft_id_mapping = any("d2t" in name for name in included)
+        self.has_own_lm_head_weights = any("lm_head" in name for name in included)
+        if self.draft_id_to_target_id is not None:
+            self.has_own_lm_head = True
+        return super().load_weights(all_weights)
 
     def post_process(self, vllm_config: VllmConfig) -> None:
         align_draft_weights(self, self.model.fc, vllm_config)
