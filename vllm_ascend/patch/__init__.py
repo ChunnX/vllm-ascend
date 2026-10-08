@@ -302,6 +302,31 @@
 #       Remove this patch once upstream vLLM supports hybrid KV cache + CP for
 #       non-CUDA backends, or exposes a platform hook for this behavior.
 #
+#   2. `vllm.v1.core.kv_cache_utils.get_kv_cache_groups`
+#      `vllm.v1.core.kv_cache_utils._get_kv_cache_groups_uniform_page_size`
+#      `vllm.v1.core.kv_cache_utils._get_kv_cache_groups_uniform_groups`
+#    Why:
+#       Upstream uses the smallest KV-spec bucket as the common group width.
+#       A small heterogeneous DSpark draft bucket can therefore split a much
+#       larger Mamba bucket into many groups and multiply metadata overhead.
+#    How:
+#       VLLM_ASCEND_KV_GROUP_MIN_SIZE (opt-in, 0 disables the patch) raises the
+#       group width to at least that many layers, so the user can tell the
+#       grouping the real width of their model (e.g. 16 for a DSpark draft).
+#       The patched core functions are shared by scheduler and workers; with the
+#       env var unset the path delegates to upstream bit-for-bit.
+#       0.28.0 reaches the uniform grouping via _get_kv_cache_groups_uniform_groups,
+#       so that name is patched too; the min-size override nests the GLM5-next
+#       dispatch rather than replacing it, so the two features do not overwrite
+#       each other on the shared patch point.
+#    Related PR (if no, explain why):
+#       No upstream PR yet; a configurable group-size override has no upstream
+#       equivalent, and the need is specific to parallel-drafting models whose
+#       draft bucket is much smaller than their state bucket.
+#    Future Plan:
+#       Upstream a configurable group-size override and remove this patch after
+#       the supported vLLM version contains it.
+#
 # ** 10. File: platform/patch_mamba_block_aligned_split.py**
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 #   1. `vllm.v1.core.sched.scheduler.Scheduler._mamba_block_aligned_split`

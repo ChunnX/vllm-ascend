@@ -2,13 +2,19 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM-Ascend project
 import math
 from collections import defaultdict
+from collections.abc import Sequence
+from contextvars import ContextVar
 from dataclasses import replace
 
 import vllm.v1.core.kv_cache_utils
 from vllm.config import VllmConfig
 from vllm.logger import logger
 from vllm.utils.math_utils import cdiv, round_up
-from vllm.v1.core.kv_cache_utils import _approximate_gcd, may_override_num_blocks
+from vllm.v1.core.kv_cache_utils import (
+    _approximate_gcd,
+    create_kv_cache_group_specs,
+    may_override_num_blocks,
+)
 from vllm.v1.kv_cache_interface import (
     FullAttentionSpec,
     KVCacheConfig,
@@ -23,6 +29,7 @@ from vllm.v1.kv_cache_interface import (
     get_kv_cache_spec_kind,
 )
 
+import vllm_ascend.envs as envs_ascend
 from vllm_ascend.core.kv_cache_interface import is_prefix_cacheable
 from vllm_ascend.models.glm5next.cache_config import (
     _get_glm5_next_cache_layout,
@@ -37,12 +44,12 @@ from vllm_ascend.utils import vllm_version_is
 _KIMI_K3_TARGET_LAYER_PREFIX = "language_model.model.layers."
 _KIMI_K3_DRAFT_LAYER_PREFIX = "model.layers."
 _orig_resolve_kv_cache_block_sizes = vllm.v1.core.kv_cache_utils.resolve_kv_cache_block_sizes
-_orig_get_kv_cache_groups_uniform_page_size = vllm.v1.core.kv_cache_utils._get_kv_cache_groups_uniform_page_size
 _orig_get_kv_cache_groups = vllm.v1.core.kv_cache_utils.get_kv_cache_groups
 if vllm_version_is("0.28.0"):
     _orig_get_packed_kv_cache_groups = None
 else:
     _orig_get_packed_kv_cache_groups = vllm.v1.core.kv_cache_utils._get_packed_kv_cache_groups
+_orig_get_kv_cache_groups_uniform_page_size = vllm.v1.core.kv_cache_utils._get_kv_cache_groups_uniform_page_size
 _orig_get_kv_cache_config_from_groups = vllm.v1.core.kv_cache_utils.get_kv_cache_config_from_groups
 _orig_max_memory_usage_bytes_from_groups = vllm.v1.core.kv_cache_utils._max_memory_usage_bytes_from_groups
 _orig_pool_bytes_per_block = vllm.v1.core.kv_cache_utils._pool_bytes_per_block
@@ -66,6 +73,87 @@ if UniformTypeKVCacheSpecs.max_num_blocks_per_req is KVCacheSpec.max_num_blocks_
     UniformTypeKVCacheSpecs.max_num_blocks_per_req = (  # type: ignore[method-assign]
         _uniform_type_max_num_blocks_per_req
     )
+
+
+KV_GROUP_SIZE_BALANCE_THRESHOLD = 1.5
+_KV_GROUP_MIN_SIZE: ContextVar[int | None] = ContextVar(
+    "ascend_kv_group_min_size",
+    default=None,
+)
+
+
+def _get_default_kv_group_size(layer_counts: Sequence[int]) -> int:
+    """Return upstream's uniform-page-size grouping heuristic."""
+    if not layer_counts or any(count <= 0 for count in layer_counts):
+        raise ValueError("layer_counts must contain only positive values")
+
+    min_num_layers = min(layer_counts)
+    max_num_layers = max(layer_counts)
+    if max_num_layers < min_num_layers * KV_GROUP_SIZE_BALANCE_THRESHOLD:
+        return max_num_layers
+    return min_num_layers
+
+
+def _get_kv_cache_groups_uniform_page_size(
+    kv_cache_spec: dict[str, KVCacheSpec],
+    *,
+    min_size: int | None = None,
+) -> list[KVCacheGroupSpec]:
+    """Group uniform-page-size layers, optionally raising the group width.
+
+    Without a configured minimum this delegates to upstream bit-for-bit, so the
+    default path is unchanged. With one, the group width is raised to at least
+    ``min_size``, so a small heterogeneous draft bucket (DSpark/DFlash) can no
+    longer drag the width down and split a large Mamba/attention bucket into
+    many groups.
+    """
+    if min_size is None:
+        min_size = _KV_GROUP_MIN_SIZE.get()
+
+    # VLLM_ASCEND_KV_GROUP_MIN_SIZE is an explicit width from whoever launched
+    # the server. The Kimi K3 grouping is a shape heuristic: it matches on layer
+    # name prefixes and spec equality, not on model identity, so it also claims
+    # any model with the same signature -- Qwen3.6 + DSpark among them. When both
+    # apply the instruction wins, because otherwise setting the variable does
+    # nothing at all on exactly the models it was written for, without saying so.
+    if min_size is None or min_size <= 0:
+        kimi_k3_groups = _get_kimi_k3_dspark_mixed_kv_cache_groups(kv_cache_spec)
+        if kimi_k3_groups is not None:
+            return kimi_k3_groups
+        return _orig_get_kv_cache_groups_uniform_page_size(kv_cache_spec)
+
+    same_type_layers: dict[KVCacheSpec, list[str]] = defaultdict(list)
+    for layer_name, layer_spec in kv_cache_spec.items():
+        same_type_layers[layer_spec].append(layer_name)
+
+    layer_counts = [len(layers) for layers in same_type_layers.values()]
+    group_size = max(_get_default_kv_group_size(layer_counts), min_size)
+
+    grouped_layers: list[list[str]] = []
+    for layers in same_type_layers.values():
+        num_padding_layers = group_size - len(layers) % group_size
+        if num_padding_layers != group_size:
+            logger.warning(
+                "Add %d padding layers, may waste at most %.2f%% KV cache memory",
+                num_padding_layers,
+                num_padding_layers / len(layers) * 100,
+            )
+        num_groups = cdiv(len(layers), group_size)
+        for group_idx in range(num_groups):
+            # Keep upstream's stride split so PP ranks see balanced groups.
+            grouped_layers.append(layers[group_idx::num_groups])
+
+    # The whole point of the override is the resulting group count, so state it
+    # once at setup rather than leaving the operator to infer it.
+    logger.info(
+        "KV cache grouping: min_size=%d layer_counts=%s group_size=%d num_groups=%d",
+        min_size,
+        sorted(layer_counts),
+        group_size,
+        len(grouped_layers),
+    )
+
+    return create_kv_cache_group_specs(kv_cache_spec, grouped_layers)
 
 
 def _page_sizes(spec: UniformTypeKVCacheSpecs) -> set[int]:
@@ -218,18 +306,29 @@ def _get_kimi_k3_dspark_mixed_kv_cache_groups(
     return groups
 
 
-def _get_kv_cache_groups_uniform_page_size(
-    kv_cache_spec: dict[str, KVCacheSpec],
-) -> list[KVCacheGroupSpec]:
-    kimi_k3_groups = _get_kimi_k3_dspark_mixed_kv_cache_groups(kv_cache_spec)
-    if kimi_k3_groups is not None:
-        return kimi_k3_groups
-    return _orig_get_kv_cache_groups_uniform_page_size(kv_cache_spec)
-
-
 def _kv_cache_config_has_mamba_layers(self: KVCacheConfig) -> bool:
     """Recognize Mamba layers nested in UniformType cache groups."""
     return any(get_kv_cache_spec_kind(group.kv_cache_spec) == KVCacheSpecKind.MAMBA for group in self.kv_cache_groups)
+
+
+def get_kv_cache_groups(vllm_config: VllmConfig, kv_cache_spec: dict[str, KVCacheSpec]) -> list[KVCacheGroupSpec]:
+    """Propagate the opt-in minimum KV-group width across this call.
+
+    The grouping helpers are shared by the scheduler and the workers, so the
+    width travels with the call rather than being read from the environment
+    again further down. VLLM_ASCEND_KV_GROUP_MIN_SIZE=0 disables the grouping
+    patch entirely.
+    """
+    min_size = envs_ascend.VLLM_ASCEND_KV_GROUP_MIN_SIZE
+    context_token = _KV_GROUP_MIN_SIZE.set(min_size if min_size > 0 else None)
+    try:
+        # The GLM5-next dispatch is nested here so both features live behind this
+        # single patch point instead of overwriting each other on it. GLM5-next
+        # specs take their own grouping; everything else falls through to the
+        # original grouper, whose uniform chain reads the ContextVar set above.
+        return _get_glm5_next_kv_cache_groups(vllm_config, kv_cache_spec)
+    finally:
+        _KV_GROUP_MIN_SIZE.reset(context_token)
 
 
 def group_and_unify_kv_cache_specs(
@@ -629,13 +728,16 @@ if vllm_version_is("0.28.0"):
 else:
     assert _orig_get_packed_kv_cache_groups is not None
     vllm.v1.core.kv_cache_utils._get_packed_kv_cache_groups = _ascend_get_packed_kv_cache_groups
+# The minimum-width wrapper is the single owner of this patch point: it carries
+# the width in a ContextVar and dispatches GLM5-next internally, so neither
+# feature overwrites the other here.
+vllm.v1.core.kv_cache_utils.get_kv_cache_groups = get_kv_cache_groups
 vllm.v1.core.kv_cache_utils._get_kv_cache_groups_uniform_page_size = _get_kv_cache_groups_uniform_page_size
 # vLLM v0.24.0 renamed _get_kv_cache_config_deepseek_v4 to
 # _get_kv_cache_config_packed. The v0.28.0 planner still consumes shared_by;
 # main uses _ascend_get_kv_cache_config_from_groups and the stride-aware planner.
 if vllm_version_is("0.28.0"):
     vllm.v1.core.kv_cache_utils._get_kv_cache_config_packed = _get_kv_cache_config_deepseek_v4
-vllm.v1.core.kv_cache_utils.get_kv_cache_groups = _get_glm5_next_kv_cache_groups
 KVCacheConfig.has_mamba_layers = property(  # type: ignore[assignment]
     _kv_cache_config_has_mamba_layers
 )
