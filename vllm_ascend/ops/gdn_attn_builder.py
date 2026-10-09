@@ -346,6 +346,13 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
         device: torch.device,
     ):
         super().__init__(kv_cache_spec, layer_names, vllm_config, device)
+        from vllm_ascend.worker.v2.spec_decode.dspark.eager_config import eager_adaptive_lane_active
+
+        # Whether an eager adaptive-verification lane is running. It decides two
+        # things below: that a batch whose drafts were all trimmed away still
+        # takes the speculative path, and that the state operators are the
+        # variable-length ones.
+        self.eager_survival_test = eager_adaptive_lane_active(vllm_config)
         sequence_index_capacity = max(
             self.vllm_config.scheduler_config.max_num_seqs,
             self.decode_cudagraph_max_bs,
@@ -721,7 +728,12 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
             num_reqs = num_decode_draft_tokens_cpu.numel()
             spec_sequence_masks_cpu = self.spec_sequence_masks_cpu[:num_reqs]
             runtime_draft_tokens = num_decode_draft_tokens_cpu[num_decode_draft_tokens_cpu >= 0]
-            if runtime_draft_tokens.sum().item() > 0:
+            # A lane may trim every request to zero drafts. That is still a
+            # speculative decode -- the state operators must select the previous
+            # round's accepted history -- so the mask cannot follow the draft
+            # count alone, or the whole batch silently takes the non-spec path
+            # and reads the wrong state row.
+            if runtime_draft_tokens.sum().item() > 0 or self.eager_survival_test:
                 torch.ge(
                     num_decode_draft_tokens_cpu,
                     0,
@@ -970,6 +982,7 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
         self._attach_non_spec_prefill_metadata(
             attn_metadata, non_spec_chunked_prefill_metadata, non_spec_conv1d_cache_indices
         )
+        attn_metadata.use_eager_varlen = self.eager_survival_test
         self._attach_spec_decode_metadata(attn_metadata)
         self._attach_non_spec_decode_metadata(attn_metadata, non_spec_conv1d_cache_indices)
         return attn_metadata

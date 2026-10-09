@@ -435,19 +435,40 @@ class AscendGatedDeltaNetAttention(GatedDeltaNetAttention):
             spec_causal_conv1d_meta = attn_metadata.spec_decode_metadata.spec_causal_conv1d
             spec_query_start_loc_device = spec_causal_conv1d_meta.query_start_loc
             output_spec = torch.empty_like(mixed_qkv_spec)
-            output_spec = causal_conv1d_update(
-                mixed_qkv_spec,
-                self_kv_cache[0],
-                conv_weights_T,
-                bias=self.conv1d.bias,
-                activation="silu" if self.activation else None,
-                conv_state_indices=_normalize_causal_cache_indices(spec_causal_conv1d_meta.cache_indices),
-                num_accepted_tokens=spec_causal_conv1d_meta.num_accepted_tokens,
-                query_start_loc=spec_query_start_loc_device,
-                max_query_len=self.num_spec + 1,
-                null_block_id=0,
-                out=output_spec,
-            )
+            if getattr(attn_metadata, "use_eager_varlen", False):
+                # The D-Cut operator reads the per-request split from the
+                # boundaries it is given. The wheel's entry point below infers
+                # one token per request from a 2D decode input, and that
+                # inference is indistinguishable from the truth exactly when the
+                # token count equals the request count -- which is what a padded
+                # request axis looks like. Measured: it writes token 0 and leaves
+                # the rest of the row untouched, with no error.
+                torch.ops._C_ascend.npu_dcut_causal_conv1d(
+                    output_spec,
+                    mixed_qkv_spec,
+                    conv_weights_T,
+                    conv_state=self_kv_cache[0],
+                    bias=self.conv1d.bias,
+                    query_start_loc=spec_query_start_loc_device,
+                    cache_indices=spec_causal_conv1d_meta.cache_indices,
+                    num_accepted_tokens=spec_causal_conv1d_meta.num_accepted_tokens,
+                    activation_mode=1 if self.activation else 0,
+                    pad_slot_id=PAD_SLOT_ID,
+                )
+            else:
+                output_spec = causal_conv1d_update(
+                    mixed_qkv_spec,
+                    self_kv_cache[0],
+                    conv_weights_T,
+                    bias=self.conv1d.bias,
+                    activation="silu" if self.activation else None,
+                    conv_state_indices=_normalize_causal_cache_indices(spec_causal_conv1d_meta.cache_indices),
+                    num_accepted_tokens=spec_causal_conv1d_meta.num_accepted_tokens,
+                    query_start_loc=spec_query_start_loc_device,
+                    max_query_len=self.num_spec + 1,
+                    null_block_id=0,
+                    out=output_spec,
+                )
             mixed_qkv_spec = output_spec
 
         # 1.2: Process the remaining part
@@ -561,18 +582,35 @@ class AscendGatedDeltaNetAttention(GatedDeltaNetAttention):
             actual_seq_lengths = attn_metadata.spec_decode_metadata.actual_seq_lengths
             query_spec = l2norm_fwd(query_spec)
             key_spec = l2norm_fwd(key_spec)
-            core_attn_out_spec = recurrent_gated_delta_rule(
-                query_spec.squeeze(0),
-                key_spec.squeeze(0),
-                value_spec.squeeze(0),
-                ssm_state,
-                g=g_spec.squeeze(0),
-                beta=beta_spec.squeeze(0),
-                scale=key_spec.shape[-1] ** -0.5,
-                actual_seq_lengths=actual_seq_lengths,
-                ssm_state_indices=spec_state_indices_tensor.flatten(),
-                num_accepted_tokens=spec_causal_conv1d_meta.num_accepted_tokens.to(torch.int32),
-            ).unsqueeze(0)
+            if getattr(attn_metadata, "use_eager_varlen", False):
+                # Same reason as the convolution above, and the same boundaries:
+                # this operator takes query_start_loc rather than the per-request
+                # lengths, and the state index table whole rather than flattened.
+                core_attn_out_spec = torch.ops._C_ascend.npu_dcut_recurrent_gated_delta_rule(
+                    query=query_spec.squeeze(0),
+                    key=key_spec.squeeze(0),
+                    value=value_spec.squeeze(0),
+                    g=g_spec.squeeze(0),
+                    beta=beta_spec.squeeze(0),
+                    state=ssm_state,
+                    scale=key_spec.shape[-1] ** -0.5,
+                    query_start_loc=spec_causal_conv1d_meta.query_start_loc,
+                    ssm_state_indices=spec_state_indices_tensor.contiguous(),
+                    num_accepted_tokens=spec_causal_conv1d_meta.num_accepted_tokens.to(torch.int32),
+                ).unsqueeze(0)
+            else:
+                core_attn_out_spec = recurrent_gated_delta_rule(
+                    query_spec.squeeze(0),
+                    key_spec.squeeze(0),
+                    value_spec.squeeze(0),
+                    ssm_state,
+                    g=g_spec.squeeze(0),
+                    beta=beta_spec.squeeze(0),
+                    scale=key_spec.shape[-1] ** -0.5,
+                    actual_seq_lengths=actual_seq_lengths,
+                    ssm_state_indices=spec_state_indices_tensor.flatten(),
+                    num_accepted_tokens=spec_causal_conv1d_meta.num_accepted_tokens.to(torch.int32),
+                ).unsqueeze(0)
         else:
             core_attn_out_spec, last_recurrent_state = None, None
 
