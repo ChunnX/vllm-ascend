@@ -150,13 +150,27 @@ class TestFlashAttnNpuBackendWiring(TestBase):
         self.assertIn(AscendFlashAttnV4Backend.get_name(), AttentionBackendEnum.__members__)
 
     def test_kv_cache_layout_is_inherited_unchanged(self):
-        """The draft shares the target's cache pool, and the wheel wants that layout."""
+        """The draft shares the target's cache pool, and the wheel wants that layout.
+
+        ``get_required_kv_cache_layout`` is applied through a process-global
+        setter, so a layout of its own here would not stay on this backend's
+        layers anyway.
+
+        The two differ in kind -- one is a staticmethod and one a classmethod --
+        so unwrap before comparing: a staticmethod reached through the class is
+        a plain function with no ``__func__``, while a classmethod is a fresh
+        bound method on every access and only its ``__func__`` is stable.
+        """
         from vllm_ascend.attention.attention_v1 import AscendAttentionBackend
 
+        def underlying(obj):
+            return getattr(obj, "__func__", obj)
+
         for name in ("get_kv_cache_shape", "get_required_kv_cache_layout"):
-            self.assertEqual(
-                getattr(AscendFlashAttnV4Backend, name).__func__,
-                getattr(AscendAttentionBackend, name).__func__,
+            self.assertNotIn(name, AscendFlashAttnV4Backend.__dict__, f"{name} must not be overridden here")
+            self.assertIs(
+                underlying(getattr(AscendFlashAttnV4Backend, name)),
+                underlying(getattr(AscendAttentionBackend, name)),
             )
 
 
