@@ -99,6 +99,41 @@ def test_fla_npu_exposes_the_varlen_parameters():
     assert not missing, f"fla_npu no longer takes: {missing}"
 
 
+def _per_token_report(actual: torch.Tensor, expected: torch.Tensor, lengths: list[int]) -> str:
+    """Say which tokens were left unwritten, which match, and which differ.
+
+    The distinction is the whole diagnosis. The output buffer is pre-filled with
+    NaN, so a row that is still NaN was never written -- which is what "the
+    operator read one token per request and skipped the rest" looks like, and is
+    a different finding from a row written with the wrong value.
+    """
+    untouched = [i for i in range(actual.shape[0]) if bool(actual[i].isnan().all())]
+    close = [
+        i
+        for i in range(actual.shape[0])
+        if i not in untouched and bool(torch.allclose(actual[i], expected[i], rtol=2e-2, atol=2e-2))
+    ]
+    differs = [i for i in range(actual.shape[0]) if i not in untouched and i not in close]
+    lines = [
+        f"lengths={lengths} tokens={actual.shape[0]}",
+        f"  never written (still NaN): {untouched}",
+        f"  match:                    {close}",
+        f"  written but wrong:        {differs}",
+    ]
+    if untouched and close == [0] and not differs:
+        lines.append(
+            "  => token 0 correct and every later token unwritten: the request "
+            "boundaries are being ignored, exactly as the stock operator did. "
+            "fla_npu cannot serve this shape."
+        )
+    elif not untouched:
+        lines.append(
+            "  => every token was written, so the boundaries were read; this is a "
+            "numeric or layout disagreement, not a missing capability."
+        )
+    return "\n".join(lines)
+
+
 @pytest.mark.parametrize("lengths", [[8], [8, 0, 0, 0, 0, 0, 0, 0], [3, 1, 4], [1, 1, 1]])
 def test_conv_varlen_matches_cpu_golden(lengths):
     torch.manual_seed(31)
@@ -125,7 +160,9 @@ def test_conv_varlen_matches_cpu_golden(lengths):
     )
 
     device_state = state.npu()
-    output = torch.empty_like(x, device="npu")
+    # NaN, not empty: a row still NaN after the call was never written, which is
+    # the finding that decides whether the boundaries were read at all.
+    output = torch.full_like(x, float("nan"), device="npu")
     returned = causal_conv1d_update(
         x.npu(),
         device_state,
@@ -143,7 +180,14 @@ def test_conv_varlen_matches_cpu_golden(lengths):
     # gdn.py reads the return value rather than the out= buffer; keep both honest.
     actual = (returned if returned is not None else output).cpu().float()
 
-    torch.testing.assert_close(actual, torch.from_numpy(expected).float(), rtol=2e-2, atol=2e-2)
+    expected_t = torch.from_numpy(expected).float()
+    torch.testing.assert_close(
+        actual,
+        expected_t,
+        rtol=2e-2,
+        atol=2e-2,
+        msg=lambda m: f"{_per_token_report(actual, expected_t, lengths)}\n{m}",
+    )
     # The rolled-back history must land exactly: it is a copy, not arithmetic.
     # Rows the golden marks inert are skipped by the operator, so only the live
     # rows' slots are compared -- slot 0 belongs to neither side's contract.
@@ -223,3 +267,45 @@ def test_recurrent_multiround_ragged_state_matches_cpu_golden():
         # Carry the independent golden state forward; never seed it from the DUT,
         # or a wrong round would be hidden by the next round agreeing with it.
         state = torch.from_numpy(expected_state).float()
+
+
+@pytest.mark.parametrize("nk,nv", [(1, 1), (2, 2), (2, 4), (4, 4)])
+@pytest.mark.parametrize("num_reqs", [1, 3])
+def test_recurrent_accepts_a_uniform_batch_at_all(nk, nv, num_reqs):
+    """Localise the shape constraint before asking anything about raggedness.
+
+    The multi-round gate above was refused at
+    ``aclnnRecurrentGatedDeltaRuleGetWorkspaceSize`` on its *uniform* first
+    round, so the rejection is about the arguments, not about variable lengths.
+    This sweeps the head-count ratio and the request count on a plain uniform
+    batch: whichever combinations are accepted bound what the ragged gate may
+    legitimately ask for, and a uniform case that is refused for every ratio
+    points at something else in the call entirely.
+    """
+    torch.manual_seed(5)
+    width, dim = 4, 64
+    tokens = num_reqs * width
+    state = (torch.randn(num_reqs + 1, nv, dim, dim, dtype=torch.float32) * 0.1).npu()
+    q = torch.nn.functional.normalize(torch.randn(tokens, nk, dim), dim=-1).to(torch.bfloat16).npu()
+    k = torch.nn.functional.normalize(torch.randn(tokens, nk, dim), dim=-1).to(torch.bfloat16).npu()
+    v = (torch.randn(tokens, nv, dim, dtype=torch.bfloat16) * 0.2).npu()
+    beta = torch.rand(tokens, nv, dtype=torch.bfloat16).npu()
+    g = (-torch.rand(tokens, nv, dtype=torch.float32) * 0.1).npu()
+
+    out = recurrent_gated_delta_rule(
+        q,
+        k,
+        v,
+        state,
+        g=g,
+        beta=beta,
+        scale=dim**-0.5,
+        actual_seq_lengths=torch.full((num_reqs,), width, dtype=torch.int32, device="npu"),
+        ssm_state_indices=torch.arange(1, num_reqs + 1, dtype=torch.int32, device="npu"),
+        num_accepted_tokens=torch.ones(num_reqs, dtype=torch.int32, device="npu"),
+    )
+    torch.npu.synchronize()
+    # Only that the call is accepted and produces the right shape; the numeric
+    # contract is the multi-round gate's job.
+    assert out.shape[0] == tokens, f"nk={nk} nv={nv} num_reqs={num_reqs}: got {tuple(out.shape)}"
+    assert not bool(out.isnan().any()), f"nk={nk} nv={nv} num_reqs={num_reqs}: output has NaN"
