@@ -1830,6 +1830,40 @@ void npu_fused_quant_lightning_indexer_manage_meta(
     return;
 }
 
+
+at::Tensor npu_dcut_causal_conv1d_meta(
+    const at::Tensor& output,
+    const at::Tensor& x,
+    const at::Tensor& weight,
+    const at::Tensor& conv_state,
+    const c10::optional<at::Tensor>& bias,
+    const c10::optional<at::Tensor>& query_start_loc,
+    const c10::optional<at::Tensor>& cache_indices,
+    const c10::optional<at::Tensor>& num_accepted_tokens,
+    int64_t activation_mode,
+    int64_t pad_slot_id)
+{
+    return output;
+}
+
+at::Tensor npu_dcut_recurrent_gated_delta_rule_meta(
+    const at::Tensor& query,
+    const at::Tensor& key,
+    const at::Tensor& value,
+    at::Tensor& state,
+    const c10::optional<at::Tensor>& beta,
+    const c10::optional<double> scale,
+    const c10::optional<at::Tensor>& query_start_loc,
+    const c10::optional<at::Tensor>& ssm_state_indices,
+    const c10::optional<at::Tensor>& num_accepted_tokens,
+    const c10::optional<at::Tensor>& g,
+    const c10::optional<at::Tensor>& gk,
+    bool zero_padded_output)
+{
+    auto options = value.options().dtype(at::ScalarType::BFloat16);
+    return at::empty_symint(value.sym_sizes(), options);
+}
+
 } // namespace meta
 } // namespace vllm_ascend
 
@@ -1861,6 +1895,10 @@ TORCH_LIBRARY_IMPL_EXPAND(CONCAT(_C, _ascend), Meta, ops) {
     ops.impl("get_physical_device_id", &vllm_ascend::meta::get_physical_device_id_meta);
     //Gemma rmsnorm meta implementation
     ops.impl("npu_gemma_rms_norm", &vllm_ascend::meta::npu_gemma_rms_norm_meta);
+    // Variable-length D-Cut state operators for adaptive verification.
+    ops.impl("npu_dcut_recurrent_gated_delta_rule",
+             &vllm_ascend::meta::npu_dcut_recurrent_gated_delta_rule_meta);
+    ops.impl("npu_dcut_causal_conv1d", &vllm_ascend::meta::npu_dcut_causal_conv1d_meta);
     ops.impl("dequant_situ_quant", &vllm_ascend::meta::dequant_situ_quant_meta);
     ops.impl("situ_mx_quant", &vllm_ascend::meta::situ_mx_quant_meta);
     ops.impl("gmm_dequant_situ_quant", &vllm_ascend::meta::gmm_dequant_situ_quant_meta);
