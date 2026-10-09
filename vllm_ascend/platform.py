@@ -323,6 +323,16 @@ class NPUPlatform(Platform):
             if fia_sink_selected(attn_selector_config):
                 return "vllm_ascend.attention.fia_sink_v1.AscendFIASinkBackend"
 
+            # The same draft, the head sizes the sink operator does not serve.
+            # Asked second so that where both are enabled and both could serve a
+            # layer, the sink operator keeps it -- that is the path with hardware
+            # runs behind it. The predicate declines those layers itself and says
+            # so, so this order is a statement of preference, not the mechanism.
+            from vllm_ascend.attention.flash_attn_npu_v1 import flash_attn_npu_selected
+
+            if flash_attn_npu_selected(attn_selector_config):
+                return "vllm_ascend.attention.flash_attn_npu_v1.AscendFlashAttnV4Backend"
+
         if attn_selector_config.use_pcp:
             pcp_backend_map = {
                 (True, False, False): "vllm_ascend.attention.mla_v1.AscendMLABackend",

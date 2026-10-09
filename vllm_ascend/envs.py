@@ -162,6 +162,16 @@ env_variables: dict[str, Callable[[], Any]] = {
     # seq_lens directly and does tiling on AICPU, removing the seq_lens.tolist()
     # host sync in the draft hot path. Disabled by default.
     "VLLM_ASCEND_ENABLE_DSPARK_FIA_SINK": lambda: bool(int(os.getenv("VLLM_ASCEND_ENABLE_DSPARK_FIA_SINK", "0"))),
+    # Which flash-attention-npu API serves the parallel-drafting (DSpark /
+    # DFlash) draft model's non-causal attention. Empty (the default) disables
+    # it and the draft keeps the ordinary backend. "v4" routes the draft to
+    # flash_attn_npu_4, which takes device-side cu_seqlens_q / seqused_k and
+    # tiles on AICPU, removing the seq_lens.tolist() host sync -- and reaches
+    # head sizes the FIA sink operator does not serve, head_dim 256 among them.
+    # Any other value raises at startup rather than silently disabling the
+    # backend. Requires the flash-attn-npu wheel built for Ascend910 with
+    # FLASH_ATTN_BUILD_VERSION=v4. Not sensitive.
+    "VLLM_ASCEND_DSPARK_FLASH_ATTN_NPU": lambda: os.getenv("VLLM_ASCEND_DSPARK_FLASH_ATTN_NPU", ""),
     # Minimum KV-cache group width (layers per group). 0 disables the override
     # and keeps upstream grouping exactly. A positive value raises the group
     # width to at least this many layers, so a small heterogeneous draft bucket
