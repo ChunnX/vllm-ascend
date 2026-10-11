@@ -9,7 +9,14 @@ DSpark，算子与状态语义相同，probability 来源与部分系统边界�
 FULL 会让「算子问题」和「图回放问题」混在一起，失去归因能力；PIECEWISE 提供一条
 能长期对照的正确性基线。
 
-更硬的理由是 cost table。同一模型上实测（Qwen3.3-9B, TP=2, target cost）：
+更硬的理由是 cost table。下表取自 D-Cut 作者 DFlash 侧的复盘，是 target 侧单步成本。
+
+> **出处存疑，勘误：** 本文早先把它标为「Qwen3.3-9B, TP=2」，但引入这张表的提交
+> （`7ee113ded`）原文只说 "measured on one model"，没有型号也没有并行度。那个型号是
+> 本仓自己添上去的，无从查证，现已撤回。**表里的相对关系（eager 平、PIECEWISE 单调）
+> 是结论所依赖的部分，绝对值不要跨模型引用。**
+> [待补：向原作者确认这组数据的模型与并行度]
+
 
 | capture_size | eager (ms) | PIECEWISE (ms) |
 | --- | --- | --- |
