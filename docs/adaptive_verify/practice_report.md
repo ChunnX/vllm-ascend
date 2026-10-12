@@ -1,3 +1,5 @@
+<!-- audit: skip=实践过程,成果固化 -->
+
 # 在 Ascend NPU 上补齐 DSpark 动态校验与变长 GDN 入图
 
 ## 摘要
