@@ -1,0 +1,5 @@
+#define CFG_BUILD_DEBUG
+#define RecurrentGatedDeltaRule DcutRecurrentGatedDeltaRule
+#define aclnnRecurrentGatedDeltaRule aclnnDcutRecurrentGatedDeltaRule
+#define aclnnRecurrentGatedDeltaRuleGetWorkspaceSize aclnnDcutRecurrentGatedDeltaRuleGetWorkspaceSize
+#include "../../vendor/op_host/op_api/aclnn_recurrent_gated_delta_rule.cpp"

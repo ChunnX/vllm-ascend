@@ -53,7 +53,9 @@
 #include "moe/causal_conv1d_v310/causal_conv1d_310_torch_adpt.h"
 #include "attention/attn_res_fwd/attn_res_fwd_torch_adpt.h"
 #include "attention/kda_gate_cumsum_vllm/kda_gate_cumsum_vllm_torch_adpt.h"
+#include "moe/dcut_causal_conv1d/dcut_causal_conv1d_torch_adpt.h"
 #include "attention/kda_layout_swap12/kda_layout_swap12_torch_adpt.h"
+#include "attention/dcut_recurrent_gated_delta_rule/dcut_recurrent_gated_delta_rule_torch_adpt.h"
 #include "attention/recurrent_gated_delta_rule_v310/recurrent_gated_delta_rule_310_torch_adpt.h"
 #include "attention/k2q_csr/k2q_csr_torch_adpt.h"
 #include "attention/msa_index_score/msa_index_score_torch_adpt.h"
@@ -2843,6 +2845,22 @@ TORCH_LIBRARY_EXPAND(CONCAT(_C, _ascend), ops)
         "int[]? tuning_config, float beta, float linear_beta) -> (Tensor output, Tensor output_scale)");
     ops.impl("grouped_matmul_situ_quant_weight_nz.list", torch::kPrivateUse1,
              &ascend_kernel::gmm_situ_quant_v2_nz_list);
+    ops.def(
+        "npu_dcut_recurrent_gated_delta_rule(Tensor query, "
+        "                                    Tensor key, "
+        "                                    Tensor value, "
+        "                                    Tensor(a!) state, "
+        "                                    *, "
+        "                                    Tensor? beta=None, "
+        "                                    float? scale=None, "
+        "                                    Tensor? query_start_loc=None, "
+        "                                    Tensor? ssm_state_indices=None, "
+        "                                    Tensor? num_accepted_tokens=None, "
+        "                                    Tensor? g=None, "
+        "                                    Tensor? gk=None, "
+        "                                    bool zero_padded_output=False) -> Tensor");
+    ops.impl("npu_dcut_recurrent_gated_delta_rule", torch::kPrivateUse1,
+             &vllm_ascend::npu_dcut_recurrent_gated_delta_rule);
 
 #ifdef VLLM_ENABLE_ATB_AND_DIRECT_KERNELS
     // Direct kernel custom ops
@@ -3165,6 +3183,17 @@ TORCH_LIBRARY_EXPAND(CONCAT(_C, _ascend), ops)
         "Tensor out_is_masked_token_mask, Tensor out_new_token_indices, Tensor out_hidden_state_mapping)"
     );
     ops.impl("npu_copy_and_expand_eagle_inputs", torch::kPrivateUse1, &vllm_ascend::npu_copy_and_expand_eagle_inputs);
+    ops.def(
+        "npu_dcut_causal_conv1d(Tensor(a!) output, Tensor x, "
+        "                         Tensor weight, Tensor(b!) conv_state, "
+        "                         Tensor? bias=None, "
+        "                         Tensor? query_start_loc=None, "
+        "                         Tensor? cache_indices=None, "
+        "                         Tensor? num_accepted_tokens=None, "
+        "                         int activation_mode=0, "
+        "                         int pad_slot_id=-1) -> Tensor(a!)");
+    ops.impl("npu_dcut_causal_conv1d", torch::kPrivateUse1, &vllm_ascend::npu_dcut_causal_conv1d);
+
     ops.def(
         "moe_gating_top_k_hash("
         "Tensor x, "
