@@ -17,6 +17,7 @@
 # This file is a part of the vllm-ascend project.
 #
 
+import dataclasses
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from copy import deepcopy
 from dataclasses import replace
@@ -50,6 +51,7 @@ from vllm.v1.worker.gpu.model_runner import (
 )
 from vllm.v1.worker.gpu.model_states.mamba_hybrid import MambaHybridModelState
 
+import vllm_ascend.envs as envs_ascend
 from vllm_ascend.ascend_config import get_ascend_config
 from vllm_ascend.ascend_forward_context import (
     MoECommType,
@@ -142,6 +144,10 @@ class NPUModelRunner(GPUModelRunner):
         # Adaptive verification uses this flag to apply FIA-specific query
         # boundary and sequence length padding during FULL graph execution.
         self.use_fia = False
+        self.adaptive_verification_enabled = False
+        # Assume pure until a scheduler output says otherwise, so a dispatch
+        # before the first step behaves as it did.
+        self.av_batch_is_pure_spec_decode = True
         # FusedMoE can be constructed by the parent initializer and reads this
         # capacity while setting up MC2 communication.
         set_potential_max_tokens(vllm_config)
@@ -433,6 +439,10 @@ class NPUModelRunner(GPUModelRunner):
                 if sparse_cfg.use_fused_copy_sfa
                 else set()
             )
+        from vllm_ascend.worker.v2.spec_decode.dspark.av_config import adaptive_verification_enabled
+
+        # Gate ragged metadata and graph dispatch on the adapted AV manager.
+        self.adaptive_verification_enabled = adaptive_verification_enabled(self.vllm_config)
         with graph_manager_wrapper(self):
             super().initialize_kv_cache(
                 kv_cache_config,
@@ -564,6 +574,18 @@ class NPUModelRunner(GPUModelRunner):
         # only need to flush the graph dumper below without writing a step.
         if dump_forward and not dummy_run:
             self._start_dump_data(scheduled_tokens=scheduler_output.num_scheduled_tokens)
+
+        # The ragged graph's contract is pure speculative decode. A request that
+        # is prefilling appears in the scheduled tokens but not in the scheduled
+        # speculative tokens, so the two lengths disagree exactly when the batch
+        # is mixed -- which covers a new request and a chunked prefill alike.
+        # Only from a real step. A dummy or profile run carries a synthetic
+        # scheduler output that would read as mixed and leave the flag set for
+        # whatever ran next, including graph capture.
+        if not dummy_run and not is_profile:
+            scheduled = getattr(scheduler_output, "num_scheduled_tokens", None) or {}
+            spec = getattr(scheduler_output, "scheduled_spec_decode_tokens", None) or {}
+            self.av_batch_is_pure_spec_decode = bool(scheduled) and len(spec) == len(scheduled)
 
         self.model_state.kvpp_is_dummy_run = dummy_run or is_profile
         dp_coordination_context = (
@@ -810,6 +832,12 @@ class NPUModelRunner(GPUModelRunner):
         )
         num_scheduled_tokens_upper_bound = num_scheduled_tokens_np
         if adaptive_verification_active:
+            if getattr(self, "adaptive_verification_enabled", False):
+                # Which graph, if any, this batch's shape earned. A trimmed batch
+                # matches no uniform descriptor and runs eager by design, so this
+                # is the only way the aggregated line can tell a replayed graph
+                # from one that was captured and never entered.
+                adaptive_verification_manager.note_graph_mode(batch_desc.cg_mode)
             num_scheduled_tokens_np, cu_num_logits_np = adaptive_verification_manager.compact_batch(
                 num_draft_tokens_per_req, num_scheduled_tokens_np, cu_num_logits_np
             )
@@ -896,7 +924,7 @@ class NPUModelRunner(GPUModelRunner):
             self.input_buffers.seq_lens,
         )
         seq_lens = self.input_buffers.seq_lens[:num_reqs_padded]
-        if adaptive_verification_active and self.use_fia:
+        if adaptive_verification_active and (self.use_fia):
             self.input_buffers.seq_lens_np[:num_reqs] = seq_lens[:num_reqs].cpu().numpy()
 
         # Pad for full CUDA graph mode.
@@ -1335,10 +1363,28 @@ class NPUModelRunner(GPUModelRunner):
         last_loc = int(query_start_loc_np[num_reqs])
         num_padding_tokens = num_tokens_padded - last_loc
         num_padding_reqs = num_reqs_padded - num_reqs
-        assert num_padding_tokens >= 0 and num_padding_reqs >= 0
+        assert num_padding_tokens >= 0 and num_padding_reqs >= 0, (
+            "Adaptive FIA query boundaries exceed the dispatched graph capacity: "
+            f"num_tokens_padded={num_tokens_padded}, last_query_offset={last_loc}, "
+            f"num_reqs_padded={num_reqs_padded}, num_reqs={num_reqs}, "
+            f"query_start_loc={query_start_loc_np[: num_reqs + 1].tolist()}"
+        )
 
         if num_padding_reqs == 0:
             if num_padding_tokens > 0:
+                if num_reqs_padded + 1 > self.max_num_reqs + 1:
+                    # The per-request buffers are max_num_reqs + 1 wide so the
+                    # dummy row that carries token padding always exists. This
+                    # would mean asking for a second one, which no descriptor
+                    # should produce: B_fia is at most B_live + 1, and B_live is
+                    # bounded by max_num_reqs.
+                    raise RuntimeError(
+                        f"FIA padding wants request row {num_reqs_padded + 1} for "
+                        f"{num_padding_tokens} padding token(s), past the max_num_reqs + 1 "
+                        f"({self.max_num_reqs + 1}) the buffers hold. "
+                        f"num_reqs={num_reqs} num_tokens_padded={num_tokens_padded} "
+                        f"last_loc={last_loc}"
+                    )
                 query_start_loc_np[num_reqs + 1] = num_tokens_padded
                 num_reqs_padded += 1
             return query_start_loc_np, num_reqs_padded
@@ -1362,7 +1408,86 @@ def graph_manager_wrapper(model_runner):
         varlen_decode: bool = False,
         ubatch_runner: Any = None,  # vLLM main (#51700)
     ):
-        return ModelAclGraphManager(
+        mode_for_manager = None
+        if getattr(model_runner, "adaptive_verification_enabled", False):
+            from vllm_ascend.worker.v2.spec_decode.dspark.av_config import (
+                GRAPH_MODE_NONE,
+                GRAPH_MODE_RAGGED,
+                GRAPH_MODE_UNIFORM,
+                av_graph_mode,
+            )
+
+            mode = av_graph_mode()
+            mode_for_manager = mode
+            if mode == GRAPH_MODE_NONE:
+                # v0.28 unconditionally upgrades AV to FULL_AND_PIECEWISE. With no
+                # graph mode selected the lane has no graph cost model and stays eager.
+                cudagraph_mode = CUDAGraphMode.NONE
+                vllm_config.compilation_config.cudagraph_mode = CUDAGraphMode.NONE
+            elif mode == GRAPH_MODE_UNIFORM and varlen_decode:
+                # Capture the decode descriptor at the uniform verify width.
+                # Adaptive verification otherwise asks for the variable-length
+                # descriptor, which carries min(num_tokens, max_num_seqs) requests
+                # with the dummy tokens spread evenly: every bucket at or below
+                # max_num_seqs is captured as one token per request, while a real
+                # speculative batch replays one request per verify width. Full
+                # attention tolerates that -- it re-issues its kernel with
+                # refreshed host lengths every replay -- but the GDN layers get no
+                # replay-time update, so the geometry captured into the recurrent
+                # and conv tasks is the only geometry they ever run.
+                #
+                # The uniform width is the shape a real speculative batch
+                # presents, and the one that already replays correctly without
+                # adaptive verification. A trimmed batch is not uniform, so it
+                # matches no full-graph descriptor and falls back rather than
+                # replaying a shape captured for a different request layout. That
+                # is correct and gives up the trimming benefit under graph, which
+                # is what the ragged mode exists to recover.
+                varlen_decode = False
+            elif mode == GRAPH_MODE_RAGGED and cudagraph_mode == CUDAGraphMode.FULL_AND_PIECEWISE:
+                # Upstream rewrites cudagraph_mode to FULL_AND_PIECEWISE for any
+                # run with an adaptive-verification manager, overriding whatever
+                # was configured and without a warning. The reason is the
+                # fallback: a trimmed batch matches no full descriptor, so it
+                # needs the piecewise family to land somewhere. Ragged mode
+                # removes that reason -- a trimmed batch replays the decode graph
+                # -- so the piecewise half is only a second family to capture.
+                #
+                # Downgrade it only when the graph could not be piecewise in the
+                # first place. splitting_ops is decided at config time from the
+                # configured mode, before this override runs, so a run that asked
+                # for FULL_DECODE_ONLY has no splitting ops and its "piecewise"
+                # graphs are unsplit whole-model captures. This is upstream's own
+                # test for the same question (resolve_cudagraph_mode_and_sizes
+                # picks between the two on exactly this predicate); where
+                # splitting really was configured, leave the mode alone.
+                compilation = vllm_config.compilation_config
+                if envs_ascend.VLLM_ASCEND_DSPARK_AV_KEEP_PIECEWISE:
+                    logger.warning(
+                        "[DSPARK-AV] keeping FULL_AND_PIECEWISE: a batch that is not pure "
+                        "speculative decode is refused the ragged graph, and the piecewise family "
+                        "is where it lands instead of eager."
+                    )
+                elif not compilation.splitting_ops_contain_attention():
+                    cudagraph_mode = CUDAGraphMode.FULL_DECODE_ONLY
+                    compilation.cudagraph_mode = cudagraph_mode
+                    logger.warning(
+                        "[DSPARK-AV] cudagraph_mode FULL_AND_PIECEWISE -> FULL_DECODE_ONLY, "
+                        "restoring what was configured: adaptive verification must not change "
+                        "how the engine treats batches that are not speculative decode. "
+                        "Configure FULL_AND_PIECEWISE to put those on piecewise -- both lanes "
+                        "then get it."
+                    )
+            # Ragged mode otherwise leaves varlen_decode alone, which is the whole
+            # change it needs on this side. The manager then captures a decode graph per
+            # size with num_reqs = min(Q, max_num_seqs) and max_query_len =
+            # decode_query_len, and _is_compatible admits any batch with no more
+            # requests, no more tokens and no longer a query -- "any mix of
+            # 1..decode_query_len tokens per request", which is precisely a
+            # trimmed batch. What made that unsafe before is the geometry the
+            # state operators see, and pinning the GDN request axis is the part
+            # of the contract that addresses it.
+        manager = ModelAclGraphManager(
             vllm_config,
             device,
             cudagraph_mode,
@@ -1372,9 +1497,86 @@ def graph_manager_wrapper(model_runner):
             varlen_decode=varlen_decode,
             ubatch_runner=ubatch_runner,
         )
+        # Short-circuited: GRAPH_MODE_RAGGED is imported inside the lane branch,
+        # so a runner that is not on the lane must not reach the comparison.
+        if mode_for_manager is not None and mode_for_manager == GRAPH_MODE_RAGGED:
+            # A plain attribute this repo owns, read back where the dispatch is
+            # already intercepted. Nothing here restates a signature or a field
+            # list belonging to vllm.
+            manager.av_refuse_impure_batches = True
+        return manager
 
     try:
         vllm_model_runner.ModelCudaGraphManager = factory
         yield
     finally:
         vllm_model_runner.ModelCudaGraphManager = original_graph_manager
+
+
+_original_dispatch_cg_and_sync_dp = vllm_model_runner.dispatch_cg_and_sync_dp
+
+
+def _dispatch_cg_and_refuse_impure_batch(cudagraph_manager, num_reqs, num_tokens, *args, **kwargs):
+    """Upstream's dispatch, then the ragged graph's purity check on its answer."""
+    result = _original_dispatch_cg_and_sync_dp(cudagraph_manager, num_reqs, num_tokens, *args, **kwargs)
+    return _refuse_graph_for_impure_batch(cudagraph_manager, num_reqs, num_tokens, result)
+
+
+def _refuse_graph_for_impure_batch(cudagraph_manager, num_reqs, num_tokens, result):
+    """Keep a batch that is not pure speculative decode out of the ragged graph.
+
+    The ragged graph's capture contract is pure speculative decode: with a real
+    prefill sharing the batch, full attention, the state metadata and the cost
+    table are no longer the geometry that was captured. The manager's
+    compatibility test cannot see that -- it compares request counts, token
+    counts and query lengths, all of which a mixed batch satisfies against a
+    captured decode graph -- so the refusal happens after it has answered.
+
+    v0.28.0 already means to do this. Its descriptor documents max_query_len as
+    "what keeps a prefill batch out of one", and a varlen decode graph is
+    captured at the decode query width, so a batch whose longest query exceeds
+    it is refused. That leaks for a prefill *shorter* than the decode width:
+    both device failures were a six or seven token prefill beside eight-token
+    decodes, so the batch's longest query was still eight and it matched. This
+    completes that guard rather than adding a second one.
+
+    Done here, on the result, rather than by wrapping the manager's own
+    dispatch: that method belongs to vllm and its signature differs between the
+    version in this tree and the one pinned for deployment, so restating it is a
+    startup crash waiting to happen. This touches the two fields it was given by
+    name and copies nothing else.
+    """
+    if not getattr(cudagraph_manager, "av_refuse_impure_batches", False):
+        return result
+    runner = getattr(cudagraph_manager, "model_runner", None)
+    if runner is None or getattr(runner, "av_batch_is_pure_spec_decode", True):
+        return result
+
+    batch_desc, *rest = result
+    if batch_desc.cg_mode != CUDAGraphMode.FULL:
+        # Only the ragged full graph has the contract this batch breaks. v0.28.0
+        # documents a piecewise descriptor as carrying no request padding and no
+        # replay-time request limit, so a mixed batch is safe in one -- and the
+        # adaptive FIA padding, which is what the dummy-row trouble came from,
+        # only runs for FULL.
+        #
+        # Whether that path exists is the configured mode's business, not this
+        # feature's. FULL_DECODE_ONLY has no piecewise family, so such a batch
+        # lands on eager -- exactly where it lands with the feature off. Turning
+        # the feature on must not quietly upgrade the mode and start handling
+        # these batches better, or the measurement credits it for a
+        # configuration choice.
+        return result
+    # num_tokens and num_reqs go back to what was asked for: the descriptor's
+    # are padded to reach a captured size, and there is no capture to reach.
+    fields = {"cg_mode": CUDAGraphMode.NONE, "num_tokens": num_tokens, "num_reqs": num_reqs}
+    if dataclasses.is_dataclass(batch_desc):
+        eager = dataclasses.replace(batch_desc, **fields)
+    elif hasattr(batch_desc, "_replace"):
+        eager = batch_desc._replace(**fields)
+    else:
+        raise TypeError(f"cannot build an eager descriptor from {type(batch_desc).__name__}")
+    return (eager, *rest)
+
+
+vllm_model_runner.dispatch_cg_and_sync_dp = _dispatch_cg_and_refuse_impure_batch

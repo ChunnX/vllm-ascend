@@ -6,6 +6,8 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import vllm.distributed.device_communicators.cuda_communicator as cuda_comm_mod
+from vllm.config import CUDAGraphMode
+from vllm.v1.worker.gpu.cudagraph_utils import BatchExecutionDescriptor, CudaGraphManager
 
 from vllm_ascend.worker.v2 import utils as v2_utils
 
@@ -20,6 +22,7 @@ def test_v2_utils_context_managers_switch_and_restore():
     with (
         patch.object(v2_utils, "torch", SimpleNamespace(cuda=fake_cuda, npu=fake_npu)),
         patch.object(v2_utils, "breakable_cudagraph", MagicMock()),
+        patch.object(v2_utils.cudagraph_utils, "current_stream"),
         patch.object(v2_utils, "weak_ref_workspaces") as weak_ref,
         patch.object(v2_utils, "get_graph_params", return_value="graph"),
         patch.object(v2_utils, "get_draft_graph_params", return_value="draft"),
@@ -49,3 +52,26 @@ def test_v2_utils_context_managers_switch_and_restore():
         weak_ref.assert_any_call("graph")
         weak_ref.assert_any_call("draft")
         assert weak_ref.call_count == 2
+
+
+def test_v2_capture_stream_follows_npu_context_instead_of_cuda_cache():
+    active_stream = [object()]
+    initial_stream = active_stream[0]
+    fake_npu = MagicMock()
+    fake_npu.current_stream.side_effect = lambda: active_stream[0]
+    desc = BatchExecutionDescriptor(cg_mode=CUDAGraphMode.FULL, num_tokens=8, num_reqs=8)
+    manager = SimpleNamespace(ubatch_runner=None)
+    with (
+        patch.object(v2_utils, "torch", SimpleNamespace(cuda=MagicMock(), npu=fake_npu)),
+        patch.object(v2_utils.cudagraph_utils, "current_stream", return_value=initial_stream),
+        v2_utils.torch_cuda_wrapper(),
+    ):
+        capture_stream = object()
+        active_stream[0] = capture_stream
+        assert CudaGraphManager._capture_stream(manager, desc) is capture_stream
+        active_stream[0] = initial_stream
+        assert CudaGraphManager._capture_stream(manager, desc) is initial_stream
+        # DBO still uses the microbatch worker's explicit capture stream.
+        manager.ubatch_runner = SimpleNamespace(capture_stream=capture_stream)
+        desc = BatchExecutionDescriptor(cg_mode=CUDAGraphMode.FULL, num_tokens=8, num_reqs=8, num_ubatches=2)
+        assert CudaGraphManager._capture_stream(manager, desc) is capture_stream

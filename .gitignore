@@ -238,3 +238,7 @@ csrc/third_party/
 
 # local build cache
 .vllm_ascend/
+
+
+# Full-graph adaptive-verification logs and baseline cache.
+dspark_av_*/

@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 import torch
 from vllm.compilation import breakable_cudagraph
 from vllm.logger import logger
+from vllm.v1.worker.gpu import cudagraph_utils
 from vllm.v1.worker.utils import AttentionGroup, KVBlockZeroer
 
 from vllm_ascend.ascend_config import get_ascend_config
@@ -111,6 +112,11 @@ def torch_cuda_wrapper():
         torch.cuda.stream = torch.npu.stream
         torch.cuda.default_stream = torch.npu.default_stream
         torch.cuda.current_stream = torch.npu.current_stream
+        # vLLM 0.30 selects capture streams through an imported, cached CUDA
+        # accessor. NPU stream contexts bypass its cache setter, leaving that
+        # accessor on an old stream while warmup runs on the capture stream.
+        # Both target and draft managers must capture on the active NPU stream.
+        cudagraph_utils.current_stream = torch.npu.current_stream
         torch.cuda.graph_pool_handle = torch.npu.graph_pool_handle
         torch.cuda.CUDAGraph = UpdatableGraph
         torch.cuda.graph = torch_npu_graph_wrapper

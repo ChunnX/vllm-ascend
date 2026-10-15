@@ -87,6 +87,70 @@ env_variables: dict[str, Callable[[], Any]] = {
     # (safe for Ascend 910B/A3). Set to a positive value to override when
     # auto-detection is unavailable or for debugging UB overflow issues.
     "VLLM_ASCEND_ROPE_UB_SIZE_KB": lambda: int(os.getenv("VLLM_ASCEND_ROPE_UB_SIZE_KB") or 0),
+    # Opt-in eager lane B: run the real upstream AdaptiveVerificationManager
+    # (cost-argmax budget + device survival top-k + async D2H double buffer) with
+    # an injected synthetic cost curve, since eager has no cudagraph profiling to
+    # price a real one. Requires DSpark AV and an eager target/draft. Default 0
+    # (off). Not sensitive.
+    "VLLM_ASCEND_DSPARK_EAGER_UPSTREAM_AV": lambda: bool(int(os.getenv("VLLM_ASCEND_DSPARK_EAGER_UPSTREAM_AV", "0"))),
+    # Pin the GDN speculative request axis to max_num_seqs for every graph
+    # bucket, instead of letting it follow the batch. The fixed axis is the
+    # contract ragged full graphs need -- a per-bucket axis gives each capture
+    # size its own stateful tiling, which fails while concurrency ramps -- but it
+    # only holds together with the attention-side axis and the padding cleanup in
+    # the persistent seq_lens mirror, both of which the upstream FIA padding path
+    # already provides. VLLM_ASCEND_DSPARK_AV_GRAPH=ragged therefore pins the axis
+    # on its own and this variable is only for pinning it under the other modes,
+    # to bisect the axis apart from the capture geometry. Default 0 (the
+    # per-bucket axis). Not sensitive. See docs/adaptive_verify/README.md.
+    "VLLM_ASCEND_DSPARK_GDN_FIXED_AXIS": lambda: bool(int(os.getenv("VLLM_ASCEND_DSPARK_GDN_FIXED_AXIS", "0"))),
+    # Which graph mode the DSpark adaptive-verification lane runs under. Unset
+    # is the default and means "ragged". Other modes are explicit comparisons.
+    #   none    -- force CUDAGraphMode.NONE and stay eager.
+    #   uniform -- allow graphs, but capture the decode descriptor at the uniform
+    #              verify width. A trimmed batch is not uniform and matches no
+    #              descriptor, so it falls back to piecewise instead of replaying
+    #              the wrong shape -- correct, with no trimming benefit in graph.
+    #   ragged  -- keep the variable-length descriptor, so a trimmed batch replays
+    #              too. Selecting this pins the GDN request axis, because the axis
+    #              is what makes replaying a different per-request split safe for
+    #              the state operators.
+    # Not sensitive. See docs/adaptive_verify/README.md.
+    "VLLM_ASCEND_DSPARK_AV_GRAPH": lambda: os.getenv("VLLM_ASCEND_DSPARK_AV_GRAPH", ""),
+    # Opt out of this repo's adaptive-verification adaptation entirely and run
+    # upstream's own manager, for comparing against stock behaviour. Default 1
+    # (adapt). Setting 0 leaves enable_adaptive_verification working, just
+    # without the ragged plumbing and the graph modes above. Not sensitive.
+    "VLLM_ASCEND_DSPARK_AV_ADAPT": lambda: bool(int(os.getenv("VLLM_ASCEND_DSPARK_AV_ADAPT", "1"))),
+    # Broadcast each step's confidence from rank 0 before deciding the budget.
+    # Upstream does not: it broadcasts the cost curves once at setup and then
+    # trusts every rank to compute identical confidences, which they do because
+    # the confidence head's output is already reduced across the group. This was
+    # added as insurance against ranks disagreeing on a survival tie and so
+    # building different metadata, but insurance priced per step at TP=4 is a
+    # synchronising collective on every decode step. Default 0 (upstream
+    # behaviour); 1 restores it if ranks are ever seen to diverge -- the
+    # whole-network gate at a zero noise floor is what would show that.
+    # Not sensitive.
+    "VLLM_ASCEND_DSPARK_AV_TP_BROADCAST": lambda: bool(int(os.getenv("VLLM_ASCEND_DSPARK_AV_TP_BROADCAST", "0"))),
+    # Keep the FULL_AND_PIECEWISE mode that v0.28 forces on any run with an
+    # adaptive-verification manager, rather than putting it back to what was
+    # configured. Default 0, which restores the configured mode, and the reason
+    # is that turning adaptive verification on must not change how the engine
+    # treats anything other than speculative decode. FULL_DECODE_ONLY sends a
+    # mixed batch to eager; letting the feature quietly upgrade to a mode that
+    # sends it to piecewise instead would make the feature look faster by
+    # handling that batch better, which is a configuration choice and not the
+    # feature. To put mixed batches on piecewise, configure FULL_AND_PIECEWISE
+    # for the run -- both lanes then get it. Set 1 to bisect the override
+    # itself. Not sensitive.
+    "VLLM_ASCEND_DSPARK_AV_KEEP_PIECEWISE": lambda: bool(int(os.getenv("VLLM_ASCEND_DSPARK_AV_KEEP_PIECEWISE", "0"))),
+    # Steps between the eager adaptive-verification lanes' aggregated warn
+    # lines. Warn level so the trimming decisions are visible in an ordinary
+    # serve log; aggregated so a long run stays readable. Not sensitive.
+    "VLLM_ASCEND_DSPARK_EAGER_AV_LOG_INTERVAL": lambda: int(
+        os.getenv("VLLM_ASCEND_DSPARK_EAGER_AV_LOG_INTERVAL", "50")
+    ),
     # Non-causal parallel-drafting (DSpark / DFlash) attention backend:
     # 0 = ordinary attention (default), 1 = omni FIA sink (omni_custom_ops),
     # 2 = FA4 (flash_attn_npu_4, including head_dim=256 on Ascend910).

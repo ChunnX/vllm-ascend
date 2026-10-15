@@ -91,6 +91,7 @@ from vllm_ascend.distributed.kv_transfer.sparse_kv_offload.sparse_kv_offload_man
     reshape_kv_cache_tensors_for_sparse_kv_offload,
 )
 from vllm_ascend.models.deepseek_v41.cache_config import is_deepseek_v41_cache
+from vllm_ascend.ops.gdn_attn_builder import AscendGDNAttentionMetadataBuilder
 from vllm_ascend.quantization.methods.kv_cache.turboquant import TURBOQUANT_CACHE_DTYPE
 from vllm_ascend.quantization.methods.kv_cache.turboquant.cache import uses_turboquant_groups
 from vllm_ascend.quantization.utils import enable_fa_quant
@@ -453,6 +454,12 @@ def build_attn_metadata(
     # Share request-level DSA metadata across cache groups in one execution.
     common_ratio_to_sas_metadata: dict[Any, Any] = {}
     common_v41_batch_metadata: dict[str, Any] = {}
+    # Same idea for GDN. A hybrid model spreads its Mamba layers over several
+    # KV cache groups (Qwen3.6 + DSpark: 10 of the 15), and the only field the
+    # loop below varies for them is the block table, so the batch-shape half of
+    # each build is identical. Scope it to this invocation: the plan keys off
+    # tensor addresses, which are recycled between steps.
+    gdn_batch_shared_cache: dict[Any, Any] = {}
     kv_cache_groups = kv_cache_config.kv_cache_groups
     batch_tq_slots = uses_turboquant_groups(kv_cache_groups)
     formatted_slot_mappings = None
@@ -585,6 +592,13 @@ def build_attn_metadata(
                 attn_metadata_extra_kwargs.update(
                     pcp_context=pcp_context,
                     pcp_cache_group_idx=i,
+                )
+            # GDN builders reuse a batch-scoped plan (_GDNSharedBatchPlan). Only
+            # on the real build() path: capture passes empty extra_kwargs, and
+            # build_for_cudagraph_capture does not take them at all.
+            if not for_cudagraph_capture and isinstance(attn_metadata_builder, AscendGDNAttentionMetadataBuilder):
+                attn_metadata_extra_kwargs.update(
+                    batch_shared_cache=gdn_batch_shared_cache,
                 )
 
             for variant_names, variant_common in metadata_variants:

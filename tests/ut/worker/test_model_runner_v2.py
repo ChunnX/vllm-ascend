@@ -362,6 +362,7 @@ def test_adaptive_verification_pads_fia_query_boundaries(
 ):
     """Device-reallocated DSpark queries still match the FULL graph shape."""
     runner = NPUModelRunner.__new__(NPUModelRunner)
+    runner.max_num_reqs = 4
     num_reqs = len(query_lens)
     query_start_loc = np.full(max(num_reqs_padded + 2, 5), sum(query_lens), dtype=np.int32)
     query_start_loc[: num_reqs + 1] = np.cumsum([0, *query_lens])
@@ -1573,3 +1574,9 @@ def test_device_only_cpu_lengths_remain_upper_bounds_without_event_wait():
     for i, req_id in enumerate(batch.req_ids):
         index = runner.req_states.req_id_to_index[req_id]
         assert runner.input_buffers.seq_lens_cpu[i] == before[index] + output.num_scheduled_tokens[req_id]
+
+
+def test_adaptive_fia_padding_reports_incompatible_graph_capacity():
+    runner = NPUModelRunner.__new__(NPUModelRunner)
+    with pytest.raises(AssertionError, match="num_tokens_padded=8, last_query_offset=9"):
+        runner._pad_adaptive_query_start_loc_for_fia(8, 1, 1, np.array([0, 9], dtype=np.int32))

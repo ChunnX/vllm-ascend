@@ -32,6 +32,13 @@ def _patched_use_v2_model_runner(self) -> bool:
 
 def _patched_get_unsupported_features(self) -> list[str]:
     unsupported = _original_get_unsupported_features(self)
+    from vllm_ascend.worker.v2.spec_decode.dspark.av_config import adaptive_verification_enabled
+
+    if adaptive_verification_enabled(self):
+        # Only the no-cost-table restriction is waived; PP/LoRA/etc. stay gated.
+        reason = "adaptive verification with enforce_eager/cudagraph_mode=none"
+        if reason in unsupported:
+            unsupported.remove(reason)
     support = resolve_spec_pp_support(self)
     unsupported_feature = support.unsupported_feature if support is not None else None
     if unsupported_feature is not None and unsupported_feature in unsupported:

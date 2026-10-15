@@ -24,7 +24,9 @@ draft 写入不会改变另一个 block 的字节。另有 forward 测试检查�
 
 ```bash
 python -m pytest --noconftest -q \
-  tests/ut/attention/test_fa4_kv_cache_layout.py
+  tests/ut/attention/test_fa4_kv_cache_layout.py \
+  tests/ut/spec_decode/test_adaptive_verification.py \
+  tests/ut/ops/test_dcut_cpu_reference.py
 ```
 
 这些 CPU 测试不等价于真实 FA4 算子和 NPU 图回放验证。
