@@ -87,6 +87,13 @@ env_variables: dict[str, Callable[[], Any]] = {
     # (safe for Ascend 910B/A3). Set to a positive value to override when
     # auto-detection is unavailable or for debugging UB overflow issues.
     "VLLM_ASCEND_ROPE_UB_SIZE_KB": lambda: int(os.getenv("VLLM_ASCEND_ROPE_UB_SIZE_KB") or 0),
+    # Minimum KV-cache group width (layers per group). 0 disables the override
+    # and keeps upstream grouping exactly. A positive value raises the group
+    # width to at least this many layers, so a small heterogeneous draft bucket
+    # (DSpark/DFlash) can no longer drag the width down and split a large
+    # Mamba/attention bucket into many groups. E.g. set 16 for a DSpark draft
+    # with 5 draft + 16 base + 48 mamba layers to collapse 15 groups into 5.
+    "VLLM_ASCEND_KV_GROUP_MIN_SIZE": lambda: int(os.getenv("VLLM_ASCEND_KV_GROUP_MIN_SIZE", "0")),
 }
 
 # end-env-vars-definition
