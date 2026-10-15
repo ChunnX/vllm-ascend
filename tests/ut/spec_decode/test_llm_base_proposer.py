@@ -312,9 +312,14 @@ def test_load_model_reads_validated_draft_window_size():
     "method,has_post_process",
     [("dspark", True), ("dspark", False), ("dflash", True), ("dflash", False), ("eagle3", True), ("mtp", True)],
 )
-def test_load_model_aligns_draft_after_sharing_before_precomputing_hidden_states(method, has_post_process):
+@pytest.mark.parametrize("reduced_vocab", [False, True])
+def test_load_model_aligns_draft_after_sharing_before_precomputing_hidden_states(
+    method, has_post_process, reduced_vocab
+):
     proposer = AscendSpecDecodeBaseProposer.__new__(AscendSpecDecodeBaseProposer)
-    proposer.vllm_config = SimpleNamespace(quant_config=object())
+    proposer.vllm_config = SimpleNamespace(
+        quant_config=object(), model_config=SimpleNamespace(get_vocab_size=lambda: 10)
+    )
     proposer.maybe_eager_context = nullcontext()
     proposer.method = method
     proposer.supports_mm_inputs = False
@@ -324,7 +329,9 @@ def test_load_model_aligns_draft_after_sharing_before_precomputing_hidden_states
     proposer.hidden_size = 2
     proposer.parallel_drafting_hidden_state_tensor = torch.empty(2)
     events = []
-    draft = SimpleNamespace(mask_hidden=torch.ones(6))
+    draft = SimpleNamespace(
+        mask_hidden=torch.ones(6), draft_id_to_target_id=torch.tensor([1, 2]) if reduced_vocab else None
+    )
 
     def post_process(config):
         assert config is proposer.vllm_config
@@ -347,6 +354,7 @@ def test_load_model_aligns_draft_after_sharing_before_precomputing_hidden_states
     draft_layer.get_attn_backend.return_value.get_supported_kernel_block_sizes.return_value = [16]
     module = "vllm_ascend.spec_decode.llm_base_proposer"
     with (
+        patch(f"{module}.settle_reduced_vocab_lm_head", side_effect=lambda *_: events.append("settle")),
         patch(f"{module}.get_pp_group", return_value=SimpleNamespace(is_last_rank=True)),
         patch(
             f"{module}.get_layers_from_vllm_config",
@@ -362,6 +370,8 @@ def test_load_model_aligns_draft_after_sharing_before_precomputing_hidden_states
     expected = ["embeddings", "indices", "lm_head"]
     if should_process:
         expected.append("post_process")
+    if method == "dspark" and reduced_vocab:
+        expected.append("settle")
     assert events == [*expected, "combine"]
     assert torch.equal(proposer.parallel_drafting_hidden_state_tensor, torch.full((2,), 2.0 if should_process else 1.0))
 

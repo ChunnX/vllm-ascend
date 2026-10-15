@@ -17,10 +17,12 @@ from vllm_ascend.worker.v2.spec_decode.dspark import speculator as shared
 
 
 @pytest.mark.parametrize("fail", [False, True])
-def test_post_process_receives_target_config_after_loading(monkeypatch, fail):
+@pytest.mark.parametrize("reduced_vocab", [False, True])
+def test_post_process_receives_target_config_after_loading(monkeypatch, fail, reduced_vocab):
     events: list[tuple[str, object]] = []
     additional_config = {"scheduler_config": {"profiling_chunk_config": {"enabled": True}}}
     config = SimpleNamespace(
+        model_config=SimpleNamespace(get_vocab_size=lambda: 10),
         quant_config=object(),
         parallel_config=SimpleNamespace(pipeline_parallel_size=2),
         additional_config=additional_config,
@@ -29,9 +31,18 @@ def test_post_process_receives_target_config_after_loading(monkeypatch, fail):
     spec.vllm_config = config
     target = object()
     draft = SimpleNamespace(
+        draft_id_to_target_id=torch.tensor([1, 2]) if reduced_vocab else None,
         post_process=lambda received: events.append(("post_process", received)),
         configure_target_aux_hidden_capture=lambda received: events.append(("capture", received)),
     )
+
+    def settle(received_draft, received_target, vocab_size):
+        assert received_draft is draft
+        assert received_target is target
+        assert vocab_size == 10
+        events.append(("settle", target))
+
+    monkeypatch.setattr(shared, "settle_reduced_vocab_lm_head", settle)
 
     def load(self, received, names):
         assert received is target
@@ -51,6 +62,8 @@ def test_post_process_receives_target_config_after_loading(monkeypatch, fail):
     expected: list[tuple[str, object]] = [("load", config)]
     if not fail:
         expected.extend([("post_process", config), ("capture", target)])
+        if reduced_vocab:
+            expected.append(("settle", target))
     assert events == expected
 
 

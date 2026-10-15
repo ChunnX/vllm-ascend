@@ -118,3 +118,126 @@ def test_quarot_loads_missing_target_vocab_shards(tmp_path, model_cls) -> None:
         torch.testing.assert_close(layer.weight, expected)
     assert model.has_own_embed_tokens
     assert model.has_own_lm_head
+
+
+class TestReducedVocabCheckpointFlags:
+    """What the checkpoint carried, which its loaded contents cannot say.
+
+    ``draft_id_to_target_id`` is allocated zero-filled and skipped by the loader
+    when the checkpoint has no ``d2t``, so an unloaded buffer is
+    indistinguishable from the legal mapping that keeps target ids ``0..K-1``.
+    Only the weight stream knows, and only while it is passing through.
+    """
+
+    @staticmethod
+    def _load(weights, *, draft_id_to_target_id=None):
+        model_cls = qwen3_dspark.AscendQwen3DSparkForCausalLM
+        model = model_cls.__new__(model_cls)
+        object.__setattr__(model, "rotation_path", None)
+        object.__setattr__(model, "enable_confidence_head", False)
+        object.__setattr__(model, "has_own_lm_head", False)
+        object.__setattr__(model, "draft_id_to_target_id", draft_id_to_target_id)
+        with (
+            patch.object(qwen3_dspark.Qwen3DSparkForCausalLM, "load_weights") as mock_parent,
+            patch.object(model_cls, "_load_reduced_vocab_without_head"),
+        ):
+            model.load_weights(weights)
+            # The parent consumes the stream; the flags are set on the way through.
+            if mock_parent.called:
+                list(mock_parent.call_args.args[0])
+        return model
+
+    def test_flags_default_to_absent(self) -> None:
+        model_cls = qwen3_dspark.AscendQwen3DSparkForCausalLM
+        assert model_cls.has_draft_id_mapping is False
+        assert model_cls.has_own_lm_head_weights is False
+
+    def test_records_a_present_mapping(self) -> None:
+        model = self._load([("d2t", torch.zeros(4, dtype=torch.long))])
+
+        assert model.has_draft_id_mapping is True
+        assert model.has_own_lm_head_weights is False
+
+    def test_records_present_lm_head_weights(self) -> None:
+        model = self._load([("lm_head.weight", torch.zeros(4, 2))])
+
+        assert model.has_own_lm_head_weights is True
+        assert model.has_draft_id_mapping is False
+
+    def test_stays_absent_for_a_full_vocabulary_checkpoint(self) -> None:
+        model = self._load([("model.embed_tokens.weight", torch.zeros(4, 2))])
+
+        assert model.has_draft_id_mapping is False
+        assert model.has_own_lm_head_weights is False
+
+    def test_records_a_present_mapping_through_the_rotation_path(self) -> None:
+        model_cls = qwen3_dspark.AscendQwen3DSparkForCausalLM
+        model = model_cls.__new__(model_cls)
+        object.__setattr__(model, "rotation_path", "quarot.safetensors")
+        object.__setattr__(model, "enable_confidence_head", False)
+        object.__setattr__(model, "draft_id_to_target_id", None)
+
+        with (
+            patch.object(qwen3_dspark, "get_rotation_matrix", return_value=torch.eye(2)),
+            patch.object(qwen3_dspark.Qwen3DSparkForCausalLM, "load_weights") as mock_parent,
+        ):
+            model.load_weights([("model.fc.weight", torch.zeros(2, 2)), ("d2t", torch.zeros(4, dtype=torch.long))])
+            list(mock_parent.call_args.args[0])
+
+        assert model.has_draft_id_mapping is True
+
+
+class TestReducedVocabBlocksHeadSharing:
+    """A reduced vocabulary must never accept the target's full-vocab LM head.
+
+    ``has_own_lm_head`` drives exactly one decision in the draft loaders -- may
+    the target head replace this model's -- and for a reduced vocabulary the
+    answer is always no: the logits processor would slice the first
+    ``draft_vocab_size`` target columns instead of the kept ones, proposing
+    plausible but wrong tokens with nothing raised.
+    """
+
+    def test_reduced_vocabulary_blocks_the_share(self) -> None:
+        model = TestReducedVocabCheckpointFlags._load(
+            [("d2t", torch.zeros(4, dtype=torch.long))],
+            draft_id_to_target_id=torch.zeros(4, dtype=torch.long),
+        )
+
+        assert model.has_own_lm_head is True
+        # ...while still recording that the weights were not in the checkpoint.
+        assert model.has_own_lm_head_weights is False
+
+    def test_full_vocabulary_leaves_the_share_decision_alone(self) -> None:
+        model = TestReducedVocabCheckpointFlags._load(
+            [("model.embed_tokens.weight", torch.zeros(4, 2))], draft_id_to_target_id=None
+        )
+
+        assert model.has_own_lm_head is False
+
+
+@pytest.mark.parametrize("with_own_head", [False, True])
+def test_030_loads_reduced_checkpoint(with_own_head):
+    model = qwen3_dspark.AscendQwen3DSparkForCausalLM.__new__(qwen3_dspark.AscendQwen3DSparkForCausalLM)
+    nn.Module.__init__(model)
+    model.config = SimpleNamespace(vocab_size=10, draft_vocab_size=4)
+    model.target_vocab_size = 10
+    model.draft_id_to_target_id = nn.Parameter(torch.zeros(4, dtype=torch.long), requires_grad=False)
+    model.model = nn.Module()
+    model.model.fc = nn.Linear(3, 3, bias=False)
+    model.model.embed_tokens = nn.Embedding(10, 3)
+    model.model.confidence_head = None
+    model.lm_head = nn.Linear(3, 4, bias=False)
+    original_head = model.lm_head.weight.detach().clone()
+    offsets = torch.tensor([1, 2, 4, 6])
+    with patch.object(model.model, "_build_fused_kv_buffers", create=True) as build_buffers:
+        weights = [("d2t", offsets), ("fc.weight", torch.ones(3, 3))]
+        if with_own_head:
+            weights.append(("lm_head.weight", torch.full((4, 3), 7.0)))
+        model.load_weights(iter(weights))
+    torch.testing.assert_close(model.draft_id_to_target_id, offsets)
+    torch.testing.assert_close(model.model.fc.weight, torch.ones(3, 3))
+    torch.testing.assert_close(model.lm_head.weight, torch.full((4, 3), 7.0) if with_own_head else original_head)
+    assert model.has_own_lm_head
+    assert model.has_draft_id_mapping
+    assert model.has_own_lm_head_weights == with_own_head
+    build_buffers.assert_called_once()

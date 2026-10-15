@@ -1,8 +1,11 @@
+from collections.abc import Iterable
+
 import torch
 from vllm.config import VllmConfig
 from vllm.distributed import get_pp_group
 from vllm.model_executor.layers.vocab_parallel_embedding import ParallelLMHead, VocabParallelEmbedding
 from vllm.model_executor.models.qwen3_dspark import Qwen3DSparkForCausalLM
+from vllm.model_executor.models.utils import AutoWeightsLoader, WeightsMapper, process_eagle_weight
 
 from vllm_ascend.models.llama_eagle3 import load_quarot_target_layer
 from vllm_ascend.utils import (
@@ -96,6 +99,63 @@ class AscendQwen3DSparkForCausalLM(Qwen3DSparkForCausalLM):
                 set_capture_mode = getattr(get_language_model(), "set_dspark_aux_capture_materialized", None)
         if set_capture_mode is not None:
             set_capture_mode(True)
+
+    has_draft_id_mapping: bool = False
+    has_own_lm_head_weights: bool = False
+
+    def _note_checkpoint_contents(self, weights: Iterable[tuple[str, torch.Tensor]]):
+        """Record optional checkpoint keys while preserving one-shot streams."""
+        for name, loaded_weight in weights:
+            if "d2t" in name:
+                self.has_draft_id_mapping = True
+            if "lm_head" in name:
+                self.has_own_lm_head_weights = True
+            yield name, loaded_weight
+
+    def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]):
+        weights = list(self._note_checkpoint_contents(weights))
+        if self.draft_id_to_target_id is not None and self.has_draft_id_mapping and not self.has_own_lm_head_weights:
+            result = self._load_reduced_vocab_without_head(weights)
+        else:
+            result = super().load_weights(iter(weights))
+        if self.draft_id_to_target_id is not None:
+            # Keep the draft-sized head through sharing and QuaRot post-processing.
+            # It is filled from the mapped target rows after target-space alignment.
+            self.has_own_lm_head = True
+        return result
+
+    def _load_reduced_vocab_without_head(self, weights):
+        """Load a mapped draft whose head will be derived after target loading.
+
+        vLLM 0.30 rejects reduced checkpoints without a head. Keep its loading
+        rules here, allowing only that head to be filled later by the speculator.
+        """
+        model_weights = {}
+        includes_embed_tokens = False
+        includes_confidence_head = False
+        for name, loaded_weight in weights:
+            if "t2d" in name:
+                continue
+            if "d2t" in name:
+                name = name.replace("d2t", "draft_id_to_target_id")
+            else:
+                name = "model." + name
+            includes_embed_tokens |= "embed_tokens" in name
+            includes_confidence_head |= "confidence_head" in name
+            model_weights[name] = loaded_weight
+            process_eagle_weight(self, name)
+        if self.config.vocab_size > self.target_vocab_size and not includes_embed_tokens:
+            raise ValueError(
+                "Qwen3 DSpark checkpoints with expanded input vocabularies must include embed_tokens weights."
+            )
+        skipped = {"mask_embedding": None, "lm_head": None}
+        if not includes_embed_tokens:
+            skipped["embed_tokens"] = None
+        if self.model.confidence_head is None or not includes_confidence_head:
+            self.model.confidence_head = None
+            skipped["confidence_head"] = None
+        AutoWeightsLoader(self).load_weights(model_weights.items(), mapper=WeightsMapper(orig_to_new_substr=skipped))
+        self.model._build_fused_kv_buffers()
 
     def post_process(self, vllm_config: VllmConfig) -> None:
         align_draft_weights(self, self.model.fc, vllm_config)

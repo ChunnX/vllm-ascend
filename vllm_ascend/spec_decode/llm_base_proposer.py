@@ -66,6 +66,7 @@ from vllm_ascend.spec_decode.utils import (
     compact_mtp_topk_indices,
     patch_tensor_parallel_group,
 )
+from vllm_ascend.spec_decode.vocab_mapping import settle_reduced_vocab_lm_head
 from vllm_ascend.utils import _is_glm_model, check_gdn_layer, enable_sp, lmhead_tp_enable, use_updatable_graph
 from vllm_ascend.worker.device_metadata import DeviceMetadataTask, DeviceMetadataTaskProvider
 
@@ -471,6 +472,8 @@ class AscendSpecDecodeBaseProposer(SpecDecodeBaseProposer):
         # Align draft weights before precomputing draft hidden states.
         if self.method in ("dspark", "dflash") and hasattr(self.model, "post_process"):
             self.model.post_process(self.vllm_config)
+        if self.method == "dspark" and getattr(self.model, "draft_id_to_target_id", None) is not None:
+            settle_reduced_vocab_lm_head(self.model, model, self.vllm_config.model_config.get_vocab_size())
 
         if (
             self.parallel_drafting
