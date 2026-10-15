@@ -244,7 +244,45 @@ class NPUPlatform(Platform):
         return total_memory
 
     @classmethod
+    def _report_unavailable_selected_backend(cls, selected_backend) -> None:
+        """Say so when the caller asked for a backend Ascend cannot provide.
+
+        vLLM hands the requested backend down as ``selected_backend``: the
+        ``--attention-backend`` flag, ``AttentionConfig.backend``, and the draft
+        model's ``--speculative-config attention_backend`` all arrive here.
+        vllm-ascend registers its own backends under the single ``CUSTOM`` slot,
+        so ``CUSTOM`` and ``None`` both mean "let the platform choose"; every
+        other member of the enum names a backend belonging to another platform.
+
+        The target model's choice never gets this far: ``_fix_incompatible_config``
+        already resets ``AttentionConfig.backend`` to None, with a log line, while
+        ``check_and_update_config`` runs. It does not cover
+        ``SpeculativeConfig.attention_backend``, which ``load_dspark_model`` and
+        ``load_dflash_model`` copy into the draft's own config, so that is the one
+        request that reaches this hook -- and it was being dropped in silence.
+
+        Kept a warning rather than an error: turning a setting that has been
+        ignored since the plugin's first commit into a startup failure is a
+        user-visible change to make deliberately, not as a side effect of
+        wiring the parameter up.
+        """
+        from vllm.v1.attention.backends.registry import AttentionBackendEnum
+
+        if selected_backend is None or selected_backend is AttentionBackendEnum.CUSTOM:
+            return
+
+        logger.warning_once(
+            "Attention backend %s was requested but is not available on Ascend NPU; "
+            "selecting an Ascend backend from the model configuration instead. "
+            "vllm-ascend registers its backends under AttentionBackendEnum.CUSTOM. "
+            "For a draft model this comes from --speculative-config attention_backend.",
+            getattr(selected_backend, "name", selected_backend),
+        )
+
+    @classmethod
     def get_attn_backend_cls(cls, selected_backend, attn_selector_config, num_heads: int | None = None):
+        cls._report_unavailable_selected_backend(selected_backend)
+
         use_compress = getattr(attn_selector_config, "use_compress", False)
         use_mla = attn_selector_config.use_mla
         use_sparse = attn_selector_config.use_sparse
@@ -272,6 +310,22 @@ class NPUPlatform(Platform):
 
         if get_current_hardware_profile().attention_backend_family is AttentionBackendFamily.COMPATIBILITY:
             return compatibility_backend_map.get(key, compatibility_backend_map[(False, False)])
+
+        # A parallel-drafting (DSpark / DFlash) draft reads its KV length from a
+        # device tensor the verify kernel has just written, so it wants the
+        # operator that takes those lengths on device. It is a separate backend
+        # rather than a mode of the GQA one because that is the level the
+        # difference lives at -- see vllm_ascend/attention/fa4_v1.py for
+        # what follows from it. VLLM_ASCEND_ENABLE_DSPARK_FIA_SINK selects
+        # ordinary attention (0), omni FIA sink (1), or FA4 (2).
+        if key == (False, False) and not attn_selector_config.use_pcp:
+            from vllm_ascend.attention.fa4_v1 import fa4_selected
+            from vllm_ascend.attention.fia_sink_v1 import fia_sink_selected
+
+            if fia_sink_selected(attn_selector_config):
+                return "vllm_ascend.attention.fia_sink_v1.AscendFIASinkBackend"
+            if fa4_selected(attn_selector_config):
+                return "vllm_ascend.attention.fa4_v1.AscendFA4Backend"
 
         if attn_selector_config.use_pcp:
             pcp_backend_map = {

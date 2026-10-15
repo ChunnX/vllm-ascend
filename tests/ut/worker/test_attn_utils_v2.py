@@ -41,6 +41,7 @@ from vllm_ascend.attention.dsa_v1 import (
     AscendDSAMetadataBuilder,
     AscendDSASWABackend,
 )
+from vllm_ascend.attention.fa4_v1 import AscendFA4Backend
 from vllm_ascend.attention.mla_v1 import AscendMLABackend
 from vllm_ascend.attention.sfa_v1 import AscendSFAImpl, AscendSFAMetadataBuilder
 from vllm_ascend.core.kv_cache_interface import (
@@ -349,7 +350,8 @@ def test_hybrid_allocator_keeps_shared_backing_with_pa_configured(monkeypatch, p
     assert raw_caches[attn_name].data_ptr() == raw_caches[mamba_name].data_ptr()
 
 
-def test_hybrid_attention_layout_preserves_padding(monkeypatch):
+@pytest.mark.parametrize("backend", [AscendAttentionBackend, AscendFA4Backend])
+def test_hybrid_attention_layout_preserves_padding(monkeypatch, backend):
     name = "model.layers.0.self_attn.attn"
     spec = FullAttentionSpec(block_size=2, num_kv_heads=1, head_size=4, dtype=torch.float16, page_size_padded=64)
     config = KVCacheConfig(
@@ -357,7 +359,7 @@ def test_hybrid_attention_layout_preserves_padding(monkeypatch):
         kv_cache_tensors=[],
         kv_cache_groups=[KVCacheGroupSpec(layer_names=[name], kv_cache_spec=spec)],
     )
-    group = SimpleNamespace(kv_cache_group_id=0, kv_cache_spec=spec, backend=AscendAttentionBackend, layer_names=[name])
+    group = SimpleNamespace(kv_cache_group_id=0, kv_cache_spec=spec, backend=backend, layer_names=[name])
     vllm_config = SimpleNamespace(
         model_config=SimpleNamespace(hf_config=SimpleNamespace()),
         cache_config=SimpleNamespace(cache_dtype="auto"),

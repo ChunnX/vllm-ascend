@@ -87,6 +87,12 @@ env_variables: dict[str, Callable[[], Any]] = {
     # (safe for Ascend 910B/A3). Set to a positive value to override when
     # auto-detection is unavailable or for debugging UB overflow issues.
     "VLLM_ASCEND_ROPE_UB_SIZE_KB": lambda: int(os.getenv("VLLM_ASCEND_ROPE_UB_SIZE_KB") or 0),
+    # Non-causal parallel-drafting (DSpark / DFlash) attention backend:
+    # 0 = ordinary attention (default), 1 = omni FIA sink (omni_custom_ops),
+    # 2 = FA4 (flash_attn_npu_4, including head_dim=256 on Ascend910).
+    # Both custom backends keep seq_lens on device and tile on AICPU.
+    # Valid values: 0/1/2. Not sensitive.
+    "VLLM_ASCEND_ENABLE_DSPARK_FIA_SINK": lambda: int(os.getenv("VLLM_ASCEND_ENABLE_DSPARK_FIA_SINK", "0")),
     # Minimum KV-cache group width (layers per group). 0 disables the override
     # and keeps upstream grouping exactly. A positive value raises the group
     # width to at least this many layers, so a small heterogeneous draft bucket
