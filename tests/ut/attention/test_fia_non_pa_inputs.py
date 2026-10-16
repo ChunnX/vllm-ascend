@@ -289,3 +289,33 @@ def test_graph_provider_preserves_captured_pa_mode(sliding_window, is_draft_mode
         assert runtime_kwargs["block_table"] is captured_block_table
     else:
         assert runtime_kwargs["block_table"] is (None if is_non_pa else metadata.block_tables)
+
+
+def test_graph_fia_remaps_shared_cache_pages_during_task_update():
+    impl = _make_impl()
+    impl.key_cache = torch.empty_strided((5, 128, 1, 256), (1048576, 256, 256, 1), dtype=torch.bfloat16)
+    impl.value_cache = torch.empty_strided(impl.key_cache.shape, impl.key_cache.stride(), dtype=torch.bfloat16)
+    metadata = _make_metadata(AscendAttentionState.SpecDecoding)
+    query = torch.zeros(3, 2, 256, dtype=torch.bfloat16)
+    output = torch.empty_like(query)
+    op_name = "npu_fused_infer_attention_score"
+    workspace_name = f"_{op_name}_get_max_workspace"
+    with (
+        patch.object(attn_module, "_EXTRA_CTX", SimpleNamespace(is_draft_model=False)),
+        patch.object(attn_module.torch_npu, op_name, create=True) as op,
+        patch.object(attn_module.torch_npu, workspace_name, create=True) as workspace,
+        patch.object(attn_module, "get_capture_resource", side_effect=lambda _, factory, *args: factory()),
+        patch.object(attn_module, "register_task") as register,
+    ):
+        impl.full_graph_fia(query, query, query, metadata, output)
+        assert workspace.call_args.kwargs["key"].is_contiguous()
+        operation, kwargs, provider = register.call_args.args
+        runtime = _make_metadata(AscendAttentionState.SpecDecoding)
+        runtime.block_tables = torch.tensor([[3, 1]], dtype=torch.int32)
+        updated = {**kwargs, **provider.resolve({"layer": runtime})}
+        operation(**updated)
+        actual = op.out.call_args.kwargs
+        assert actual["key"].is_contiguous()
+        assert actual["key"].data_ptr() == impl.key_cache.data_ptr()
+        torch.testing.assert_close(actual["block_table"], runtime.block_tables * 32)
+        assert impl.key_cache.stride(0) == 1048576

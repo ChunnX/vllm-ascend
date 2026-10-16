@@ -17,6 +17,7 @@
 
 from dataclasses import dataclass, field
 from enum import Enum
+from functools import partial
 from typing import Any
 
 import torch
@@ -48,6 +49,7 @@ from vllm_ascend.attention.context_parallel.common_cp import (
     get_pcp_num_replicated_tokens,
     is_pcp_decode_sharding_enabled,
 )
+from vllm_ascend.attention.fia_cache import call_fia_with_virtual_pages
 from vllm_ascend.attention.utils import (
     AscendCommonAttentionMetadata,
     _select_seq_lens,
@@ -690,7 +692,8 @@ class AscendAttentionBackendImpl(AttentionImpl):
         use_max_workspace = self._use_max_workspace_for_fia_graph
         workspace = get_capture_resource(
             _FIA_WORKSPACE_KEY,
-            lambda: torch_npu._npu_fused_infer_attention_score_get_max_workspace(
+            lambda: call_fia_with_virtual_pages(
+                torch_npu._npu_fused_infer_attention_score_get_max_workspace,
                 query=query,
                 key=key,
                 value=value,
@@ -711,7 +714,7 @@ class AscendAttentionBackendImpl(AttentionImpl):
             use_max_workspace,
         )
         register_task(
-            torch_npu.npu_fused_infer_attention_score.out,
+            partial(call_fia_with_virtual_pages, torch_npu.npu_fused_infer_attention_score.out),
             {
                 "query": query,
                 "key": key,
