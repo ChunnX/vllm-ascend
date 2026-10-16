@@ -40,7 +40,7 @@ from vllm_ascend.ops.triton.fla.utils import (
     prepare_final_chunk_indices,
     prepare_update_chunk_offsets,
 )
-from vllm_ascend.ops.triton.mamba.gdn_state_indices import fused_gdn_state_indices
+from vllm_ascend.ops.triton.mamba.gdn_state_indices import fused_gdn_spec_metadata, fused_gdn_state_indices
 
 _GDN_CHUNK_SIZE = 64
 # Keep this aligned with solve_tril.LARGE_BLOCK_T in ops/triton/fla/solve_tril.py.
@@ -1221,6 +1221,113 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
             self._SPEC_GRAPH_PAD_SLOT_ID,
         )
 
+    def _try_fused_spec_metadata(
+        self,
+        m: CommonAttentionMetadata,
+        num_accepted_tokens: torch.Tensor | None,
+        num_decode_draft_tokens_cpu: torch.Tensor | None,
+        graph_request_count: int,
+        batch_shared_cache: dict | None,
+    ) -> GDNAttentionMetadata | None:
+        """Bypass the general batch plan for a graph-safe speculative prefix."""
+        if (
+            not self._USE_COMMON_KERNEL_METADATA
+            or not self.use_full_cuda_graph
+            or not self.use_spec_decode
+            or self.vllm_config.cache_config.mamba_cache_mode != "align"
+            or self.kv_cache_spec.num_speculative_blocks < self.num_spec
+            or m.block_table_tensor.device.type != "npu"
+            or m.block_table_tensor.dtype != torch.int32
+            or m.seq_lens.dtype != torch.int32
+            or num_accepted_tokens is None
+            or num_decode_draft_tokens_cpu is None
+            or num_decode_draft_tokens_cpu.device.type != "cpu"
+            or m.query_start_loc_cpu.device.type != "cpu"
+            or m.query_start_loc.dtype not in (torch.int32, torch.int64)
+            or num_accepted_tokens.dtype not in (torch.int32, torch.int64)
+            or m.seq_lens.device != m.block_table_tensor.device
+            or m.query_start_loc.device != m.block_table_tensor.device
+            or num_accepted_tokens.device != m.block_table_tensor.device
+            or (self.ragged_spec_decode and not self.gdn_request_axis_fits_graph)
+        ):
+            return None
+        graph_rows = self.gdn_request_axis if self.ragged_spec_decode else graph_request_count
+        if not self._can_pad_spec_decode(graph_rows, m.num_actual_tokens):
+            return None
+        # Only shape/control values already on CPU are inspected. Cache the
+        # layout per invocation, never any group's block table or state output.
+        key = (
+            "gdn_fused_spec_layout",
+            m.num_reqs,
+            m.num_actual_tokens,
+            graph_rows,
+            self.num_spec,
+            getattr(self, "adaptive_verification_enabled", False),
+            m.query_start_loc_cpu.data_ptr(),
+            num_decode_draft_tokens_cpu.data_ptr(),
+        )
+        layout = batch_shared_cache.get(key) if batch_shared_cache is not None else None
+        if layout is None:
+            drafts = num_decode_draft_tokens_cpu.tolist()
+            query = m.query_start_loc_cpu.tolist()
+            live = next((i for i, count in enumerate(drafts) if count < 0), len(drafts))
+            if (
+                not 0 < live <= graph_rows
+                or len(drafts) != m.num_reqs
+                or len(query) != m.num_reqs + 1
+                or query[0] != 0
+                or query[-1] != m.num_actual_tokens
+                or any(count >= 0 for count in drafts[live:])
+                or any(value != query[live] for value in query[live:])
+                or any(not 0 <= query[i + 1] - query[i] <= self.num_spec + 1 for i in range(live))
+                or (sum(drafts[:live]) == 0 and not getattr(self, "adaptive_verification_enabled", False))
+            ):
+                return None
+            layout = (live, min(live * (self.num_spec + 1), query[-1]))
+            if batch_shared_cache is not None:
+                batch_shared_cache[key] = layout
+        live, num_tokens = layout
+        assert self.spec_actual_seq_lengths is not None
+        states = self.spec_state_indices_tensor[:graph_rows]
+        query = self.spec_query_start_loc[: graph_rows + 1]
+        accepted = self.num_accepted_tokens[:graph_rows]
+        masks = self.spec_sequence_masks[:graph_rows]
+        lengths = self.spec_actual_seq_lengths[: graph_rows + 1]
+        tokens = self.spec_token_indx[:num_tokens]
+        fused_gdn_spec_metadata(
+            m.block_table_tensor,
+            m.seq_lens,
+            m.query_start_loc,
+            num_accepted_tokens,
+            (states, query, accepted, masks, lengths, tokens),
+            live,
+            num_tokens,
+            self.kv_cache_spec.block_size,
+            self._SPEC_GRAPH_PAD_SLOT_ID,
+        )
+        metadata = GDNAttentionMetadata(
+            num_prefills=0,
+            num_prefill_tokens=0,
+            num_decodes=0,
+            num_decode_tokens=0,
+            num_spec_decodes=live,
+            num_spec_decode_tokens=m.num_actual_tokens,
+            num_actual_tokens=m.num_actual_tokens,
+            spec_query_start_loc=query,
+            spec_state_indices_tensor=states,
+            spec_sequence_masks=masks,
+            spec_token_indx=tokens,
+            non_spec_token_indx=self.non_spec_token_indx[:0],
+            num_accepted_tokens=accepted,
+        )
+        metadata.spec_decode_metadata = GDNSpecDecodeMetadata(
+            spec_causal_conv1d=GDNSpecCausalConv1dMetadata(query, states, accepted),
+            actual_seq_lengths=lengths,
+        )
+        metadata.non_spec_prefill_metadata = metadata.non_spec_decode_metadata = None
+        metadata.use_dcut_varlen = getattr(self, "adaptive_verification_enabled", False)
+        return metadata
+
     def build(  # type: ignore[override]
         self,
         common_prefix_len: int,
@@ -1251,6 +1358,11 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
                 num_accepted_tokens = num_accepted_tokens[:num_actual_reqs]
             if num_decode_draft_tokens_cpu is not None:
                 num_decode_draft_tokens_cpu = num_decode_draft_tokens_cpu[:num_actual_reqs]
+        fused_metadata = self._try_fused_spec_metadata(
+            m, num_accepted_tokens, num_decode_draft_tokens_cpu, graph_request_count, batch_shared_cache
+        )
+        if fused_metadata is not None:
+            return fused_metadata
         plan = self._get_shared_batch_plan(m, num_accepted_tokens, num_decode_draft_tokens_cpu, batch_shared_cache)
 
         num_prefills = plan.num_prefills
