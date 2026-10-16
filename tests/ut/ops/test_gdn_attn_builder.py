@@ -263,6 +263,89 @@ def _build_attn_metadata(
     return builder, common_attn_metadata, attn_metadata
 
 
+@pytest.mark.parametrize("live_rows,graph_rows", [(1, 1), (1, 4), (3, 4)])
+def test_fused_spec_state_indices_preserve_graph_buffers(monkeypatch, live_rows, graph_rows):
+    """Fused states must survive metadata padding and change on buffer reuse."""
+    builder = _make_builder(
+        device=torch.device("cpu"),
+        num_heads=32,
+        num_speculative_tokens=3,
+        num_speculative_blocks=3,
+        mamba_cache_mode="align",
+        cudagraph_mode=CUDAGraphMode.FULL_DECODE_ONLY,
+    )
+    original_try_fused = builder._try_fused_spec_state_indices
+    launches = []
+
+    def cpu_fused(plan, metadata, num_rows):
+        assert plan.state_index_mode == ascend_gdn_attn_builder._STATE_INDEX_SPEC_ONLY
+        table = ascend_gdn_attn_builder.mamba_get_block_table_tensor(
+            metadata.block_table_tensor, metadata.seq_lens, builder.kv_cache_spec, "align"
+        )
+        output = builder.spec_state_indices_tensor[:num_rows]
+        output.fill_(NULL_BLOCK_ID)
+        output[: plan.num_spec_decodes].copy_(table[plan.spec_sequence_indices, :4])
+        launches.append(num_rows)
+        return output
+
+    monkeypatch.setattr(builder, "_try_fused_spec_state_indices", cpu_fused)
+    for length in (16, 17, 32, 33):
+        metadata = create_common_attn_metadata(
+            BatchSpec(
+                [length] * live_rows + [0] * (graph_rows - live_rows), [4] * live_rows + [0] * (graph_rows - live_rows)
+            ),
+            block_size=16,
+            device=torch.device("cpu"),
+        )
+        metadata.block_table_tensor = torch.arange(graph_rows * 8, dtype=torch.int32).view(graph_rows, 8)
+        kwargs = dict(
+            num_accepted_tokens=torch.arange(graph_rows, dtype=torch.int32) + 1,
+            num_decode_draft_tokens_cpu=torch.tensor([3] * live_rows + [-1] * (graph_rows - live_rows)),
+            num_actual_reqs=live_rows,
+        )
+        with patch.object(builder, "_try_fused_spec_state_indices", original_try_fused):
+            reference = builder.build(0, metadata, **kwargs)
+            expected_states = reference.spec_state_indices_tensor.clone()
+            expected_lengths = reference.spec_decode_metadata.actual_seq_lengths.clone()
+            expected_accepted = reference.num_accepted_tokens.clone()
+        with patch.object(builder, "_derive_group_state_indices", side_effect=AssertionError("unfused gather")):
+            actual = builder.build(0, metadata, **kwargs)
+        assert actual.spec_state_indices_tensor.data_ptr() == builder.spec_state_indices_tensor.data_ptr()
+        torch.testing.assert_close(actual.spec_state_indices_tensor, expected_states)
+        torch.testing.assert_close(actual.spec_decode_metadata.actual_seq_lengths, expected_lengths)
+        torch.testing.assert_close(actual.num_accepted_tokens, expected_accepted)
+    assert launches == [graph_rows] * 4
+
+
+@pytest.mark.parametrize("unsupported", ["cpu", "mixed", "none", "310p", "int64", "short_spec_table"])
+def test_fused_spec_state_indices_falls_back_for_unsupported_inputs(unsupported):
+    builder = _make_builder(
+        device=torch.device("cpu"),
+        num_heads=32,
+        num_speculative_tokens=3,
+        num_speculative_blocks=3,
+        mamba_cache_mode="align",
+    )
+    table = SimpleNamespace(device=torch.device("npu"), dtype=torch.int32)
+    metadata = SimpleNamespace(block_table_tensor=table, seq_lens=SimpleNamespace(dtype=torch.int32))
+    plan = SimpleNamespace(state_index_mode=ascend_gdn_attn_builder._STATE_INDEX_SPEC_ONLY)
+    if unsupported == "cpu":
+        table.device = torch.device("cpu")
+    elif unsupported == "mixed":
+        plan.state_index_mode = ascend_gdn_attn_builder._STATE_INDEX_SPEC_MIXED
+    elif unsupported == "none":
+        builder.vllm_config.cache_config.mamba_cache_mode = "none"
+    elif unsupported == "310p":
+        builder._USE_COMMON_KERNEL_METADATA = False
+    elif unsupported == "int64":
+        table.dtype = torch.int64
+    else:
+        builder.kv_cache_spec = SimpleNamespace(num_speculative_blocks=1)
+    with patch.object(ascend_gdn_attn_builder, "fused_gdn_state_indices") as fused:
+        assert builder._try_fused_spec_state_indices(plan, metadata, 4) is None
+    fused.assert_not_called()
+
+
 def _assert_chunk_meta_matches_runtime(builder, chunk_meta, cu_seqlens: torch.Tensor) -> None:
     hf_text_config = getattr(builder.vllm_config.model_config, "hf_text_config", None)
     linear_attn_config = getattr(hf_text_config, "linear_attn_config", None)

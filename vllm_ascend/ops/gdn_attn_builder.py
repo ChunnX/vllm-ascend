@@ -40,6 +40,7 @@ from vllm_ascend.ops.triton.fla.utils import (
     prepare_final_chunk_indices,
     prepare_update_chunk_offsets,
 )
+from vllm_ascend.ops.triton.mamba.gdn_state_indices import fused_gdn_state_indices
 
 _GDN_CHUNK_SIZE = 64
 # Keep this aligned with solve_tril.LARGE_BLOCK_T in ops/triton/fla/solve_tril.py.
@@ -674,6 +675,8 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
         self,
         attn_metadata: GDNAttentionMetadata,
         graph_request_count: int,
+        *,
+        state_indices_are_padded: bool = False,
     ) -> None:
         """Materialize speculative decode metadata at graph request granularity."""
         actual_request_count = attn_metadata.num_spec_decodes
@@ -695,13 +698,14 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
         if attn_metadata.non_spec_token_indx.numel() > self.non_spec_token_indx.numel():
             raise ValueError("Non-spec token indices exceed the graph token buffer capacity")
 
-        attn_metadata.spec_state_indices_tensor = _materialize_graph_request_tensor(
-            self.spec_state_indices_tensor,
-            spec_state_indices,
-            actual_request_count,
-            graph_request_count,
-            self._SPEC_GRAPH_PAD_SLOT_ID,
-        )
+        if not state_indices_are_padded:
+            attn_metadata.spec_state_indices_tensor = _materialize_graph_request_tensor(
+                self.spec_state_indices_tensor,
+                spec_state_indices,
+                actual_request_count,
+                graph_request_count,
+                self._SPEC_GRAPH_PAD_SLOT_ID,
+            )
         attn_metadata.spec_sequence_masks = _materialize_graph_request_tensor(
             self.spec_sequence_masks,
             spec_sequence_masks,
@@ -1188,6 +1192,35 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
             non_spec_state_indices_tensor,
         )
 
+    def _try_fused_spec_state_indices(
+        self,
+        plan: _GDNSharedBatchPlan,
+        metadata: CommonAttentionMetadata,
+        graph_request_count: int,
+    ) -> torch.Tensor | None:
+        """Fuse only the pure speculative align path with graph-stable outputs."""
+        table = metadata.block_table_tensor
+        if (
+            not self._USE_COMMON_KERNEL_METADATA
+            or plan.state_index_mode != _STATE_INDEX_SPEC_ONLY
+            or self.vllm_config.cache_config.mamba_cache_mode != "align"
+            or self.kv_cache_spec.num_speculative_blocks < self.num_spec
+            or table.device.type != "npu"
+            or table.dtype != torch.int32
+            or metadata.seq_lens.dtype != torch.int32
+        ):
+            return None
+        assert plan.spec_sequence_indices is not None
+        output = self.spec_state_indices_tensor[:graph_request_count]
+        return fused_gdn_state_indices(
+            table,
+            metadata.seq_lens,
+            plan.spec_sequence_indices,
+            output,
+            self.kv_cache_spec.block_size,
+            self._SPEC_GRAPH_PAD_SLOT_ID,
+        )
+
     def build(  # type: ignore[override]
         self,
         common_prefix_len: int,
@@ -1245,17 +1278,32 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
 
         # Everything below is this group's own: the block table it addresses,
         # the state indices derived from it, and the per-builder graph buffers.
-        block_table_tensor = mamba_get_block_table_tensor(
-            m.block_table_tensor,
-            m.seq_lens,
-            self.kv_cache_spec,
-            self.vllm_config.cache_config.mamba_cache_mode,
+        pad_spec_decode = (
+            self.use_full_cuda_graph
+            and num_prefills == 0
+            and num_decodes == 0
+            and self._can_pad_spec_decode(graph_request_count, num_spec_decode_tokens)
+            and (not self.ragged_spec_decode or self.gdn_request_axis_fits_graph)
         )
-        (
-            spec_state_indices_tensor,
-            non_spec_state_indices_tensor,
-            non_spec_conv1d_cache_indices,
-        ) = self._derive_group_state_indices(plan, block_table_tensor)
+        spec_batch_size = self.gdn_request_axis if self.ragged_spec_decode else graph_request_count
+        spec_state_indices_tensor = (
+            self._try_fused_spec_state_indices(plan, m, spec_batch_size) if pad_spec_decode else None
+        )
+        state_indices_are_padded = spec_state_indices_tensor is not None
+        if state_indices_are_padded:
+            non_spec_state_indices_tensor = non_spec_conv1d_cache_indices = None
+        else:
+            block_table_tensor = mamba_get_block_table_tensor(
+                m.block_table_tensor,
+                m.seq_lens,
+                self.kv_cache_spec,
+                self.vllm_config.cache_config.mamba_cache_mode,
+            )
+            (
+                spec_state_indices_tensor,
+                non_spec_state_indices_tensor,
+                non_spec_conv1d_cache_indices,
+            ) = self._derive_group_state_indices(plan, block_table_tensor)
 
         prefill_state_indices: torch.Tensor | None = None
         if num_prefills > 0:
@@ -1292,15 +1340,12 @@ class AscendGDNAttentionMetadataBuilder(GDNAttentionMetadataBuilder):
             non_spec_token_indx=non_spec_token_indx,
             num_accepted_tokens=num_accepted_tokens,
         )
-        if (
-            self.use_full_cuda_graph
-            and num_prefills == 0
-            and num_decodes == 0
-            and self._can_pad_spec_decode(graph_request_count, num_spec_decode_tokens)
-            and (not self.ragged_spec_decode or self.gdn_request_axis_fits_graph)
-        ):
-            spec_batch_size = self.gdn_request_axis if self.ragged_spec_decode else graph_request_count
-            self._pad_spec_decode_metadata(attn_metadata, spec_batch_size)
+        if pad_spec_decode:
+            self._pad_spec_decode_metadata(
+                attn_metadata,
+                spec_batch_size,
+                state_indices_are_padded=state_indices_are_padded,
+            )
         elif (
             self.use_full_cuda_graph
             and num_prefills == 0
